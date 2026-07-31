@@ -41,6 +41,9 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Ship briefs also forbid a co-author trailer naming an AI model or assistant on
+# any commit, while human co-author trailers stay allowed; scout briefs omit that
+# rule because their scratch commits are discarded at teardown.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
