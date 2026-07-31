@@ -141,6 +141,9 @@ fi
 # so this exempts them while guarding every real secondmate home.
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
+# Record turn quota instrumentation at primary turn end (fail-safe observer)
+"$SCRIPT_DIR/fm-turn-quota-writer.sh" >/dev/null 2>&1 || true
+
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
