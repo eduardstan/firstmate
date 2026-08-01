@@ -666,6 +666,80 @@ SH
   pass "no-mistakes worktree resolves an authenticated fork target from git remote configuration"
 }
 
+test_no_mistakes_rotated_fork_pushurl_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-rotated-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "rotated fork credential work"
+  git init -q --bare "$case_dir/fork-expired.git"
+  git init -q --bare "$case_dir/fork-current.git"
+  git -C "$case_dir/project" remote add fork-auth 'https://old:expired@fork.invalid/repo.git'
+  git -C "$case_dir/project" config remote.fork-auth.pushurl 'https://new:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-expired.git".insteadOf 'https://old:expired@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-current.git".insteadOf 'https://new:token@fork.invalid/repo.git'
+  git -C "$case_dir/wt" push -q fork-auth fm/task-x1
+  git -C "$case_dir/project" update-ref -d refs/remotes/fork-auth/fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-rotated-fork: teardown should prefer the current push URL over the expired fetch URL"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-rotated-fork: teardown printed a REFUSED line"
+  ! grep -E 'old:expired|new:token' "$case_dir/stdout" "$case_dir/stderr" >/dev/null \
+    || fail "nm-rotated-fork: teardown exposed fork credentials"
+  pass "no-mistakes teardown prefers a rotated authenticated fork push URL"
+}
+
+test_no_mistakes_ambiguous_masked_fork_refuses() {
+  local case_dir rc checked
+  case_dir=$(make_case nm-ambiguous-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "ambiguous fork work"
+  git init -q --bare "$case_dir/fork-a-fetch.git"
+  git init -q --bare "$case_dir/fork-a-push.git"
+  git init -q --bare "$case_dir/fork-b-fetch.git"
+  git init -q --bare "$case_dir/fork-b-push.git"
+  git -C "$case_dir/project" remote add fork-a "$case_dir/fork-a-fetch.git"
+  git -C "$case_dir/project" remote add fork-b "$case_dir/fork-b-fetch.git"
+  git -C "$case_dir/project" config remote.fork-a.pushurl 'https://one:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config remote.fork-b.pushurl 'https://two:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-a-push.git".insteadOf 'https://one:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-b-push.git".insteadOf 'https://two:token@fork.invalid/repo.git'
+  git -C "$case_dir/wt" push -q fork-a fm/task-x1
+  git -C "$case_dir/project" update-ref -d refs/remotes/fork-a/fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "nm-ambiguous-fork: teardown should fail closed rather than choose a masked target"
+  grep -F 'fork push target could not be checked: multiple configured git push destinations match the credential-masked no-mistakes fork target.' "$case_dir/stderr" >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not explain the ambiguous authenticated targets"
+  checked=$(grep -F 'remotes checked:' "$case_dir/stderr" | head -1)
+  printf '%s\n' "$checked" | grep -F 'fork-a' >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not name fork-a"
+  printf '%s\n' "$checked" | grep -F 'fork-b' >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not name fork-b"
+  printf '%s\n' "$checked" | grep -F 'fork (via no-mistakes)' >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not name the no-mistakes fork target"
+  pass "ambiguous credential-masked fork targets fail closed with named remotes"
+}
+
 test_no_mistakes_unmatched_masked_fork_refuses_clearly() {
   local case_dir rc
   case_dir=$(make_case nm-masked-fork-unmatched)
@@ -2709,6 +2783,8 @@ test_local_only_fork_remote_allows
 test_no_mistakes_fork_push_remote_allows
 test_no_mistakes_configured_fork_remote_allows
 test_no_mistakes_authenticated_fork_pushurl_allows
+test_no_mistakes_rotated_fork_pushurl_allows
+test_no_mistakes_ambiguous_masked_fork_refuses
 test_no_mistakes_unmatched_masked_fork_refuses_clearly
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present

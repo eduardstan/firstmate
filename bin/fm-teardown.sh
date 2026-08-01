@@ -916,20 +916,25 @@ redact_git_remote_url() {
 }
 
 configured_remote_url_for() {
-  local wanted=$1 remote key candidate redacted
+  local wanted=$1 remote candidate redacted candidates matched=
   for remote in $(git -C "$WT" remote 2>/dev/null || true); do
-    for key in "remote.$remote.url" "remote.$remote.pushurl"; do
-      while IFS= read -r candidate; do
-        [ -n "$candidate" ] || continue
-        redacted=$(redact_git_remote_url "$candidate")
-        if [ "$candidate" = "$wanted" ] || [ "$redacted" = "$wanted" ]; then
-          printf '%s\n' "$candidate"
-          return 0
+    candidates=$(git -C "$WT" config --get-all "remote.$remote.pushurl" 2>/dev/null || true)
+    if [ -z "$candidates" ]; then
+      candidates=$(git -C "$WT" config --get-all "remote.$remote.url" 2>/dev/null || true)
+    fi
+    while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      redacted=$(redact_git_remote_url "$candidate")
+      if [ "$candidate" = "$wanted" ] || [ "$redacted" = "$wanted" ]; then
+        if [ -n "$matched" ] && [ "$candidate" != "$matched" ]; then
+          return 2
         fi
-      done < <(git -C "$WT" config --get-all "$key" 2>/dev/null || true)
-    done
+        matched=$candidate
+      fi
+    done <<< "$candidates"
   done
-  return 1
+  [ -n "$matched" ] || return 1
+  printf '%s\n' "$matched"
 }
 
 # Restore the remote-tracking refs consulted by refresh_landed_check_remotes, so
@@ -960,7 +965,7 @@ drop_landed_check_refs() {
 # TEARDOWN_REMOTES_CHECKED for the refusal message and TEARDOWN_LANDED_REFS for
 # drop_landed_check_refs.
 refresh_landed_check_remotes() {
-  local branch=$1 remote fork_url configured_fork_url ref old
+  local branch=$1 remote fork_url configured_fork_url configured_fork_status ref old
   TEARDOWN_REMOTES_CHECKED=
   TEARDOWN_LANDED_REFS=
   TEARDOWN_REMOTE_CHECK_ERROR=
@@ -981,12 +986,18 @@ refresh_landed_check_remotes() {
       if configured_fork_url=$(configured_remote_url_for "$fork_url"); then
         fork_url=$configured_fork_url
       else
-        case "$fork_url" in
-          http://redacted@*|https://redacted@*)
-            TEARDOWN_REMOTE_CHECK_ERROR="no configured git remote matches the credential-masked no-mistakes fork target"
-            fork_url=
-            ;;
-        esac
+        configured_fork_status=$?
+        if [ "$configured_fork_status" -eq 2 ]; then
+          TEARDOWN_REMOTE_CHECK_ERROR="multiple configured git push destinations match the credential-masked no-mistakes fork target"
+          fork_url=
+        else
+          case "$fork_url" in
+            http://redacted@*|https://redacted@*)
+              TEARDOWN_REMOTE_CHECK_ERROR="no configured git remote matches the credential-masked no-mistakes fork target"
+              fork_url=
+              ;;
+          esac
+        fi
       fi
       if [ -n "$fork_url" ]; then
         ref="refs/remotes/fm-no-mistakes-fork/$branch"
