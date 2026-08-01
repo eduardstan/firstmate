@@ -10,9 +10,10 @@
 # the local-only and freshly-fetched-remote-only commits form equal-length,
 # topologically oldest-first sequences whose trees match one-to-one by position
 # (a differing count, or any positional tree mismatch, refuses), the clone is
-# clean, and every linked worktree is inspectable and holds no unlanded content. Every other off-default or diverged state may hold real work, so it is
-# left untouched and reported as a loud, actionable "STUCK" warning. Nothing is
-# ever forced, stashed, or discarded.
+# clean, and every linked worktree is inspectable and holds no unlanded content.
+# Every other off-default or diverged state may hold real work, so it is left
+# untouched and reported as a loud, actionable "STUCK" warning. Nothing is ever
+# forced, stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
 # Pruning never deletes the checked-out branch or a branch that still has a
