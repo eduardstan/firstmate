@@ -21,7 +21,13 @@ case "${1:-report}" in
     echo "usage: $(basename "$0") [write|report] [options]"
     exit 0
     ;;
-  *)
+  -*)
     exec "$SCRIPT_DIR/fm-turn-quota-reader.sh" "$@"
+    ;;
+  *)
+    # An unrecognized subcommand must fail loudly: silently reporting instead of
+    # recording turns them into a missing measurement nobody notices.
+    echo "usage: $(basename "$0") [write|report] [options]" >&2
+    exit 2
     ;;
 esac

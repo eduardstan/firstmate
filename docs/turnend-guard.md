@@ -27,7 +27,7 @@ That check keeps crewmate and scout linked worktrees inert because their git dir
 It also requires `AGENTS.md`, `bin/`, and the effective state directory.
 
 For an in-scope primary, the guard counts in-flight work from `state/*.meta`.
-It also invokes `bin/fm-turn-quota-writer.sh` to record per-turn quota instrumentation in `state/quota-turns.log`.
+It also invokes `bin/fm-turn-quota-writer.sh` to record per-turn quota instrumentation in `state/quota-turns.log`, skipping stop-hook continuations so a re-blocked turn records exactly one row in every mode.
 Registered `state/procevent/*.source` records also require supervision even though they have no task metadata.
 The default cross-harness mode exits silently with no supervision need.
 Every mode treats `state/x-watch.check.sh` as supervision need, so Relay polling remains guarded without an in-flight task.

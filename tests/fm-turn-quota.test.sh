@@ -114,3 +114,56 @@ assert_contains "$CLI_OUT" "Total turns: 2" "CLI wrapper failed to render report
 assert_contains "$CLI_OUT" "Proxy no-op (fingerprint unchanged): 1 (50.0%)" "CLI wrapper no-op ratio mismatch"
 
 pass "bin/fm-turn-quota.sh CLI wrapper delegates to reader correctly"
+
+# --- Test 5: Unknown subcommand fails loudly -------------------------------
+if "$ROOT/bin/fm-turn-quota.sh" writ --log="$LOG_FILE1" >/dev/null 2>&1; then
+  fail "unknown subcommand must not silently fall through to the reader"
+fi
+
+pass "CLI wrapper rejects an unknown subcommand instead of silently reporting"
+
+# --- Test 6: Absent fingerprint is excluded, never counted as a no-op -------
+ABSENT_LOG="$TEST_DIR/absent-fp.log"
+cat > "$ABSENT_LOG" << 'LOG'
+1000	captain	absent	absent	absent	absent	absent	absent	absent
+1010	captain	absent	absent	absent	absent	absent	absent	absent
+1020	signal	fpA	1	absent	absent	absent	absent	absent
+1030	signal	fpA	0	absent	absent	absent	absent	absent
+LOG
+
+ABSENT_OUT=$("$ROOT/bin/fm-turn-quota-reader.sh" --log="$ABSENT_LOG")
+assert_contains "$ABSENT_OUT" "Total turns: 4" "reader dropped absent-fingerprint records from the turn count"
+assert_contains "$ABSENT_OUT" "Proxy no-op (fingerprint unchanged): 1 (50.0%)" "absent fingerprints must be excluded from the proxy no-op ratio, not counted as no-ops"
+assert_contains "$ABSENT_OUT" "Fingerprint absent (excluded from proxy ratios): 2" "reader must disclose excluded absent-fingerprint records"
+
+ALL_ABSENT_LOG="$TEST_DIR/all-absent-fp.log"
+head -n 2 "$ABSENT_LOG" > "$ALL_ABSENT_LOG"
+ALL_ABSENT_OUT=$("$ROOT/bin/fm-turn-quota-reader.sh" --log="$ALL_ABSENT_LOG")
+assert_contains "$ALL_ABSENT_OUT" "Proxy no-op (fingerprint unchanged): absent" "reader must never fabricate a no-op ratio when every fingerprint is absent"
+
+pass "reader treats an absent fingerprint as absent rather than as a proxy no-op"
+
+# --- Test 7: Writer emits absent fingerprint when no hasher exists ----------
+NOHASH_BIN="$TEST_DIR/nohashbin"
+mkdir -p "$NOHASH_BIN"
+for stub in sha256sum shasum; do
+  printf '#!/bin/sh\nexit 1\n' > "$NOHASH_BIN/$stub"
+  chmod +x "$NOHASH_BIN/$stub"
+done
+
+LOG_FILE2="$STATE_DIR/quota-turns-2.log"
+PATH="$NOHASH_BIN:$PATH" \
+FM_ROOT_OVERRIDE="$HOME_DIR" \
+FM_HOME="$HOME_DIR" \
+FM_STATE_OVERRIDE="$STATE_DIR" \
+FM_QUOTA_LOG_OVERRIDE="$LOG_FILE2" \
+"$ROOT/bin/fm-turn-quota-writer.sh"
+
+NOHASH_LINE=$(tail -n 1 "$LOG_FILE2" 2>/dev/null || true)
+NOHASH_FP=$(printf '%s' "$NOHASH_LINE" | awk -F '\t' '{print $3}')
+NOHASH_CHG=$(printf '%s' "$NOHASH_LINE" | awk -F '\t' '{print $4}')
+
+[ "$NOHASH_FP" = "absent" ] || fail "unhashable state must record an absent fingerprint (got: $NOHASH_FP)"
+[ "$NOHASH_CHG" = "absent" ] || fail "unhashable state must record an absent fp_changed, never 0 (got: $NOHASH_CHG)"
+
+pass "writer records an absent fingerprint instead of a fabricated constant"

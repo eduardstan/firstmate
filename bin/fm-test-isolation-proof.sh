@@ -109,7 +109,7 @@ exclusion_reason() {
       printf '%s\n' 'session-start task/presentation lock matrix; keep serial until dedicated concurrent proof'
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
-    fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-turn-quota.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
+    fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-queue.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
     fm-watcher-lock.test.sh)
       printf '%s\n' 'watcher/wake/lock family; intentional process locks and daemon races'
