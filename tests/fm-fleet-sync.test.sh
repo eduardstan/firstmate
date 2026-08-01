@@ -81,6 +81,37 @@ advance_origin() {
   git -C "$work" push -q origin main
 }
 
+# rewrite_origin_with_identical_trees <clone>: replace origin/main with a new
+# commit chain whose commits have the same trees as clone's local main but new
+# identities. The clone remains on the old chain, producing the deliberate
+# ahead/behind shape that fleet-sync's guarded convergence handles.
+rewrite_origin_with_identical_trees() {
+  local clone=$1 commit tree rewritten parent='' index=0
+  while IFS= read -r commit; do
+    index=$(( index + 1 ))
+    tree=$(git -C "$clone" rev-parse "$commit^{tree}")
+    if [ -n "$parent" ]; then
+      rewritten=$(printf 'rewritten commit %s\n' "$index" \
+        | git -C "$clone" commit-tree "$tree" -p "$parent")
+    else
+      rewritten=$(printf 'rewritten commit %s\n' "$index" \
+        | git -C "$clone" commit-tree "$tree")
+    fi
+    parent=$rewritten
+  done < <(git -C "$clone" rev-list --reverse main)
+  git -C "$clone" update-ref refs/heads/rewritten-for-test "$parent"
+  git -C "$clone" push -q --force origin refs/heads/rewritten-for-test:refs/heads/main
+  git -C "$clone" update-ref -d refs/heads/rewritten-for-test
+}
+
+build_rewritten_pair() {
+  local home=$1 name=$2 clone
+  clone=$(build_pair "$home" "$name")
+  commit_file "$clone" file.txt v1 C1
+  rewrite_origin_with_identical_trees "$clone"
+  printf '%s\n' "$clone"
+}
+
 head_sha() { git -C "$1" rev-parse HEAD; }
 
 # run_sync <home> [args...]: run fleet-sync against an isolated home, stdout only.
@@ -305,9 +336,64 @@ test_diverged_is_stuck_untouched() {
 
   assert_contains "$out" "epsilon: STUCK:" "diverged clone reports STUCK"
   assert_contains "$out" "diverged main" "STUCK names the diverged state"
+  assert_contains "$out" "local-only commit has no identical tree on origin/main" "refusal names the failed tree condition"
+  assert_contains "$out" "$before" "refusal names the offending local-only commit"
   assert_contains "$out" "commits behind origin/main - needs attention" "STUCK is quantified"
   [ "$(head_sha "$clone")" = "$before" ] || fail "diverged clone was moved"
   pass "diverged default branch is reported STUCK and left untouched"
+}
+
+test_identical_tree_rewrite_converges() {
+  local home clone out before remote
+  home=$(new_home)
+  clone=$(build_rewritten_pair "$home" rewrite-match)
+  before=$(head_sha "$clone")
+  remote=$(git -C "$clone" rev-parse origin/main)
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "rewrite-match: converged rewritten main" "identical-tree rewrite reports convergence"
+  assert_contains "$out" "2 local-only commit trees matched origin/main" "convergence reports its tree proof"
+  assert_not_contains "$out" "STUCK" "proven rewrite is not left stuck"
+  [ "$(head_sha "$clone")" = "$remote" ] || fail "proven rewrite did not move main to origin/main"
+  [ "$(head_sha "$clone")" != "$before" ] || fail "proven rewrite left main on old history"
+  pass "diverged histories with identical commit trees converge onto the freshly fetched remote"
+}
+
+test_identical_tree_rewrite_dirty_refuses() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_rewritten_pair "$home" rewrite-dirty)
+  before=$(head_sha "$clone")
+  printf 'dirty rewrite work\n' >> "$clone/file.txt"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "working tree is not clean" "dirty rewrite refusal names the failed condition"
+  assert_contains "$out" "$before" "dirty rewrite refusal names the offending HEAD commit"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "dirty rewritten clone was moved"
+  grep -q "dirty rewrite work" "$clone/file.txt" || fail "dirty rewritten clone lost its working-tree edit"
+  pass "a dirty diverged clone refuses rewrite convergence and stays untouched"
+}
+
+test_identical_tree_rewrite_linked_unlanded_refuses() {
+  local home clone linked out before unlanded
+  home=$(new_home)
+  clone=$(build_rewritten_pair "$home" rewrite-linked)
+  before=$(head_sha "$clone")
+  linked="$home/linked-rewrite-work"
+  git -C "$clone" worktree add -q -b rewrite-feature "$linked"
+  commit_file "$linked" linked.txt unlanded "linked unlanded commit"
+  unlanded=$(head_sha "$linked")
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "linked worktree has unlanded content" "linked-worktree refusal names the failed condition"
+  assert_contains "$out" "$unlanded" "linked-worktree refusal names the offending commit"
+  assert_contains "$out" "$linked" "linked-worktree refusal names the worktree"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "clone moved despite linked unlanded work"
+  [ "$(head_sha "$linked")" = "$unlanded" ] || fail "linked unlanded work was moved"
+  pass "a linked worktree with unlanded content blocks rewrite convergence"
 }
 
 test_on_default_clean_behind_fast_forwards() {
@@ -609,6 +695,9 @@ test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
 test_non_default_branch_is_stuck_untouched
 test_diverged_is_stuck_untouched
+test_identical_tree_rewrite_converges
+test_identical_tree_rewrite_dirty_refuses
+test_identical_tree_rewrite_linked_unlanded_refuses
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
