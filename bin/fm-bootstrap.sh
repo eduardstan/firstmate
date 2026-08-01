@@ -1234,23 +1234,7 @@ detect_local_tools() {
     echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
   fi
 }
-  fi
-  if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
-    echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
-  fi
-  if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
-    echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
-  fi
-  if command -v lavish-axi >/dev/null 2>&1 && ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
-    echo "MISSING: lavish-axi (install: $(install_cmd lavish-axi))"
-  fi
-  if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
-    echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
-  fi
-  if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
-    echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
-  fi
-}
+
 
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
@@ -1303,11 +1287,34 @@ if network_phase; then
   gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
   fm_timing_record phase gh-auth "$__fm_timing_stamp"
 fi
-    fm_timing_record phase fleet-sync "$__fm_timing_stamp"
+local_phase && detect_local_config
+
+if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
+  # secondmate_sync consumes SECONDMATE_RESPAWNED_IDS from the liveness sweep, so
+  # those two always run together in the same phase.
+  if network_phase; then
+    if network_sweep_authorized 'dead-secondmate relaunch'; then
+      __fm_timing_stamp=$(fm_timing_now_ms)
+      secondmate_liveness_sweep
+      fm_timing_record phase secondmate-liveness "$__fm_timing_stamp"
+    fi
+    if network_sweep_authorized 'secondmate convergence'; then
+      __fm_timing_stamp=$(fm_timing_now_ms)
+      secondmate_sync
+      fm_timing_record phase secondmate-sync "$__fm_timing_stamp"
+    fi
+    if network_sweep_authorized 'pending handoff delivery'; then
+      __fm_timing_stamp=$(fm_timing_now_ms)
+      secondmate_handoff_resume
+      fm_timing_record phase handoff-delivery "$__fm_timing_stamp"
+    fi
   fi
-fi
-local_phase && secondmate_handoff_detect
-exit 0
+  # x_mode_setup writes local Relay artifacts only and never leaves the machine.
+  local_phase && x_mode_setup
+  if network_phase && network_sweep_authorized 'project clone refresh'; then
+    __fm_timing_stamp=$(fm_timing_now_ms)
+    fleet_sync
+    fm_timing_record phase fleet-sync "$__fm_timing_stamp"
   fi
 fi
 local_phase && secondmate_handoff_detect
