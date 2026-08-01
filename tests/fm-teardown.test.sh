@@ -7,7 +7,7 @@
 # and GitHub reports a PR head that contains the current local work, or its content
 # is already in the up-to-date default branch.
 #
-# Covers three fixes:
+# Covers four fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
 #     contribution PRs are teardown-eligible (the pre-fix code false-refused them).
 #   - squash-merge-then-delete-branch: the branch's own commits live nowhere on a
@@ -19,13 +19,17 @@
 #     git index.lock that blocks teardown. The return path retries on the lock
 #     error signature (even if the lock self-clears mid-check), then only removes a
 #     provably stale lock before re-running safety checks.
+#   - no-mistakes fork target: teardown refreshes the task branch from configured
+#     remotes and from no-mistakes' recorded fork push target before deciding that
+#     committed work is unpushed. Credential-masked targets resolve through local
+#     push URLs and remain fail-closed when no unique match exists.
 #
 # Matrix:
 #   (a) local-only + HEAD on a fork remote-tracking branch     -> ALLOW  (fork fix)
 #   (b) local-only + truly unpushed work (no remote, not main) -> REFUSE (safety)
 #   (c) local-only + merged into local main, no remote         -> ALLOW  (no regression)
 #   (d) no-mistakes + HEAD on origin remote-tracking branch    -> ALLOW  (no regression)
-#   (e) no-mistakes + unpushed, no PR, content not in default  -> REFUSE (safety)
+#   (e) no-mistakes + unpushed, no PR, content not in default  -> REFUSE, name origin
 #   (f) local-only + truly unpushed + --force                  -> ALLOW  (escape hatch)
 #   (g) no-mistakes + squash-merged PR, exact PR head          -> ALLOW  (squash fix)
 #   (h) no-mistakes + no PR but content already in default     -> ALLOW  (content fallback)
@@ -40,18 +44,21 @@
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
 #   (r) no-mistakes + branch on the no-mistakes fork push target -> ALLOW  (fork fix)
 #   (s) no-mistakes + branch on a configured, never-fetched fork -> ALLOW  (fork fix)
-#   (t) no-mistakes + refusal names the remote consulted        -> message
+#   (t) masked fork target + matching authenticated push URL     -> ALLOW  (safe resolution)
+#   (u) masked fork target + rotated authenticated push URL      -> ALLOW  (current push URL)
+#   (v) masked fork target + multiple matching push URLs         -> REFUSE (ambiguous)
+#   (w) masked fork target + no matching configured push URL     -> REFUSE (unavailable)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (s) index.lock with a live holder, any age                -> lock kept, REFUSE
-#   (t) lsof error while checking index.lock                  -> lock kept, REFUSE
-#   (u) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (v) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (w) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (x) transient lock cleared after first failed return      -> retry ALLOW
-#   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   (lock-a) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   (lock-b) index.lock with a live holder, any age                -> lock kept, REFUSE
+#   (lock-c) lsof error while checking index.lock                  -> lock kept, REFUSE
+#   (lock-d) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
+#   (lock-e) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (lock-f) index.lock mtime read failure                         -> lock kept, REFUSE
+#   (lock-g) transient lock cleared after first failed return      -> retry ALLOW
+#   (lock-h) persistent lock (never clears, not provably stale)    -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -154,7 +161,6 @@ case "${1:-}" in
     ;;
 esac
 exit 0
-SH
 SH
   chmod +x "$fakebin/treehouse" "$fakebin/tmux" "$fakebin/gh-axi" "$fakebin/gh" "$fakebin/no-mistakes"
 
