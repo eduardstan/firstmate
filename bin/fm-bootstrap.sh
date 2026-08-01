@@ -7,6 +7,7 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
+#                 "WRONG_PROGRAM: <tool> - <path> is not the intended program; install the real '<tool>' CLI (install: <command>)",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
@@ -522,6 +523,64 @@ missing_tool_diagnostic() {
   echo "MISSING: $tool (install: $(install_cmd "$tool"))"
 }
 
+# Required tools with a verifiable identity signal. Presence by name alone is
+# not identity: a distribution can occupy a short generic name with an
+# unrelated program - on Linux /usr/bin/orca is GNOME's screen reader, not the
+# Orca terminal runtime this home dispatches into. A binary of the right name
+# must therefore prove it is the intended program before bootstrap reports it
+# present; a wrong program squatting the name is WRONG_PROGRAM (distinct from
+# MISSING, never a silent pass). A tool without a reliable, unambiguous
+# self-identification signal is deliberately absent from this list and keeps
+# the plain presence check - the absence of a signal is not a reason to start
+# rejecting tools that were fine yesterday.
+tool_identity_spec() {  # <tool> -> prints '<marker>\t<program-description>', or returns 1 when unverified
+  case "$1" in
+    # The Orca terminal runtime CLI (stablyai) prints a command-dispatch help
+    # opening with 'Usage: orca <command> [options]' and listing its
+    # status/worktree/terminal commands; GNOME's screen reader prints its own
+    # option list and never that string.
+    orca) printf '%s\t%s\n' 'Usage: orca <command> [options]' 'the Orca terminal runtime' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Run '<tool> --help' bounded by TOOL_IDENTITY_TIMEOUT_SECS so a squatting or
+# broken program cannot hang startup. Same timeout/gtimeout/perl ladder as the
+# watcher's check runner (bin/fm-watch.sh). Echoes combined output.
+TOOL_IDENTITY_TIMEOUT_SECS=5
+tool_help_with_timeout() {  # <tool>
+  local tool=$1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --kill-after=1 "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout --kill-after=1 "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1
+  else
+    # shellcheck disable=SC2016  # single quotes are deliberate: Perl expands its own variables.
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } my $stop = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; local $SIG{ALRM} = $stop; local $SIG{TERM} = $stop; local $SIG{INT} = $stop; local $SIG{HUP} = $stop; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1
+  fi
+}
+
+# required_tool_identity_verify <tool>: report WRONG_PROGRAM when a present
+# binary of <tool> fails to self-identify as the intended program. The caller
+# establishes presence first, so an absent tool never runs a subprocess; a tool
+# with no identity spec is silent; a probe that yields no usable signal (fails,
+# times out, or prints nothing identifiable) keeps the presence result rather
+# than inventing a rejection.
+required_tool_identity_verify() {  # <tool>
+  local tool=$1 spec marker desc path output rc
+  spec=$(tool_identity_spec "$tool") || return 0
+  marker=${spec%%$'\t'*}
+  desc=${spec#*$'\t'}
+  command -v "$tool" >/dev/null 2>&1 || return 0
+  path=$(command -v "$tool")
+  output=$(tool_help_with_timeout "$tool"); rc=$?
+  [ "$rc" -eq 0 ] || return 0
+  case "$output" in
+    *"$marker"*) return 0 ;;
+  esac
+  echo "WRONG_PROGRAM: $tool - $path is not $desc; install the real '$tool' CLI (install: $(install_cmd "$tool"))"
+}
+
 # Required-tool detection follows the RESOLVED backend, not a one-size default:
 # a universal toolchain every home needs plus the backend-specific delta owned by
 # fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
@@ -859,11 +918,18 @@ if [ "$BACKEND_VALID" -eq 0 ]; then
   echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
 fi
 for t in $BACKEND_TOOLS; do
-  fm_backend_required_tool_available "$BACKEND" "$t" \
-    || missing_tool_diagnostic "$t"
+  if fm_backend_required_tool_available "$BACKEND" "$t"; then
+    required_tool_identity_verify "$t"
+  else
+    missing_tool_diagnostic "$t"
+  fi
 done
 for t in $COMMON_TOOLS; do
-  command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
+  if command -v "$t" >/dev/null; then
+    required_tool_identity_verify "$t"
+  else
+    missing_tool_diagnostic "$t"
+  fi
 done
 # The treehouse lease-support upgrade check is only relevant when the resolved
 # backend actually requires treehouse (every backend except orca, which owns its
