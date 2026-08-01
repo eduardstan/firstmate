@@ -33,37 +33,37 @@ fi
 awk -F '\t' '
 BEGIN {
   total_turns = 0
+  fp_known_turns = 0
   unchanged_turns = 0
   changed_turns = 0
 
-  c5_first = -1; c5_prev = -1; c5_total_delta = 0; c5_valid = 0
-  c7_first = -1; c7_prev = -1; c7_total_delta = 0; c7_valid = 0
-  g_first = -1; g_prev = -1; g_total_delta = 0; g_valid = 0
+  c5_prev = -1; c5_total_delta = 0; c5_valid = 0
+  c7_prev = -1; c7_total_delta = 0; c7_valid = 0
+  g_prev = -1; g_total_delta = 0; g_valid = 0
 }
 
 NF >= 4 {
   total_turns++
   wake_kind = $2
-  fp_changed = $4 + 0
-
-  if (fp_changed == 0) {
-    unchanged_turns++
-  } else {
-    changed_turns++
-  }
-
   wake_count[wake_kind]++
-  if (fp_changed == 0) {
-    wake_unchanged[wake_kind]++
-  } else {
-    wake_changed[wake_kind]++
+
+  # A record whose fingerprint could not be computed carries an absent marker,
+  # never 0 - it must not be counted as a proxy no-op.
+  if ($4 == "0" || $4 == "1") {
+    fp_known_turns++
+    wake_fp_known[wake_kind]++
+    if ($4 + 0 == 0) {
+      unchanged_turns++
+      wake_unchanged[wake_kind]++
+    } else {
+      changed_turns++
+    }
   }
 
   # Claude 5h
   if (NF >= 5 && $5 != "absent" && $5 ~ /^[0-9]+(\.[0-9]+)?$/) {
     v = $5 + 0
     c5_valid++
-    if (c5_first < 0) c5_first = v
     if (c5_prev >= 0) {
       d = (v >= c5_prev) ? (v - c5_prev) : v
       c5_total_delta += d
@@ -76,7 +76,6 @@ NF >= 4 {
   if (NF >= 6 && $6 != "absent" && $6 ~ /^[0-9]+(\.[0-9]+)?$/) {
     v = $6 + 0
     c7_valid++
-    if (c7_first < 0) c7_first = v
     if (c7_prev >= 0) {
       d = (v >= c7_prev) ? (v - c7_prev) : v
       c7_total_delta += d
@@ -89,7 +88,6 @@ NF >= 4 {
   if (NF >= 8 && $8 != "absent" && $8 ~ /^[0-9]+(\.[0-9]+)?$/) {
     v = $8 + 0
     g_valid++
-    if (g_first < 0) g_first = v
     if (g_prev >= 0) {
       d = (v >= g_prev) ? (v - g_prev) : v
       g_total_delta += d
@@ -105,15 +103,22 @@ END {
     exit 0
   }
 
-  noop_ratio = (unchanged_turns / total_turns) * 100.0
-  changed_ratio = (changed_turns / total_turns) * 100.0
-
   print "=== Firstmate Turn Quota Report ==="
   print "NOTICE: Proxy state fingerprint metric used below cannot prove a turn was useless (e.g. answering the captain changes nothing on disk)."
   print ""
   printf "Total turns: %d\n", total_turns
-  printf "Proxy no-op (fingerprint unchanged): %d (%.1f%%)\n", unchanged_turns, noop_ratio
-  printf "Proxy changed (fingerprint changed):   %d (%.1f%%)\n", changed_turns, changed_ratio
+  if (fp_known_turns > 0) {
+    noop_ratio = (unchanged_turns / fp_known_turns) * 100.0
+    changed_ratio = (changed_turns / fp_known_turns) * 100.0
+    printf "Proxy no-op (fingerprint unchanged): %d (%.1f%%)\n", unchanged_turns, noop_ratio
+    printf "Proxy changed (fingerprint changed):   %d (%.1f%%)\n", changed_turns, changed_ratio
+    if (fp_known_turns < total_turns) {
+      printf "Fingerprint absent (excluded from proxy ratios): %d\n", total_turns - fp_known_turns
+    }
+  } else {
+    print "Proxy no-op (fingerprint unchanged): absent"
+    print "Proxy changed (fingerprint changed):   absent"
+  }
   print ""
 
   print "--- Quota Consumed per Turn ---"
@@ -146,8 +151,9 @@ END {
   printf "%-12s %-8s %-16s %-16s\n", "WAKE KIND", "TURNS", "NO-OP (UNCHANGED)", "CLAUDE 5H DELTA"
   for (w in wake_count) {
     w_total = wake_count[w]
+    w_known = wake_fp_known[w] + 0
     w_unchanged = wake_unchanged[w] + 0
-    w_pct = (w_total > 0) ? (w_unchanged / w_total * 100.0) : 0
+    w_pct = (w_known > 0) ? (w_unchanged / w_known * 100.0) : 0
     w_c5 = wake_c5_delta[w] + 0
     printf "%-12s %-8d %d (%.1f%%)         %.2f%%\n", w, w_total, w_unchanged, w_pct, w_c5
   }

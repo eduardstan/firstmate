@@ -19,18 +19,71 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOG_FILE="${FM_QUOTA_LOG_OVERRIDE:-$STATE/quota-turns.log}"
 ERR_LOG="$STATE/.turn-quota-error.log"
 CACHE_FILE="$STATE/.turn-quota-cache.json"
+AGY_CACHE_FILE="$STATE/.turn-quota-agy-cache.json"
+CACHE_TTL_SECONDS=15
+PROBE_TIMEOUT_SECONDS=3
 MAX_LOG_LINES=10000
 
 log_err() {
   printf '%s [error] %s\n' "$(date +%s)" "$1" >> "$ERR_LOG" 2>/dev/null || true
 }
 
+# Portable SHA-256 over stdin. Returns non-zero (and prints nothing) when no
+# hasher exists, so callers can record an honest absent marker.
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum 2>/dev/null | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 2>/dev/null | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+stat_field() {
+  stat -c "$1" "$3" 2>/dev/null || stat -f "$2" "$3" 2>/dev/null || echo 0
+}
+
+run_timeout() {
+  local secs=$1
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$secs" "$@"
+  else
+    return 1
+  fi
+}
+
+# Refresh <cache> from a bounded probe unless it is younger than the TTL, so a
+# burst of turn ends costs at most one subprocess round trip.
+probe_cached() {
+  local cache=$1
+  shift
+  local mtime now
+  if [ -f "$cache" ]; then
+    mtime=$(stat_field %Y %m "$cache")
+    now=$(date +%s)
+    if [ $((now - mtime)) -lt "$CACHE_TTL_SECONDS" ]; then
+      return 0
+    fi
+  fi
+  if run_timeout "$PROBE_TIMEOUT_SECONDS" "$@" > "$cache.tmp" 2>/dev/null; then
+    mv "$cache.tmp" "$cache" 2>/dev/null || true
+  fi
+  rm -f "$cache.tmp" 2>/dev/null || true
+  return 0
+}
+
 record_turn_quota() {
   local wake_kind fp fp_changed last_fp
   local claude_5h="absent" claude_7d="absent" claude_gen_at="absent"
   local gemini_used="absent" gemini_gen_at="absent"
-  local cache_fresh=0 cache_mtime=0 now=0 parsed=0
-  local epoch record line_count usage_json parsed_gemini
+  local parsed=""
+  local epoch record line_count parsed_gemini
   local c_5h c_7d c_gen g_used g_gen
 
   # Verify primary scope
@@ -52,36 +105,43 @@ record_turn_quota() {
 
   # Compute proxy fingerprint of fleet state
   fp=$(
-    # shellcheck disable=SC2012
-    meta_stat=$(ls -l --full-time "$STATE"/*.meta 2>/dev/null | awk '{print $5, $6, $7, $9}' || true)
-    backlog_hash=$(sha256sum "$FM_HOME/data/backlog.md" 2>/dev/null | awk '{print $1}' || echo "no-backlog")
+    meta_stat=$(
+      for meta in "$STATE"/*.meta; do
+        [ -f "$meta" ] || continue
+        printf '%s %s %s\n' "${meta##*/}" \
+          "$(stat_field %s %z "$meta")" "$(stat_field %Y %m "$meta")"
+      done
+    )
+    backlog="$FM_HOME/data/backlog.md"
+    if [ -f "$backlog" ]; then
+      backlog_hash=$(sha256_stdin < "$backlog" 2>/dev/null || true)
+      [ -n "$backlog_hash" ] || backlog_hash="backlog-unhashable"
+    else
+      backlog_hash="no-backlog"
+    fi
     head_rev=$(git -C "$FM_ROOT" rev-parse HEAD 2>/dev/null || echo "no-head")
-    printf '%s\n%s\n%s\n' "$meta_stat" "$backlog_hash" "$head_rev" | sha256sum 2>/dev/null | awk '{print $1}' | cut -c1-16
+    printf '%s\n%s\n%s\n' "$meta_stat" "$backlog_hash" "$head_rev" | sha256_stdin | cut -c1-16
   )
-  [ -n "$fp" ] || fp="0000000000000000"
+  # An unhashable state is absent, never a constant: a fabricated fingerprint
+  # would compare equal on every later turn and manufacture a 100% no-op ratio.
+  [ -n "$fp" ] || fp="absent"
 
   # Check if fingerprint changed from last record
-  fp_changed=1
-  if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
-    last_fp=$(tail -n 1 "$LOG_FILE" 2>/dev/null | awk -F '\t' '{print $3}' || true)
-    if [ "$last_fp" = "$fp" ]; then
-      fp_changed=0
+  if [ "$fp" = "absent" ]; then
+    fp_changed="absent"
+  else
+    fp_changed=1
+    if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+      last_fp=$(tail -n 1 "$LOG_FILE" 2>/dev/null | awk -F '\t' '{print $3}' || true)
+      if [ "$last_fp" = "$fp" ]; then
+        fp_changed=0
+      fi
     fi
   fi
 
   # Query quota-axi if available
   if command -v quota-axi >/dev/null 2>&1; then
-    cache_fresh=0
-    if [ -f "$CACHE_FILE" ]; then
-      cache_mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null || echo 0)
-      now=$(date +%s)
-      if [ $((now - cache_mtime)) -lt 15 ]; then
-        cache_fresh=1
-      fi
-    fi
-    if [ "$cache_fresh" -eq 0 ]; then
-      timeout 3s quota-axi --json > "$CACHE_FILE.tmp" 2>/dev/null && mv "$CACHE_FILE.tmp" "$CACHE_FILE" 2>/dev/null || true
-    fi
+    probe_cached "$CACHE_FILE" quota-axi --json
     if [ -f "$CACHE_FILE" ] && [ -s "$CACHE_FILE" ]; then
       parsed=$(jq -r '
         .generatedAt as $gen |
@@ -101,17 +161,22 @@ record_turn_quota() {
 
   # Query antigravity-usage if available (explicit absent marker if absent)
   if command -v antigravity-usage >/dev/null 2>&1; then
-    usage_json=$(timeout 3s antigravity-usage --json 2>/dev/null || true)
-    if [ -n "$usage_json" ]; then
-      parsed_gemini=$(printf '%s' "$usage_json" | jq -r '
+    probe_cached "$AGY_CACHE_FILE" antigravity-usage --json
+    if [ -f "$AGY_CACHE_FILE" ] && [ -s "$AGY_CACHE_FILE" ]; then
+      # Dispatch-eligible gemini models only (autocomplete-only pools are never
+      # spent by the fleet), and the scarcest of them, so the recorded delta can
+      # never track a different budget just because the tool reordered .models.
+      parsed_gemini=$(jq -r '
         .timestamp as $ts |
-        ([.models[]? | select(.modelId | contains("gemini")) | .remainingPercentage] | first) as $rem |
+        ([.models[]?
+          | select((.modelId | contains("gemini")) and (.isAutocompleteOnly != true))
+          | .remainingPercentage] | min) as $rem |
         if $rem == null then "absent\tabsent"
         else
           (if $rem <= 1.0 then (1.0 - $rem) * 100.0 else (100.0 - $rem) end) as $used |
           "\($used)\t\($ts // "absent")"
         end
-      ' 2>/dev/null || true)
+      ' "$AGY_CACHE_FILE" 2>/dev/null || true)
       if [ -n "$parsed_gemini" ]; then
         IFS=$'\t' read -r g_used g_gen <<< "$parsed_gemini"
         [ -n "$g_used" ] && gemini_used="$g_used"
