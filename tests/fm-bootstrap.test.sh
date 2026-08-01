@@ -141,11 +141,14 @@ SH
 }
 
 # Drop a fake 'orca' CLI with a deterministic --help identity probe, so the
-# identity check runs against a controlled binary instead of whatever the host
-# happens to have installed as 'orca' (e.g. GNOME's screen reader in /usr/bin).
-# mode=genuine prints the stablyai Orca CLI's command-dispatch help marker;
-# mode=wrong prints a plainly different help (the GNOME screen-reader shape).
-add_fake_orca() {  # <fakebin> <genuine|wrong>
+# known-wrong check runs against a controlled binary instead of whatever the
+# host happens to have installed as 'orca' (e.g. GNOME's screen reader in
+# /usr/bin). mode=wrong prints the GNOME screen-reader help, which bootstrap
+# positively identifies as the known-wrong program (marker verified on this
+# machine, 2026-08-01); mode=genuine prints the stablyai Orca CLI's command-
+# dispatch help, which is unverified and therefore treated as present;
+# mode=unknown prints a plainly unrelated help, also treated as present.
+add_fake_orca() {  # <fakebin> <genuine|wrong|unknown>
   local fakebin=$1 mode=$2 help
   if [ "$mode" = wrong ]; then
     help='Usage: orca [-h] [-v] [-r] [-s] [-l] [-e OPTION] [-d OPTION] [-p NAME]
@@ -153,7 +156,14 @@ add_fake_orca() {  # <fakebin> <genuine|wrong>
 
 Optional arguments:
   -h, --help                   Show this help message and exit
-  -v, --version                Version of this application'
+  -v, --version                Version of this application
+  -r, --replace                Replace a currently running instance of this
+                               screen reader'
+  elif [ "$mode" = unknown ]; then
+    help='zap version 9.3
+Usage: zap [options] <file>
+  --sparkle        enable sparkle mode
+  -f, --frobnicate target'
   else
     help='orca
 
@@ -589,19 +599,20 @@ test_orca_wrong_program_reports_distinct_diagnostic() {
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   printf '%s\n' orca > "$case_dir/home/config/backend"
   fakebin=$(make_fake_toolchain "$case_dir")
-  # A program that prints a plainly non-Orca help (the GNOME screen-reader
-  # shape) occupies the name and must be called out, never accepted silently.
+  # A binary that prints the GNOME screen-reader help positively matches the
+  # known-wrong signature (verified on this machine, 2026-08-01) and must be
+  # called out, never accepted silently.
   add_fake_orca "$fakebin" wrong
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-  [ -n "$out" ] || fail "a wrong-program orca must not pass the identity check silently"
+  [ -n "$out" ] || fail "a known-wrong orca must not pass the check silently"
   assert_contains "$out" "WRONG_PROGRAM: orca - $fakebin/orca" \
     "the wrong-program diagnostic must name the squatting binary's path"
-  assert_contains "$out" "is not the Orca terminal runtime" \
-    "the wrong-program diagnostic must say what the binary is not"
+  assert_contains "$out" "is GNOME's screen reader" \
+    "the wrong-program diagnostic must name the verified known-wrong program"
   assert_not_contains "$out" "MISSING: orca" \
-    "a wrong program must not be reported as a plain missing tool"
-  pass "bootstrap: a wrong-program orca is reported as WRONG_PROGRAM with its path, never silent or MISSING"
+    "a known-wrong program must not be reported as a plain missing tool"
+  pass "bootstrap: a known-wrong orca is reported as WRONG_PROGRAM with its path, never silent or MISSING"
 }
 
 test_orca_identity_genuine_fake_passes() {
@@ -611,11 +622,32 @@ test_orca_identity_genuine_fake_passes() {
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   printf '%s\n' orca > "$case_dir/home/config/backend"
   fakebin=$(make_fake_toolchain "$case_dir")
+  # A plausible orca CLI help that is NOT the verified known-wrong signature is
+  # unverified, so bootstrap must keep the presence result, never reject it.
   add_fake_orca "$fakebin" genuine
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-  [ -z "$out" ] || fail "a genuine orca CLI should pass the identity check silently, got: $out"
-  pass "bootstrap: a genuine (faked-but-correct) orca passes the identity check"
+  [ -z "$out" ] || fail "an unverified orca help must be treated as present, got: $out"
+  pass "bootstrap: an orca help that is not the known-wrong program passes"
+}
+
+test_orca_unrecognised_help_is_treated_as_present() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/orca-unrecognised"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' orca > "$case_dir/home/config/backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  # A present binary whose help matches neither the known-wrong signature nor
+  # anything else recognizable must keep the presence result: not WRONG_PROGRAM,
+  # not MISSING, no rejection invented from unrecognized output.
+  add_fake_orca "$fakebin" unknown
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "unrecognised help must not be rejected, got: $out"
+  assert_not_contains "$out" "WRONG_PROGRAM" \
+    "unrecognised help must never be labeled a known-wrong program"
+  pass "bootstrap: an unrecognised orca help is treated as present, never WRONG_PROGRAM"
 }
 
 test_tool_without_identity_signal_is_not_probed() {
@@ -1267,6 +1299,7 @@ test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_orca_wrong_program_reports_distinct_diagnostic
 test_orca_identity_genuine_fake_passes
+test_orca_unrecognised_help_is_treated_as_present
 test_tool_without_identity_signal_is_not_probed
 test_session_provider_backends_do_not_require_tmux
 test_session_provider_backends_gate_own_cli_not_tmux

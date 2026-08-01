@@ -7,7 +7,7 @@
 #          Silent = all good.
 #          Lines: "MISSING: <tool> (install: <command>)",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
-#                 "WRONG_PROGRAM: <tool> - <path> is not the intended program; install the real '<tool>' CLI (install: <command>)",
+#                 "WRONG_PROGRAM: <tool> - <path> is <known-wrong program>, not the '<tool>' CLI this home needs (install: <command>)",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
@@ -780,23 +780,24 @@ missing_tool_diagnostic() {
   echo "MISSING: $tool (install: $(install_cmd "$tool"))"
 }
 
-# Required tools with a verifiable identity signal. Presence by name alone is
-# not identity: a distribution can occupy a short generic name with an
-# unrelated program - on Linux /usr/bin/orca is GNOME's screen reader, not the
-# Orca terminal runtime this home dispatches into. A binary of the right name
-# must therefore prove it is the intended program before bootstrap reports it
-# present; a wrong program squatting the name is WRONG_PROGRAM (distinct from
-# MISSING, never a silent pass). A tool without a reliable, unambiguous
-# self-identification signal is deliberately absent from this list and keeps
-# the plain presence check - the absence of a signal is not a reason to start
-# rejecting tools that were fine yesterday.
-tool_identity_spec() {  # <tool> -> prints '<marker>\t<program-description>', or returns 1 when unverified
+# Presence by name alone is not identity: a distribution can occupy a short
+# generic name with an unrelated program - on Linux /usr/bin/orca is GNOME's
+# screen reader, not the Orca terminal runtime this home dispatches into.
+# Bootstrap keeps the plain presence check as the default and never guesses a
+# binary is the intended program from unverified help output: the real Orca
+# runtime CLI is not installed on this machine, so its help text is unknown.
+# WRONG_PROGRAM is reported only when a present binary positively identifies as
+# a KNOWN-WRONG program, using a marker verified on this machine (2026-08-01).
+# Any other outcome - the real CLI's help, unknown help, no help, a crash, a
+# timeout - keeps the presence result rather than inventing a rejection.
+known_wrong_program_spec() {  # <tool> -> prints '<marker>\t<program-description>', or returns 1 when unverified
   case "$1" in
-    # The Orca terminal runtime CLI (stablyai) prints a command-dispatch help
-    # opening with 'Usage: orca <command> [options]' and listing its
-    # status/worktree/terminal commands; GNOME's screen reader prints its own
-    # option list and never that string.
-    orca) printf '%s\t%s\n' 'Usage: orca <command> [options]' 'the Orca terminal runtime' ;;
+    # GNOME's screen reader occupies /usr/bin/orca on Linux. Its --help output
+    # (verified on this machine, 2026-08-01: GNOME Orca 46.1) begins with this
+    # Python-argparse usage line, and its -r/--replace option reads "Replace a
+    # currently running instance of this screen reader". The stablyai Orca
+    # terminal runtime CLI never prints that screen-reader usage.
+    orca) printf '%s\t%s\n' 'Usage: orca [-h] [-v] [-r] [-s] [-l] [-e OPTION] [-d OPTION] [-p NAME]' "GNOME's screen reader" ;;
     *) return 1 ;;
   esac
 }
@@ -817,15 +818,15 @@ tool_help_with_timeout() {  # <tool>
   fi
 }
 
-# required_tool_identity_verify <tool>: report WRONG_PROGRAM when a present
-# binary of <tool> fails to self-identify as the intended program. The caller
-# establishes presence first, so an absent tool never runs a subprocess; a tool
-# with no identity spec is silent; a probe that yields no usable signal (fails,
-# times out, or prints nothing identifiable) keeps the presence result rather
+# required_tool_known_wrong_verify <tool>: report WRONG_PROGRAM only when a
+# present binary of <tool> positively identifies as a known-wrong program. The
+# caller establishes presence first, so an absent tool never runs a subprocess;
+# a tool with no verified known-wrong signature is silent; and output that does
+# not match the verified wrong-program marker keeps the presence result rather
 # than inventing a rejection.
-required_tool_identity_verify() {  # <tool>
+required_tool_known_wrong_verify() {  # <tool>
   local tool=$1 spec marker desc path output rc
-  spec=$(tool_identity_spec "$tool") || return 0
+  spec=$(known_wrong_program_spec "$tool") || return 0
   marker=${spec%%$'\t'*}
   desc=${spec#*$'\t'}
   command -v "$tool" >/dev/null 2>&1 || return 0
@@ -833,9 +834,10 @@ required_tool_identity_verify() {  # <tool>
   output=$(tool_help_with_timeout "$tool"); rc=$?
   [ "$rc" -eq 0 ] || return 0
   case "$output" in
-    *"$marker"*) return 0 ;;
+    *"$marker"*)
+      echo "WRONG_PROGRAM: $tool - $path is $desc, not the '$tool' CLI this home needs (install: $(install_cmd "$tool"))"
+      ;;
   esac
-  echo "WRONG_PROGRAM: $tool - $path is not $desc; install the real '$tool' CLI (install: $(install_cmd "$tool"))"
 }
 
 # Required-tool detection follows the RESOLVED backend, not a one-size default:
@@ -1190,14 +1192,14 @@ detect_local_tools() {
   fi
   for t in $BACKEND_TOOLS; do
     if fm_backend_required_tool_available "$BACKEND" "$t"; then
-      required_tool_identity_verify "$t"
+      required_tool_known_wrong_verify "$t"
     else
       missing_tool_diagnostic "$t"
     fi
   done
   for t in $COMMON_TOOLS; do
     if command -v "$t" >/dev/null; then
-      required_tool_identity_verify "$t"
+      required_tool_known_wrong_verify "$t"
     else
       missing_tool_diagnostic "$t"
     fi
@@ -1208,6 +1210,23 @@ detect_local_tools() {
   if fm_backend_list_contains "$TOOLS" treehouse \
     && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
     echo "MISSING: treehouse (install: $(install_cmd treehouse))"
+  fi
+  if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
+    echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+  fi
+  if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
+    echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"
+  fi
+  if command -v lavish-axi >/dev/null 2>&1 && ! tool_version_at_least lavish-axi "$LAVISH_AXI_MIN"; then
+    echo "MISSING: lavish-axi (install: $(install_cmd lavish-axi))"
+  fi
+  if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
+    echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
+  fi
+  if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
+    echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
+  fi
+}
   fi
   if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
     echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
