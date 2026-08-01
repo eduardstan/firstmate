@@ -14,8 +14,9 @@
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
 # on a remote yet the change is fully in main.
 # Before declaring a branch unpushed, teardown fetches it from every remote the task
-# legitimately pushes to: the project's configured remotes and the fork URL no-mistakes
-# records as its push target. A fork-pushed branch this clone never fetched is then
+# legitimately pushes to: the project's configured remotes and the fork target no-mistakes
+# records. Credential-bearing targets resolve through matching local remote configuration
+# and credential-free targets can be fetched directly. A fork-pushed branch this clone never fetched is then
 # recognized as landed instead of forcing a manual override. That consultation is
 # strictly additive: a failed or unavailable remote leaves the existing remote-tracking
 # refs untouched, so the refusal is exactly as before and now names the remotes that
@@ -903,6 +904,33 @@ work_is_landed() {
 # fetched for the task branch, used by the refusal message and ref cleanup.
 TEARDOWN_REMOTES_CHECKED=
 TEARDOWN_LANDED_REFS=
+TEARDOWN_REMOTE_CHECK_ERROR=
+
+redact_git_remote_url() {
+  case "$1" in
+    http://*@*|https://*@*)
+      printf '%s\n' "$1" | sed -E 's#^(https?://)[^/@]+@#\1redacted@#'
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+configured_remote_url_for() {
+  local wanted=$1 remote key candidate redacted
+  for remote in $(git -C "$WT" remote 2>/dev/null || true); do
+    for key in "remote.$remote.url" "remote.$remote.pushurl"; do
+      while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        redacted=$(redact_git_remote_url "$candidate")
+        if [ "$candidate" = "$wanted" ] || [ "$redacted" = "$wanted" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done < <(git -C "$WT" config --get-all "$key" 2>/dev/null || true)
+    done
+  done
+  return 1
+}
 
 # Restore the remote-tracking refs consulted by refresh_landed_check_remotes, so
 # the shared project repo returns to its prior state after the safety check: refs
@@ -932,9 +960,10 @@ drop_landed_check_refs() {
 # TEARDOWN_REMOTES_CHECKED for the refusal message and TEARDOWN_LANDED_REFS for
 # drop_landed_check_refs.
 refresh_landed_check_remotes() {
-  local branch=$1 remote fork_url ref old
+  local branch=$1 remote fork_url configured_fork_url ref old
   TEARDOWN_REMOTES_CHECKED=
   TEARDOWN_LANDED_REFS=
+  TEARDOWN_REMOTE_CHECK_ERROR=
   [ -n "$branch" ] && [ "$branch" != HEAD ] || return 0
   for remote in $(git -C "$WT" remote 2>/dev/null || true); do
     TEARDOWN_REMOTES_CHECKED="${TEARDOWN_REMOTES_CHECKED:+$TEARDOWN_REMOTES_CHECKED, }$remote"
@@ -949,10 +978,22 @@ refresh_landed_check_remotes() {
       | sed -n 's/^[[:space:]]*fork:[[:space:]]*//p' | head -1) || true
     if [ -n "$fork_url" ]; then
       TEARDOWN_REMOTES_CHECKED="${TEARDOWN_REMOTES_CHECKED:+$TEARDOWN_REMOTES_CHECKED, }fork (via no-mistakes)"
-      ref="refs/remotes/fm-no-mistakes-fork/$branch"
-      old=$(git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" 2>/dev/null) || old=
-      if git -C "$WT" fetch --quiet --no-tags "$fork_url" "+refs/heads/$branch:$ref" >/dev/null 2>&1; then
-        TEARDOWN_LANDED_REFS="${TEARDOWN_LANDED_REFS:+$TEARDOWN_LANDED_REFS }$ref|$old"
+      if configured_fork_url=$(configured_remote_url_for "$fork_url"); then
+        fork_url=$configured_fork_url
+      else
+        case "$fork_url" in
+          http://redacted@*|https://redacted@*)
+            TEARDOWN_REMOTE_CHECK_ERROR="no configured git remote matches the credential-masked no-mistakes fork target"
+            fork_url=
+            ;;
+        esac
+      fi
+      if [ -n "$fork_url" ]; then
+        ref="refs/remotes/fm-no-mistakes-fork/$branch"
+        old=$(git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" 2>/dev/null) || old=
+        if git -C "$WT" fetch --quiet --no-tags "$fork_url" "+refs/heads/$branch:$ref" >/dev/null 2>&1; then
+          TEARDOWN_LANDED_REFS="${TEARDOWN_LANDED_REFS:+$TEARDOWN_LANDED_REFS }$ref|$old"
+        fi
       fi
     fi
   fi
@@ -1272,6 +1313,8 @@ validate_worktree_teardown_safety() {
     if [ -n "$unpushed" ] && ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
       printf 'remotes checked: %s\n' "${TEARDOWN_REMOTES_CHECKED:-none}" >&2
+      [ -z "$TEARDOWN_REMOTE_CHECK_ERROR" ] \
+        || printf 'fork push target could not be checked: %s.\n' "$TEARDOWN_REMOTE_CHECK_ERROR" >&2
       printf 'unpushed commits:\n%s\n' "$unpushed" >&2
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
