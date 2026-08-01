@@ -578,6 +578,61 @@ test_no_mistakes_configured_fork_remote_allows() {
   pass "no-mistakes worktree with the branch on a configured but never-fetched fork remote is torn down"
 }
 
+test_no_mistakes_authenticated_fork_pushurl_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-authenticated-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "authenticated fork work"
+  git init -q --bare "$case_dir/fork.git"
+  git init -q --bare "$case_dir/fork-fetch.git"
+  git -C "$case_dir/project" remote add fork-auth "$case_dir/fork-fetch.git"
+  git -C "$case_dir/project" config remote.fork-auth.pushurl 'https://user:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork.git".insteadOf 'https://user:token@fork.invalid/repo.git'
+  git -C "$case_dir/wt" push -q "$case_dir/fork.git" fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-authenticated-fork: teardown should use the configured authenticated fork push URL"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-authenticated-fork: teardown printed a REFUSED line"
+  ! grep -F 'user:token' "$case_dir/stdout" "$case_dir/stderr" >/dev/null \
+    || fail "nm-authenticated-fork: teardown exposed fork credentials"
+  pass "no-mistakes worktree resolves an authenticated fork target from git remote configuration"
+}
+
+test_no_mistakes_unmatched_masked_fork_refuses_clearly() {
+  local case_dir rc
+  case_dir=$(make_case nm-masked-fork-unmatched)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt unpushed "unverifiable fork work"
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "nm-masked-fork-unmatched: teardown should fail closed"
+  grep -F 'fork push target could not be checked: no configured git remote matches the credential-masked no-mistakes fork target.' "$case_dir/stderr" >/dev/null \
+    || fail "nm-masked-fork-unmatched: refusal did not explain the unavailable authenticated fork target"
+  grep -F 'remotes checked: origin, fork (via no-mistakes)' "$case_dir/stderr" >/dev/null \
+    || fail "nm-masked-fork-unmatched: refusal did not name the consulted remotes"
+  pass "credential-masked fork target without matching git configuration fails closed clearly"
+}
+
 test_teardown_prompts_tasks_axi_done_when_compatible() {
   local case_dir out
   case_dir=$(make_case tasks-axi-reminder)
@@ -1892,6 +1947,8 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 test_local_only_fork_remote_allows
 test_no_mistakes_fork_push_remote_allows
 test_no_mistakes_configured_fork_remote_allows
+test_no_mistakes_authenticated_fork_pushurl_allows
+test_no_mistakes_unmatched_masked_fork_refuses_clearly
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
