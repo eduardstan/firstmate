@@ -167,3 +167,39 @@ NOHASH_CHG=$(printf '%s' "$NOHASH_LINE" | awk -F '\t' '{print $4}')
 [ "$NOHASH_CHG" = "absent" ] || fail "unhashable state must record an absent fp_changed, never 0 (got: $NOHASH_CHG)"
 
 pass "writer records an absent fingerprint instead of a fabricated constant"
+
+# --- Test 8: Gemini accounting picks the scarcest dispatch-eligible pool ----
+# An autocomplete-only pool is never spent by the fleet, so it must not become
+# the recorded budget just because it is the scarcest entry in .models.
+agy_used_for() { # agy_used_for <models-json> -> recorded gemini used field
+  local models=$1 bindir statedir logfile
+  bindir="$TEST_DIR/agybin-$2"
+  statedir="$TEST_DIR/agystate-$2"
+  logfile="$TEST_DIR/agy-$2.log"
+  mkdir -p "$bindir" "$statedir"
+  {
+    printf '#!/bin/sh\n'
+    printf 'printf %s\n' "'{\"timestamp\":\"2026-08-01T09:00:00Z\",\"models\":$models}'"
+  } > "$bindir/antigravity-usage"
+  chmod +x "$bindir/antigravity-usage"
+  PATH="$bindir:$PATH" \
+  FM_ROOT_OVERRIDE="$HOME_DIR" \
+  FM_HOME="$HOME_DIR" \
+  FM_STATE_OVERRIDE="$statedir" \
+  FM_QUOTA_LOG_OVERRIDE="$logfile" \
+  "$ROOT/bin/fm-turn-quota-writer.sh"
+  tail -n 1 "$logfile" 2>/dev/null | awk -F '\t' '{print $8"\t"$9}'
+}
+
+AGY_PCT=$(agy_used_for '[{"modelId":"gemini-3-pro","isAutocompleteOnly":false,"remainingPercentage":80},{"modelId":"gemini-3-flash","isAutocompleteOnly":false,"remainingPercentage":60},{"modelId":"gemini-3-flash-autocomplete","isAutocompleteOnly":true,"remainingPercentage":5},{"modelId":"other-model","remainingPercentage":1}]' pct)
+AGY_PCT_USED=$(printf '%s' "$AGY_PCT" | awk -F '\t' '{print $1}')
+AGY_PCT_TS=$(printf '%s' "$AGY_PCT" | awk -F '\t' '{print $2}')
+
+[ "$AGY_PCT_USED" = "40" ] || fail "gemini used must be 100 - scarcest dispatch-eligible remaining (expected 40, got: $AGY_PCT_USED)"
+[ "$AGY_PCT_TS" = "2026-08-01T09:00:00Z" ] || fail "gemini generatedAt must come from the probe timestamp (got: $AGY_PCT_TS)"
+
+AGY_FRAC=$(agy_used_for '[{"modelId":"gemini-3-pro","isAutocompleteOnly":false,"remainingPercentage":0.25}]' frac)
+AGY_FRAC_USED=$(printf '%s' "$AGY_FRAC" | awk -F '\t' '{print $1}')
+[ "$AGY_FRAC_USED" = "75" ] || fail "a 0..1 remaining fraction must convert to a percent used (expected 75, got: $AGY_FRAC_USED)"
+
+pass "writer prices the scarcest dispatch-eligible gemini pool and ignores autocomplete-only pools"

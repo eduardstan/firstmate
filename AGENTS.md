@@ -108,6 +108,9 @@ state/               volatile runtime signals; gitignored
   public-followup/   generated private transport for promised public replies: commitment registrations, typed terminal-result inbox, accepted/rejected ledgers (section 14; bin/fm-public-followup.sh)
   x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnostic dedupe markers
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
+  quota-turns.log    one primary turn-end quota record per turn, read by bin/fm-turn-quota.sh report (docs/turnend-guard.md); its state fingerprint is a proxy that cannot prove a turn was useless
+  .turn-wake-kind    wake kind of the current turn, written by fm-wake-drain.sh for that record; never touch
+  .turn-quota-cache.json .turn-quota-agy-cache.json .turn-quota-error.log   quota-probe caches and the writer's swallowed-error log; never touch
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .claude-autoarm.lock .claude-autoarm-epoch .turnend-claude-blocks   Claude Stop auto-arm single-flight, epoch, and guard-budget records; never touch
