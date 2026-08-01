@@ -269,6 +269,8 @@ Secondmate homes inherit this file from the primary, so a secondmate's own crewm
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.
 It installs automatically supported tools only after you say go; manual-only tools remain for you to install from the printed instructions.
+Presence on `PATH` is not identity, so a present binary that positively identifies as a known-wrong program squatting a required name is reported as `WRONG_PROGRAM: <tool> - <path> is <program>, not the '<tool>' CLI this home needs (install: <command>)` instead of being accepted; today the only such signature is GNOME's screen reader at `/usr/bin/orca` on Linux, which is not the Orca runtime CLI.
+Every other outcome keeps the plain presence result, and the printed install command applies only after you resolve the name collision yourself rather than overwriting the other program.
 Required tools come in two parts: a universal toolchain every home needs regardless of backend, and a per-backend delta that follows the runtime backend actually resolved for this home.
 The universal toolchain is node, git, gh with GitHub auth via `gh auth login`, no-mistakes v1.31.2 or newer, gh-axi, chrome-devtools-axi, lavish-axi, compatible tasks-axi per "Backlog backend" above, and quota-axi v0.1.16 or newer.
 This section is the single owner of that universal toolchain list; backend guides' prerequisites point here and add only their backend-specific tools.
