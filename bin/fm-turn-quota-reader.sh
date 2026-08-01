@@ -148,14 +148,18 @@ END {
 
   print ""
   print "--- Breakdown by Wake Kind ---"
-  printf "%-12s %-8s %-16s %-16s\n", "WAKE KIND", "TURNS", "NO-OP (UNCHANGED)", "CLAUDE 5H DELTA"
+  printf "%-12s %-8s %-10s %-22s %s\n", "WAKE KIND", "TURNS", "FP KNOWN", "NO-OP (OF FP KNOWN)", "CLAUDE 5H DELTA"
   for (w in wake_count) {
     w_total = wake_count[w]
     w_known = wake_fp_known[w] + 0
     w_unchanged = wake_unchanged[w] + 0
-    w_pct = (w_known > 0) ? (w_unchanged / w_known * 100.0) : 0
     w_c5 = wake_c5_delta[w] + 0
-    printf "%-12s %-8d %d (%.1f%%)         %.2f%%\n", w, w_total, w_unchanged, w_pct, w_c5
+    if (w_known > 0) {
+      w_noop = sprintf("%d (%.1f%%)", w_unchanged, w_unchanged / w_known * 100.0)
+    } else {
+      w_noop = "absent"
+    }
+    printf "%-12s %-8d %-10d %-22s %.2f%%\n", w, w_total, w_known, w_noop, w_c5
   }
 }
 ' "$LOG_FILE"

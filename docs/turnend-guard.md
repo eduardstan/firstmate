@@ -26,7 +26,9 @@ That check keeps crewmate and scout linked worktrees inert because their git dir
 It also requires `AGENTS.md`, `bin/`, and the effective state directory.
 
 For an in-scope primary, the guard counts in-flight work from `state/*.meta`.
-It also invokes `bin/fm-turn-quota-writer.sh` to record per-turn quota instrumentation in `state/quota-turns.log`, skipping stop-hook continuations so a re-blocked turn records exactly one row in every mode.
+It also invokes `bin/fm-turn-quota-writer.sh` to record per-turn quota instrumentation in `state/quota-turns.log`.
+A stop that continues one of this guard's own blocks is skipped so a re-blocked turn still records exactly one row.
+That check reads the consecutive-block ledger `state/.turnend-claude-blocks` for the current `session_id`, never `stop_hook_active`, which Claude Code keeps true for every later stop in the session once any continuation fired.
 The default cross-harness mode exits silently with no work in flight.
 Claude's `--claude` mode also treats `state/x-watch.check.sh` as supervision need, so X-mode relay polling remains guarded without an in-flight task.
 Otherwise it calls `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`, the same identity-matched lock and fresh-beacon check used by `bin/fm-watch-arm.sh`.
