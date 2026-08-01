@@ -529,7 +529,7 @@ test_no_mistakes_fork_push_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-fork-remote)
   write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "shippable fork work"
+  wt_commit_file "$case_dir" fork-work.txt shippable "shippable fork work"
   # Reproduces the real false refusal: the pipeline pushes the branch to a fork
   # that is NOT a configured remote here and whose branch this clone never
   # fetched, so the reachability check shows the work as unpushed. no-mistakes
@@ -560,7 +560,7 @@ test_no_mistakes_configured_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-configured-fork)
   write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "shippable fork work"
+  wt_commit_file "$case_dir" fork-work.txt shippable "shippable fork work"
   # The fork is a configured remote, but this clone never fetched its branch, so
   # the reachability check still shows the work as unpushed. Teardown must fetch
   # the task branch from the fork remote before concluding.
