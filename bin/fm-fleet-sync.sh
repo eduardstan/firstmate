@@ -391,6 +391,8 @@ EOF
 
 converge_proven_history_rewrite() {
   local commit tree local_count=0 before after status
+  local local_only remote_only remote_count remote_commit remote_tree i
+  local -a local_commits=() remote_commits=()
 
   refresh_remote_default_for_convergence || return 1
   remote_rev=$(git -C "$PROJ" rev-parse "$BASE") || {
@@ -402,18 +404,57 @@ converge_proven_history_rewrite() {
     return 1
   }
 
+  # A rewritten counterpart is proved by position, not by mere membership: the
+  # local-only and remote-only commits must form equal-length, oldest-first
+  # sequences whose trees match one-to-one. Membership alone would accept a local
+  # commit (e.g. a revert) that merely recreates an older remote tree and then
+  # discard it in the reset below.
+  local_only=$(git -C "$PROJ" rev-list --reverse "$DEFAULT" --not "$BASE" 2>&1) || {
+    report_convergence_refusal "local-only commits cannot be enumerated" "$local_rev" "$(first_line "$local_only")"
+    return 1
+  }
+  remote_only=$(git -C "$PROJ" rev-list --reverse "$BASE" --not "$DEFAULT" 2>&1) || {
+    report_convergence_refusal "commits unique to $BASE cannot be enumerated" "$local_rev" "$(first_line "$remote_only")"
+    return 1
+  }
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
-    local_count=$(( local_count + 1 ))
+    local_commits+=("$commit")
+  done <<EOF
+$local_only
+EOF
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    remote_commits+=("$commit")
+  done <<EOF
+$remote_only
+EOF
+  local_count=${#local_commits[@]}
+  remote_count=${#remote_commits[@]}
+  if [ "$local_count" -gt 0 ] && [ "$local_count" -ne "$remote_count" ]; then
+    report_convergence_refusal "local-only and $BASE-only commit counts differ" "$local_rev" \
+      "$local_count local-only commits vs $remote_count commits unique to $BASE"
+    return 1
+  fi
+  i=0
+  while [ "$i" -lt "$local_count" ]; do
+    commit=${local_commits[$i]}
+    remote_commit=${remote_commits[$i]}
+    i=$(( i + 1 ))
     tree=$(git -C "$PROJ" rev-parse "$commit^{tree}" 2>/dev/null) || {
       report_convergence_refusal "local-only commit tree cannot be inspected" "$commit"
       return 1
     }
-    if ! remote_tree_contains "$tree"; then
-      report_convergence_refusal "local-only commit has no identical tree on $BASE" "$commit" "tree $tree"
+    remote_tree=$(git -C "$PROJ" rev-parse "$remote_commit^{tree}" 2>/dev/null) || {
+      report_convergence_refusal "$BASE commit tree cannot be inspected" "$remote_commit"
+      return 1
+    }
+    if [ "$tree" != "$remote_tree" ]; then
+      report_convergence_refusal "local-only commit has no identical tree on $BASE" "$commit" \
+        "tree $tree; $BASE commit $remote_commit has tree $remote_tree"
       return 1
     fi
-  done < <(git -C "$PROJ" rev-list "$DEFAULT" --not "$BASE" 2>/dev/null)
+  done
 
   if ! status=$(git -C "$PROJ" status --porcelain 2>/dev/null); then
     report_convergence_refusal "working tree cleanliness cannot be inspected" "$local_rev"

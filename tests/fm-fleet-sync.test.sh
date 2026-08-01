@@ -86,10 +86,21 @@ advance_origin() {
 # identities. The clone remains on the old chain, producing the deliberate
 # ahead/behind shape that fleet-sync's guarded convergence handles.
 rewrite_origin_with_identical_trees() {
-  local clone=$1 commit tree rewritten parent='' index=0
+  local clone=$1 commit
+  local -a trees=()
   while IFS= read -r commit; do
+    trees+=("$(git -C "$clone" rev-parse "$commit^{tree}")")
+  done < <(git -C "$clone" rev-list --reverse main)
+  push_rewritten_trees "$clone" "${trees[@]}"
+}
+
+# push_rewritten_trees <clone> <tree>...: force origin/main onto a fresh chain of
+# commits carrying exactly the given trees, oldest first.
+push_rewritten_trees() {
+  local clone=$1 tree rewritten parent='' index=0
+  shift
+  for tree in "$@"; do
     index=$(( index + 1 ))
-    tree=$(git -C "$clone" rev-parse "$commit^{tree}")
     if [ -n "$parent" ]; then
       rewritten=$(printf 'rewritten commit %s\n' "$index" \
         | git -C "$clone" commit-tree "$tree" -p "$parent")
@@ -98,7 +109,7 @@ rewrite_origin_with_identical_trees() {
         | git -C "$clone" commit-tree "$tree")
     fi
     parent=$rewritten
-  done < <(git -C "$clone" rev-list --reverse main)
+  done
   git -C "$clone" update-ref refs/heads/rewritten-for-test "$parent"
   git -C "$clone" push -q --force origin refs/heads/rewritten-for-test:refs/heads/main
   git -C "$clone" update-ref -d refs/heads/rewritten-for-test
@@ -358,6 +369,50 @@ test_identical_tree_rewrite_converges() {
   [ "$(head_sha "$clone")" = "$remote" ] || fail "proven rewrite did not move main to origin/main"
   [ "$(head_sha "$clone")" != "$before" ] || fail "proven rewrite left main on old history"
   pass "diverged histories with identical commit trees converge onto the freshly fetched remote"
+}
+
+test_out_of_position_tree_rewrite_refuses() {
+  local home clone out before mismatch t0 t1
+  home=$(new_home)
+  clone=$(build_pair "$home" rewrite-revert)
+  commit_file "$clone" file.txt v1 C1
+  commit_file "$clone" file.txt v0 "revert C1"
+  before=$(head_sha "$clone")
+  mismatch=$(git -C "$clone" rev-parse main~1)
+  t0=$(git -C "$clone" rev-parse "main~2^{tree}")
+  t1=$(git -C "$clone" rev-parse "main~1^{tree}")
+  # Every local tree exists somewhere on the rewritten origin, but only out of
+  # position: the local revert tree matches an older remote commit.
+  push_rewritten_trees "$clone" "$t0" "$t0" "$t1"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "local-only commit has no identical tree on origin/main" "out-of-position refusal names the failed condition"
+  assert_contains "$out" "$mismatch" "refusal names the offending local commit"
+  assert_contains "$out" "tree $t1" "refusal names the local tree"
+  assert_contains "$out" "has tree $t0" "refusal names the remote commit tree"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "out-of-position rewrite moved main"
+  grep -qx v0 "$clone/file.txt" || fail "out-of-position rewrite lost the local revert content"
+  pass "tree matches out of position refuse convergence instead of discarding a local revert"
+}
+
+test_unequal_rewrite_length_refuses() {
+  local home clone out before t0 t1
+  home=$(new_home)
+  clone=$(build_pair "$home" rewrite-shorter)
+  commit_file "$clone" file.txt v1 C1
+  commit_file "$clone" file.txt v0 "revert C1"
+  before=$(head_sha "$clone")
+  t0=$(git -C "$clone" rev-parse "main~2^{tree}")
+  t1=$(git -C "$clone" rev-parse "main~1^{tree}")
+  push_rewritten_trees "$clone" "$t0" "$t1"
+
+  out=$(run_sync "$home" "$clone")
+
+  assert_contains "$out" "local-only and origin/main-only commit counts differ" "count mismatch refusal names the failed condition"
+  assert_contains "$out" "3 local-only commits vs 2 commits unique to origin/main" "count mismatch refusal reports both counts"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "count-mismatched rewrite moved main"
+  pass "a rewritten remote with fewer commits than the local-only run refuses convergence"
 }
 
 test_identical_tree_rewrite_dirty_refuses() {
@@ -696,6 +751,8 @@ test_dirty_is_stuck_untouched
 test_non_default_branch_is_stuck_untouched
 test_diverged_is_stuck_untouched
 test_identical_tree_rewrite_converges
+test_out_of_position_tree_rewrite_refuses
+test_unequal_rewrite_length_refuses
 test_identical_tree_rewrite_dirty_refuses
 test_identical_tree_rewrite_linked_unlanded_refuses
 test_on_default_clean_behind_fast_forwards
