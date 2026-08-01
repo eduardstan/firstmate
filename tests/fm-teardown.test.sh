@@ -38,6 +38,9 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (r) no-mistakes + branch on the no-mistakes fork push target -> ALLOW  (fork fix)
+#   (s) no-mistakes + branch on a configured, never-fetched fork -> ALLOW  (fork fix)
+#   (t) no-mistakes + refusal names the remote consulted        -> message
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -105,7 +108,14 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fakebin/treehouse" "$fakebin/tmux" "$fakebin/gh-axi" "$fakebin/gh"
+  # Default no-mistakes stub: the repo is not initialized, so no fork push target
+  # is reported. Tests that exercise the no-mistakes fork path override this.
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+echo "repo not initialized (run 'no-mistakes init' first)" >&2
+exit 1
+SH
+  chmod +x "$fakebin/treehouse" "$fakebin/tmux" "$fakebin/gh-axi" "$fakebin/gh" "$fakebin/no-mistakes"
 
   # Bare origin so the clone has an `origin` remote and origin/HEAD.
   git init -q --bare "$case_dir/origin.git"
@@ -515,6 +525,59 @@ test_local_only_fork_remote_allows() {
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
+test_no_mistakes_fork_push_remote_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-fork-remote)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable fork work"
+  # Reproduces the real false refusal: the pipeline pushes the branch to a fork
+  # that is NOT a configured remote here and whose branch this clone never
+  # fetched, so the reachability check shows the work as unpushed. no-mistakes
+  # status is the only record of the push target.
+  git init -q --bare "$case_dir/fork.git"
+  git -C "$case_dir/wt" push -q "$case_dir/fork.git" fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "repo:  $case_dir/project"
+printf '%s\n' "remote:  https://github.com/example/upstream.git"
+printf '%s\n' "fork:  $case_dir/fork.git"
+printf '%s\n' "gate:  $case_dir/gate.git"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-fork-remote: teardown should succeed when the branch is on the fork no-mistakes pushes to"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-fork-remote: teardown printed a REFUSED line"
+  pass "no-mistakes worktree with the branch on the no-mistakes fork push target is torn down (fork fix)"
+}
+
+test_no_mistakes_configured_fork_remote_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-configured-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable fork work"
+  # The fork is a configured remote, but this clone never fetched its branch, so
+  # the reachability check still shows the work as unpushed. Teardown must fetch
+  # the task branch from the fork remote before concluding.
+  git init -q --bare "$case_dir/fork.git"
+  git -C "$case_dir/project" remote add fork "$case_dir/fork.git"
+  git -C "$case_dir/wt" push -q "$case_dir/fork.git" fm/task-x1
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-configured-fork: teardown should succeed when the branch is on a configured fork remote"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-configured-fork: teardown printed a REFUSED line"
+  pass "no-mistakes worktree with the branch on a configured but never-fetched fork remote is torn down"
+}
+
 test_teardown_prompts_tasks_axi_done_when_compatible() {
   local case_dir out
   case_dir=$(make_case tasks-axi-reminder)
@@ -625,6 +688,8 @@ test_no_mistakes_truly_unpushed_refuses() {
 
   expect_code 1 "$rc" "nm-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "nm-unpushed: no REFUSED line in stderr"
+  grep -F 'remotes checked: origin' "$case_dir/stderr" >/dev/null \
+    || fail "nm-unpushed: refusal did not name the remote consulted"
   pass "no-mistakes worktree with genuinely unlanded work is refused (safety preserved)"
 }
 
@@ -1825,6 +1890,8 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
 }
 
 test_local_only_fork_remote_allows
+test_no_mistakes_fork_push_remote_allows
+test_no_mistakes_configured_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
