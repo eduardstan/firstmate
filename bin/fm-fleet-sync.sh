@@ -7,9 +7,10 @@
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
 # A diverged default branch may converge after a fetched history rewrite only when
-# every local-only commit tree exists on the freshly fetched remote branch, the
-# clone is clean, and every linked worktree is inspectable and holds no unlanded
-# content. Every other off-default or diverged state may hold real work, so it is
+# the local-only and freshly-fetched-remote-only commits form equal-length,
+# topologically oldest-first sequences whose trees match one-to-one by position
+# (a differing count, or any positional tree mismatch, refuses), the clone is
+# clean, and every linked worktree is inspectable and holds no unlanded content. Every other off-default or diverged state may hold real work, so it is
 # left untouched and reported as a loud, actionable "STUCK" warning. Nothing is
 # ever forced, stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
@@ -409,11 +410,11 @@ converge_proven_history_rewrite() {
   # sequences whose trees match one-to-one. Membership alone would accept a local
   # commit (e.g. a revert) that merely recreates an older remote tree and then
   # discard it in the reset below.
-  local_only=$(git -C "$PROJ" rev-list --reverse "$DEFAULT" --not "$BASE" 2>&1) || {
+  local_only=$(git -C "$PROJ" rev-list --topo-order --reverse "$DEFAULT" --not "$BASE" 2>&1) || {
     report_convergence_refusal "local-only commits cannot be enumerated" "$local_rev" "$(first_line "$local_only")"
     return 1
   }
-  remote_only=$(git -C "$PROJ" rev-list --reverse "$BASE" --not "$DEFAULT" 2>&1) || {
+  remote_only=$(git -C "$PROJ" rev-list --topo-order --reverse "$BASE" --not "$DEFAULT" 2>&1) || {
     report_convergence_refusal "commits unique to $BASE cannot be enumerated" "$local_rev" "$(first_line "$remote_only")"
     return 1
   }
