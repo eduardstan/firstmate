@@ -47,6 +47,7 @@ DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
+  printf 'captain\n' > "$STATE/.turn-wake-kind" 2>/dev/null || true
   assert_watcher_liveness
   exit 0
 fi
@@ -63,9 +64,20 @@ case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
 esac
 if [ -n "$RAW_ROWS" ]; then
+  first_kind=$(printf '%s\n' "$RAW_ROWS" | awk -F '\t' 'NR==1{print $3}')
+  case "$first_kind" in
+    signal|stale|check|heartbeat)
+      printf '%s\n' "$first_kind" > "$STATE/.turn-wake-kind" 2>/dev/null || true
+      ;;
+    *)
+      printf 'captain\n' > "$STATE/.turn-wake-kind" 2>/dev/null || true
+      ;;
+  esac
   # Print-before-delete is the deliberate at-least-once no-loss boundary: a
   # crash in this micro-gap may replay a wake, and annotations stay outside it.
   printf '%s\n' "$RAW_ROWS" || exit "$?"
+else
+  printf 'captain\n' > "$STATE/.turn-wake-kind" 2>/dev/null || true
 fi
 rm -f "$DRAIN_TMP" || exit "$?"
 DRAIN_TMP=

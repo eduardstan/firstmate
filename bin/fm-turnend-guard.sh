@@ -123,11 +123,34 @@ fi
 # so this exempts them while guarding every real secondmate home.
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
+BUDGET_FILE="$STATE/.turnend-claude-blocks"
+SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // "unknown"' 2>/dev/null || printf 'unknown')
+
+# Record turn quota instrumentation at primary turn end (fail-safe observer).
+# The continuation of a block this guard itself forced is the SAME turn
+# re-entering, so it must not append a second record. stop_hook_active cannot
+# express that in --claude mode: Claude Code keeps it true for every later stop
+# in the session once ANY continuation fired, including asyncRewake rewakes, so
+# reading it here would silently drop every genuinely new turn after the first
+# rewake. The consecutive-block ledger is the exact signal instead - it exists
+# only between one of this guard's blocks and the next allow, and is scoped to
+# the same session id the block recorded. Non-Claude modes never write it and
+# already exit above on stop_hook_active, so they keep their one-row property.
+turnend_block_continuation() {
+  local blocked_session
+  [ -f "$BUDGET_FILE" ] || return 1
+  blocked_session=$(sed -n '1s/^session=//p' "$BUDGET_FILE" 2>/dev/null || true)
+  [ "$blocked_session" = "$SESSION_ID" ]
+}
+
+if ! turnend_block_continuation; then
+  "$SCRIPT_DIR/fm-turn-quota-writer.sh" >/dev/null 2>&1 || true
+fi
+
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
-BUDGET_FILE="$STATE/.turnend-claude-blocks"
 budget_reset() {
   [ "$CLAUDE_MODE" -eq 1 ] || return 0
   rm -f "$BUDGET_FILE" 2>/dev/null || true
@@ -214,7 +237,6 @@ fi
 # The auto-arm genuinely failed to establish: re-block, but never past the
 # budget so the session can always end and Claude's 8-block override is never
 # approached.
-SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -r '.session_id // "unknown"' 2>/dev/null || printf 'unknown')
 COUNT=0
 if [ -f "$BUDGET_FILE" ]; then
   old_session=$(sed -n '1s/^session=//p' "$BUDGET_FILE" 2>/dev/null || true)
