@@ -13,14 +13,13 @@
 # already present in the up-to-date default branch. This recognizes the common
 # squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
 # on a remote yet the change is fully in main.
-# Before declaring a branch unpushed, teardown fetches it from every remote the task
-# legitimately pushes to: the project's configured remotes and the fork target no-mistakes
-# records. Credential-bearing targets resolve through matching local remote configuration
-# and credential-free targets can be fetched directly. A fork-pushed branch this clone never fetched is then
-# recognized as landed instead of forcing a manual override. That consultation is
-# strictly additive: a failed or unavailable remote leaves the existing remote-tracking
-# refs untouched, so the refusal is exactly as before and now names the remotes that
-# were consulted.
+# Before declaring a branch unpushed, teardown fetches the task branch from every
+# configured Git remote and from the fork push target recorded by no-mistakes.
+# Credential-bearing targets resolve through matching local remote configuration;
+# credential-free targets can be fetched directly. A fork-pushed branch that this
+# clone never fetched is therefore recognized as landed without a manual override.
+# The consultation remains fail-closed: a failed, unavailable, or ambiguous target
+# cannot weaken refusal, and a refusal names the remotes that were consulted.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
@@ -547,10 +546,9 @@ configured_remote_url_for() {
   printf '%s\n' "$matched"
 }
 
-# Restore the remote-tracking refs consulted by refresh_landed_check_remotes, so
-# the shared project repo returns to its prior state after the safety check: refs
-# that already existed are set back to their prior value, and refs this check
-# created are deleted.
+# Best-effort restore the remote-tracking refs consulted by
+# refresh_landed_check_remotes: reset prior refs and delete refs created for the
+# safety check.
 drop_landed_check_refs() {
   local entry ref old
   for entry in $TEARDOWN_LANDED_REFS; do
@@ -565,13 +563,9 @@ drop_landed_check_refs() {
   TEARDOWN_LANDED_REFS=
 }
 
-# Fetch the task branch from every remote this task legitimately pushes to, so
-# the reachability check recognizes work pushed to a fork that this clone never
-# fetched. Consults each remote configured on the worktree's repo, plus the fork
-# URL no-mistakes records as its push target (the branch name is preserved when
-# the pipeline pushes it). Best-effort and strictly additive: a failed or
-# unavailable remote leaves the existing remote-tracking refs untouched, so an
-# unresolvable remote never loosens the safety check. Sets
+# Refresh temporary task-branch refs from each configured remote and from the
+# optional no-mistakes fork push target. Only successful fetches become evidence,
+# so a failed or unresolvable target cannot loosen the safety check. Sets
 # TEARDOWN_REMOTES_CHECKED for the refusal message and TEARDOWN_LANDED_REFS for
 # drop_landed_check_refs.
 refresh_landed_check_remotes() {
@@ -918,11 +912,10 @@ validate_worktree_teardown_safety() {
       branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
       TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
     fi
-    # Consult every remote this task may have pushed to (configured remotes and
-    # the no-mistakes fork target) before declaring the work unlanded, then
-    # re-run the reachability check against the fresh refs. The recompute is
-    # trusted only when it succeeds; a failure keeps the original unpushed set
-    # so the check below still decides on the pre-fetch evidence.
+    # Consult configured remotes and the no-mistakes fork target before declaring
+    # the work unlanded, then re-run the reachability check against the fresh refs.
+    # The recompute is trusted only when it succeeds; a failure keeps the original
+    # unpushed set, so the check below still decides on the pre-fetch evidence.
     refresh_landed_check_remotes "$branch"
     if [ "$branch" != HEAD ]; then
       if unpushed2=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
