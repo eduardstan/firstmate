@@ -148,7 +148,11 @@ SH
 # machine, 2026-08-01); mode=genuine prints the stablyai Orca CLI's command-
 # dispatch help, which is unverified and therefore treated as present;
 # mode=unknown prints a plainly unrelated help, also treated as present.
-add_fake_orca() {  # <fakebin> <genuine|wrong|unknown>
+# mode=wrong-narrow is the same screen reader with its Python-argparse usage
+# rewrapped to a narrow terminal and its help prose localized - the two things
+# that vary per install - so the identification is pinned to the option string
+# that survives both, not to a width- or locale-dependent line.
+add_fake_orca() {  # <fakebin> <genuine|wrong|wrong-narrow|unknown>
   local fakebin=$1 mode=$2 help
   if [ "$mode" = wrong ]; then
     help='Usage: orca [-h] [-v] [-r] [-s] [-l] [-e OPTION] [-d OPTION] [-p NAME]
@@ -159,6 +163,20 @@ Optional arguments:
   -v, --version                Version of this application
   -r, --replace                Replace a currently running instance of this
                                screen reader'
+  elif [ "$mode" = wrong-narrow ]; then
+    help='Uso: orca [-h] [-v] [-r] [-s] [-l]
+          [-e OPTION] [-d OPTION]
+          [-p NAME] [-u DIR]
+          [--speech-system NAME]
+          [--debug-file FILE] [--debug]
+
+Argomenti opzionali:
+  -h, --help
+        Mostra questo messaggio
+  -r, --replace
+        Sostituisci una istanza
+  --speech-system NAME
+        Sistema di sintesi vocale'
   elif [ "$mode" = unknown ]; then
     help='zap version 9.3
 Usage: zap [options] <file>
@@ -613,6 +631,25 @@ test_orca_wrong_program_reports_distinct_diagnostic() {
   assert_not_contains "$out" "MISSING: orca" \
     "a known-wrong program must not be reported as a plain missing tool"
   pass "bootstrap: a known-wrong orca is reported as WRONG_PROGRAM with its path, never silent or MISSING"
+}
+
+test_orca_wrong_program_survives_rewrapped_and_localized_help() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/orca-wrong-program-narrow"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  printf '%s\n' orca > "$case_dir/home/config/backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  # The same screen reader, rewrapped to a narrow terminal and localized: the
+  # identification must not depend on terminal width or the captain's locale,
+  # or the check silently degrades to the plain presence result it exists to
+  # improve on.
+  add_fake_orca "$fakebin" wrong-narrow
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  assert_contains "$out" "WRONG_PROGRAM: orca - $fakebin/orca" \
+    "rewrapped, localized screen-reader help must still be identified as the known-wrong program"
+  pass "bootstrap: the known-wrong identification survives terminal rewrapping and localization"
 }
 
 test_orca_identity_genuine_fake_passes() {
@@ -1298,6 +1335,7 @@ test_quota_axi_min_version
 test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_orca_wrong_program_reports_distinct_diagnostic
+test_orca_wrong_program_survives_rewrapped_and_localized_help
 test_orca_identity_genuine_fake_passes
 test_orca_unrecognised_help_is_treated_as_present
 test_tool_without_identity_signal_is_not_probed

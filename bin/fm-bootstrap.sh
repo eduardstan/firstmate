@@ -793,28 +793,35 @@ missing_tool_diagnostic() {
 known_wrong_program_spec() {  # <tool> -> prints '<marker>\t<program-description>', or returns 1 when unverified
   case "$1" in
     # GNOME's screen reader occupies /usr/bin/orca on Linux. Its --help output
-    # (verified on this machine, 2026-08-01: GNOME Orca 46.1) begins with this
-    # Python-argparse usage line, and its -r/--replace option reads "Replace a
-    # currently running instance of this screen reader". The stablyai Orca
-    # terminal runtime CLI never prints that screen-reader usage.
-    orca) printf '%s\t%s\n' 'Usage: orca [-h] [-v] [-r] [-s] [-l] [-e OPTION] [-d OPTION] [-p NAME]' "GNOME's screen reader" ;;
+    # (verified on this machine, 2026-08-01: GNOME Orca 46.1) advertises a
+    # --speech-system option, which no terminal runtime CLI has. The marker must
+    # be an option string, not a usage or help-text line: Python argparse
+    # rewraps usage and help text to the terminal width (verified at COLUMNS
+    # 40/60/80/120/200) and gettext translates the prose, while an option string
+    # is never wrapped mid-token and never localized.
+    orca) printf '%s\t%s\n' '--speech-system' "GNOME's screen reader" ;;
     *) return 1 ;;
   esac
 }
 
 # Run '<tool> --help' bounded by TOOL_IDENTITY_TIMEOUT_SECS so a squatting or
 # broken program cannot hang startup. Same timeout/gtimeout/perl ladder as the
-# watcher's check runner (bin/fm-watch.sh). Echoes combined output.
+# watcher's check runner (bin/fm-watch.sh). Echoes combined output. stdin is
+# closed on every rung, the same way bin/fm-quota-axi-lib.sh's ladder closes it:
+# session start captures bootstrap in a command substitution, so the probe would
+# otherwise inherit the captain's live terminal and a squatting program that
+# reads stdin instead of honoring --help - exactly the case this check exists
+# for - would swallow keystrokes until the timeout fires.
 TOOL_IDENTITY_TIMEOUT_SECS=5
 tool_help_with_timeout() {  # <tool>
   local tool=$1
   if command -v timeout >/dev/null 2>&1; then
-    timeout --kill-after=1 "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1
+    timeout --kill-after=1 "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1 </dev/null
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout --kill-after=1 "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1
+    gtimeout --kill-after=1 "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1 </dev/null
   else
     # shellcheck disable=SC2016  # single quotes are deliberate: Perl expands its own variables.
-    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } my $stop = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; local $SIG{ALRM} = $stop; local $SIG{TERM} = $stop; local $SIG{INT} = $stop; local $SIG{HUP} = $stop; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } my $stop = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; waitpid $pid, 0; exit 124 }; local $SIG{ALRM} = $stop; local $SIG{TERM} = $stop; local $SIG{INT} = $stop; local $SIG{HUP} = $stop; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$TOOL_IDENTITY_TIMEOUT_SECS" "$tool" --help 2>&1 </dev/null
   fi
 }
 
