@@ -352,6 +352,11 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
+Handing off to the pipeline is exactly the declared external wait \`$PAUSED_VERB:\` describes, so declare it.
+When a run is active - because you started it, or because a gate you just answered reopened it - append \`$PAUSED_VERB: waiting on the no-mistakes run\` to the status file.
+A declared wait makes firstmate leave your idle pane alone instead of treating the quiet window between runs as a possible wedge.
+Re-declare it after EVERY gate you answer, not only at the start: each returned gate ends another of your turns and leaves the pane idle again, so a single start-of-run declaration alone stops covering the rest of the run.
+
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
     ;;
