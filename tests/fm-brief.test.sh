@@ -284,6 +284,55 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+# A pipeline-driving worker hands off to no-mistakes, its own turn ends, and the
+# idle window reads as a possible wedge until the pause is declared. The
+# no-mistakes DOD must declare that hand-off as the paused external wait and
+# re-declare it after every gate, because each returned gate ends another turn.
+# Faster paths, scouts, and secondmates have no pipeline and must not carry it.
+test_no_mistakes_pipeline_handoff_declares_pause() {
+  local home id brief
+  home="$TMP_ROOT/pipeline-handoff-home"
+  write_registry "$home"
+  id="brief-pipeline-handoff-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" no-registry-proj >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_grep "Handing off to the pipeline is exactly the declared external wait \`paused:\` describes" "$brief" \
+    "no-mistakes DOD must declare the pipeline hand-off as the paused external wait"
+  assert_grep "append \`paused: waiting on the no-mistakes run\`" "$brief" \
+    "no-mistakes DOD must give the exact paused declaration for a run hand-off"
+  assert_grep "Re-declare it after EVERY gate you answer" "$brief" \
+    "no-mistakes DOD must re-declare the pause after every gate, not only at the start"
+  assert_grep "each returned gate ends another of your turns and leaves the pane idle again" "$brief" \
+    "no-mistakes DOD must explain why the re-declaration is per-gate"
+
+  # The configured pause verb must render in the hand-off text too.
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+    "$ROOT/bin/fm-brief.sh" pipeline-handoff-awaiting no-registry-proj >/dev/null 2>&1
+  brief="$home/data/pipeline-handoff-awaiting/brief.md"
+  assert_grep "declared external wait \`awaiting:\` describes" "$brief" \
+    "custom pause verb did not render in the pipeline hand-off declaration"
+  assert_grep "append \`awaiting: waiting on the no-mistakes run\`" "$brief" \
+    "custom pause verb did not render in the hand-off example"
+  assert_no_grep "append \`paused: waiting on the no-mistakes run\`" "$brief" \
+    "custom pause verb kept the default paused example in the hand-off text"
+
+  # Faster paths have no pipeline: the hand-off contract must not leak in.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-direct direct-proj >/dev/null 2>&1
+  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-direct/brief.md" \
+    "direct-PR brief must not instruct a pipeline hand-off pause"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-local local-proj >/dev/null 2>&1
+  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-local/brief.md" \
+    "local-only brief must not instruct a pipeline hand-off pause"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-scout no-registry-proj --scout >/dev/null 2>&1
+  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-scout/brief.md" \
+    "scout brief must not instruct a pipeline hand-off pause"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER=x "$ROOT/bin/fm-brief.sh" pipeline-handoff-sm --secondmate --no-projects >/dev/null 2>&1
+  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-sm/brief.md" \
+    "secondmate charter must not instruct a pipeline hand-off pause"
+
+  pass "fm-brief.sh: pipeline hand-off declares the pause and re-declares it after each gate"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -646,6 +695,7 @@ test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_no_mistakes_pipeline_handoff_declares_pause
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
