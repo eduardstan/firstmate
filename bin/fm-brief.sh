@@ -42,8 +42,10 @@
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Ship briefs also forbid a co-author trailer naming an AI model or assistant on
-# any commit, while human co-author trailers stay allowed; scout briefs omit that
-# rule because their scratch commits are discarded at teardown.
+# any commit, and any AI-attribution line (such as a "Generated with Claude Code"
+# footer) in the pull request body or a pull request comment, while human
+# co-author trailers stay allowed; scout briefs omit that rule because their
+# scratch commits are discarded at teardown.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -431,7 +433,8 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Never add a co-author trailer naming an AI model or assistant (e.g. \`Co-authored-by: Claude ...\`) to any commit.
+2. Never add a co-author trailer naming an AI model or assistant (e.g. \`Co-authored-by: Claude ...\`) to any commit,
+   and never add an AI-attribution line (e.g. \`Generated with Claude Code\`) to the pull request body or any pull request comment.
    Human co-author trailers stay allowed.
 3. Stay inside this worktree; modify nothing outside it.
 4. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
