@@ -13,6 +13,9 @@
 #   (b) needs-decision/blocked log + resumed run = SUPERSEDED     -> run-step
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
 #   (d) terminal run-step (passed/failed) is authoritative        -> run-step
+#   (d') a CANCELLED run is NOT terminal (AGENTS.md supersession): it
+#        resolves against the live endpoint - live worker -> working (and its
+#        waiting verbs surface), dead worker -> failed        -> run-step
 #   (e) cross-branch attribution: this branch's own run found via list lookup
 #   (f) no run + semantic busy                                    -> pane
 #   (g) no run + semantic idle falls to the status-log verb       -> status-log
@@ -288,6 +291,35 @@ run:
   pr: ""
   findings: none
 outcome: failed
+EOF
+}
+
+# A deliberately cancelled run, as `no-mistakes axi status` reports it after a
+# worker aborts its own run (AGENTS.md's supersession sequence).
+run_cancelled() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: cancelled
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
+outcome: cancelled
+EOF
+}
+
+# Same, without an outcome line - `axi status` can report a bare
+# status: cancelled for an aborted run.
+run_cancelled_status_only() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: cancelled
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: ""
+  findings: none
 EOF
 }
 
@@ -682,6 +714,99 @@ test_terminal_failed() {
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
   pass "terminal failed run is authoritative"
+}
+
+# A deliberately cancelled run (AGENTS.md supersession: a worker aborts its own
+# validation run and then continues replacing the obsolete work) is NOT a
+# terminal failure. With the worker demonstrably alive, it must read working -
+# never failed - so recovery never tears down or relaunches a live worker
+# mid-supersession (the session-restart trap).
+test_cancelled_run_live_worker_reads_working() {
+  reset_fakes
+  local d; d=$(new_case cancelled-live)
+  make_repo_on_branch "$d/wt" fm/feat-cancel
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel.meta" "window=fm:fm-feat-cancel" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancel)"
+  local out; out=$(run_crew_state "$d" feat-cancel)
+  assert_contains "$out" "state: working" "cancelled run + live worker -> working"
+  assert_contains "$out" "source: run-step" "cancelled resolution stays run-step sourced"
+  assert_contains "$out" "worker active" "cancelled+alive detail names the between-runs reading"
+  assert_not_contains "$out" "state: failed" "cancelled run with a live worker must never read failed"
+  pass "cancelled run with a live worker reads working"
+}
+
+# The status-only form (`axi status` without an outcome line) must resolve the
+# same way: a live worker after a cancelled run reads working.
+test_cancelled_status_only_live_worker_reads_working() {
+  reset_fakes
+  local d; d=$(new_case cancelled-status-only)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-so
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-so.meta" "window=fm:fm-feat-cancel-so" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled_status_only fm/feat-cancel-so)"
+  local out; out=$(run_crew_state "$d" feat-cancel-so)
+  assert_contains "$out" "state: working" "status-only cancelled + live worker -> working"
+  assert_contains "$out" "worker active" "status-only cancelled+alive carries the between-runs detail"
+  assert_not_contains "$out" "state: failed" "status-only cancelled + live worker must never read failed"
+  pass "status-only cancelled run with a live worker reads working"
+}
+
+# A cancelled run whose worker is GONE stays failed - recovery may act on it.
+# The fix must not widen the safety net: only a demonstrably alive worker gets
+# the between-runs reading, a dead task keeps its actionable failure verdict.
+test_cancelled_run_dead_worker_reads_failed() {
+  reset_fakes
+  local d; d=$(new_case cancelled-dead)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-dead
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-dead.meta" "window=fm:fm-feat-cancel-dead" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancel-dead)"
+  FM_FAKE_TMUX_MISSING=1
+  local out; out=$(run_crew_state "$d" feat-cancel-dead)
+  assert_contains "$out" "state: failed" "cancelled run + dead worker -> failed"
+  assert_contains "$out" "worker gone" "cancelled+dead detail names the dead endpoint"
+  pass "cancelled run with a dead worker reads failed"
+}
+
+# A cancelled run must not hide a genuinely pending decision: the worker's own
+# needs-decision line outranks the generic between-runs reading, so firstmate
+# still surfaces the parked wait.
+test_cancelled_run_live_worker_pending_decision_reads_parked() {
+  reset_fakes
+  local d; d=$(new_case cancelled-parked)
+  make_repo_on_branch "$d/wt" fm/feat-cancel-parked
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cancel-parked.meta" "window=fm:fm-feat-cancel-parked" "worktree=$d/wt" "kind=ship"
+  printf 'working: implementing\nneeds-decision: pick A or B\n' > "$d/state/feat-cancel-parked.status"
+  FM_FAKE_AXI_STATUS="$(run_cancelled fm/feat-cancel-parked)"
+  local out; out=$(run_crew_state "$d" feat-cancel-parked)
+  assert_contains "$out" "state: parked" "cancelled + live worker + pending decision -> parked"
+  assert_contains "$out" "pick A or B" "the pending decision stays visible"
+  assert_not_contains "$out" "superseded" "a pending decision after a cancelled run is not flagged stale"
+  pass "cancelled run does not hide a pending decision"
+}
+
+# The coarse runs-list attribution path must resolve a cancelled row the same
+# way as the full `axi status` path: live worker -> working.
+test_coarse_cancelled_live_worker_reads_working() {
+  reset_fakes
+  local d short; d=$(new_case coarse-cancelled)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-cancel
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse-cancel.meta" "window=fm:fm-feat-coarse-cancel" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-08-03 10:00
+  cancelled  fm/feat-coarse-cancel ${short}  2026-08-03 09:55
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-coarse-cancel)
+  assert_contains "$out" "state: working" "coarse cancelled row + live worker -> working"
+  assert_contains "$out" "worker active" "coarse cancelled+alive carries the between-runs detail"
+  assert_not_contains "$out" "state: failed" "coarse cancelled + live worker must never read failed"
+  pass "coarse cancelled run with a live worker reads working"
 }
 
 # (e) cross-branch attribution: `axi status` returns ANOTHER branch's run (the
@@ -1329,6 +1454,11 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_cancelled_run_live_worker_reads_working
+test_cancelled_status_only_live_worker_reads_working
+test_cancelled_run_dead_worker_reads_failed
+test_cancelled_run_live_worker_pending_decision_reads_parked
+test_coarse_cancelled_live_worker_reads_working
 test_cross_branch_attribution_via_runs_list
 test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
