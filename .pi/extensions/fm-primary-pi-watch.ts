@@ -31,7 +31,7 @@ type ArmResult = {
 type LockOwnership = "owned" | "missing" | "other";
 
 type CloseClassification = {
-  kind: "actionable" | "failure";
+  kind: "actionable" | "completion" | "failure";
   message: string;
 };
 
@@ -163,6 +163,13 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
       kind: "failure",
       message: `watcher: FAILED - Pi extension arm child found an external healthy watcher instead of owning wake delivery\n${healthy}`,
     };
+  }
+  const completed = combined.split(/\r?\n/).find((line) => /^watcher: cycle complete\b/.test(line));
+  if (completed) {
+    // A completed cycle ran its supervision and ended cleanly without an
+    // actionable wake (e.g. an attached arm whose peer cycle ended, or a watcher
+    // that stood down). Routine close: re-arm for continuity, never a failure.
+    return { kind: "completion", message: completed };
   }
   const failed = combined.split(/\r?\n/).find((line) => /^watcher: FAILED/.test(line));
   if (failed) return { kind: "failure", message: failed };
@@ -432,6 +439,15 @@ export default function (pi: ExtensionAPI) {
           await sendWake(owner, message);
         })().catch(() => {
         });
+        return;
+      }
+      if (classification.kind === "completion") {
+        // A fully-absorbed cycle is a healthy close: reset the failure budget so
+        // routine completions never accumulate into a failure prompt, then re-arm
+        // for continuity exactly like any other non-actionable close.
+        owner.retryFailures = 0;
+        if (owner.restoring) return;
+        scheduleRetry(owner, classification.message, predecessor);
         return;
       }
       if (owner.restoring) return;

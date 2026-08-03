@@ -364,12 +364,15 @@ crew_is_paused() {  # <id>
 }
 
 # 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
-# working; 1 (actionable/surface) if any is not, or no task can be resolved. Pass the
-# same space-separated file list as signal_reason_is_actionable. Files are mapped to
-# task ids by stripping the .status / .turn-ended suffix; a no-verb wake with nothing
-# provably working must surface, so an empty/unresolvable list returns 1.
+# working OR declared-paused; 1 (actionable/surface) if any is neither, or no task can
+# be resolved. Pass the same space-separated file list as signal_reason_is_actionable.
+# Files are mapped to task ids by stripping the .status / .turn-ended suffix; a no-verb
+# wake with nothing benign must surface, so an empty/unresolvable list returns 1. A
+# declared pause idles by design and re-surfaces through the stale path's bounded pause
+# cadence, so its no-verb turn-end is absorbed here exactly as the away daemon
+# self-handles a paused signal (one policy across both supervisors).
 signal_crew_provably_working() {  # <file> ...
-  local f base task seen=""
+  local f base task seen="" class
   for f in "$@"; do
     base=${f##*/}
     case "$base" in
@@ -380,7 +383,11 @@ signal_crew_provably_working() {  # <file> ...
     [ -n "$task" ] || continue
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
-    crew_is_provably_working "$task" || return 1
+    class=$(crew_absorb_class "$task")
+    case "$class" in
+      working|paused) ;;
+      *) return 1 ;;
+    esac
   done
   [ -n "$seen" ] || return 1
   return 0

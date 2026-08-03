@@ -28,19 +28,29 @@
 #   watcher: started pid=<N> (beacon fresh)              - it launched one and confirmed it
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
+#   watcher: cycle complete - supervision cycle ended without an actionable reason
+#                                                        - a cycle that demonstrably ran its
+#                                                          supervision (fresh beacon) ended with
+#                                                          no wake and no verified successor;
+#                                                          completion, not failure
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
-#                                                        - a clean cycle ended with no wake and no
-#                                                          verified healthy successor
+#                                                        - a genuine failure: the child exited
+#                                                          nonzero, confirmation timed out, or a
+#                                                          live recorded watcher is wedged behind
+#                                                          a stale beacon
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
 # returns the FAILED line. On started it waits the child and propagates the wake
-# reason; on attached it stays live across identity-matched successors. An
-# attached cycle that ends without a healthy successor is a typed nonzero failure,
-# never a clean empty completion. On FAILED it exits non-zero so the failure is
-# loud. A live cycle already present means re-arm attaches - do not start a second
-# watcher.
+# reason; on attached it stays live across identity-matched successors. A watched
+# cycle that ends after doing its job (the watcher declared a deliberate stand-down,
+# or the attached peer exited having kept the beacon fresh) is COMPLETED - reporting
+# it as FAILED is the false alarm that burns a full primary turn per fully-absorbed
+# cycle. Only a cycle that never completed supervision (nonzero exit, confirmation
+# timeout, or a live-but-wedged watcher behind a stale beacon) is FAILED, and on
+# FAILED the arm exits non-zero so the failure is loud. A live cycle already present
+# means re-arm attaches - do not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -261,9 +271,44 @@ fail_unexplained_cycle() {
   return 1
 }
 
+# A cycle that demonstrably ran its supervision and then ended without an
+# actionable wake is COMPLETED, not failed: reporting FAILED for it is the false
+# alarm that burns a full primary turn per fully-absorbed cycle. Continuity is
+# safe because every adapter re-arms on any close, and the beacon/guard backstops
+# catch a genuinely missing watcher. The genuine failures remain nonzero exits,
+# confirmation timeouts, and a live-but-wedged recorded watcher behind a stale
+# beacon (attached_cycle_ended below).
+complete_no_actionable_cycle() {
+  echo "watcher: cycle complete - supervision cycle ended without an actionable reason"
+  return 0
+}
+
+# The owned child declares a deliberate stand-down (self-eviction for the rightful
+# singleton holder) with this marker after running its cycle; its clean rc=0 close
+# is then a completed cycle. A child that exited 0 WITHOUT the marker never ran
+# supervision (e.g. a duplicate that declined "already running" and whose lock
+# then vanished) and remains the typed failure.
+watch_output_has_completion() {
+  grep -q '^watcher: cycle-complete' "$1" 2>/dev/null
+}
+
+# 0 when the recorded watcher's cycle ended (lock pid dead or lock gone) - a
+# completed cycle; 1 when a live recorded watcher still holds the lock behind a
+# stale beacon - a wedged watcher, the one genuine attached-arm failure.
+attached_cycle_ended() {
+  local pid age
+  pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  if [ -n "$pid" ] && fm_pid_alive "$pid"; then
+    age=$(fm_path_age "$BEAT")
+    [ "$age" -lt "$GRACE" ] && return 0 || return 1
+  fi
+  return 0
+}
+
 # Stay alive across identity-matched healthy holders. If one cycle ends, attach
-# to a verified successor. With no successor, fail loudly instead of returning a
-# clean empty completion that an adapter could mistake for a no-op.
+# to a verified successor. With no successor, a cycle that ended after its
+# supervision is completed (exit 0, clean close); a still-live wedged watcher is
+# the genuine FAILED case - never return a clean empty completion for it.
 attach_and_wait() {
   local attached_pid=$1
   while :; do
@@ -285,6 +330,10 @@ attach_and_wait() {
       continue
     fi
     cycle_log_append unknown unknown attached-cycle-ended none
+    if attached_cycle_ended; then
+      complete_no_actionable_cycle
+      return 0
+    fi
     fail_unexplained_cycle
     return 1
   done
@@ -430,8 +479,19 @@ owned_child_finished() {
       attach_and_wait "$HEALTHY_PID"
       return $?
     fi
-    cycle_log_append "$rc" "$signal" unexpected-clean-exit none
     print_watch_output "$child_out"
+    if watch_output_has_completion "$child_out"; then
+      # The child ran its supervision and declared a deliberate stand-down: the
+      # cycle is complete even without a verified successor (the adapter re-arms
+      # on any close). A clean empty close with no marker remains the failure.
+      cycle_log_append "$rc" "$signal" cycle-complete none
+      rm -f "$child_out" 2>/dev/null || true
+      child=
+      child_out=
+      complete_no_actionable_cycle
+      return 0
+    fi
+    cycle_log_append "$rc" "$signal" unexpected-clean-exit none
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=
