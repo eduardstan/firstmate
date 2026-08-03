@@ -1540,6 +1540,9 @@ case "\${1:-} \${2:-}" in
     fi
     ;;
   "pane close")
+    if [ "\${FM_FAKE_HERDR_CLOSE_FAIL:-0}" = 1 ]; then
+      exit 1
+    fi
     : > "\${FM_FAKE_HERDR_CLOSED:?}"
     ;;
   "pane get")
@@ -1635,6 +1638,71 @@ SH
   grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
     || fail "herdr-orphan-refusal: the successful retry did not report completion"
   pass "herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly"
+}
+
+test_herdr_flat_teardown_failed_close_never_returns_worktree_retry_releases_once() {
+  local case_dir log closed rc thlog
+  case_dir=$(make_case herdr-close-retain)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  # The closed marker file stays ABSENT until a close succeeds, so an
+  # unconfirmed close keeps the pane visible to `pane get`.
+  closed="$case_dir/closed"
+  : > "$case_dir/state/task-x1.status"
+  : > "$case_dir/state/task-x1.turn-ended"
+  # Record every treehouse invocation: a teardown whose close is unconfirmed
+  # must not free the isolated copy at all, and the retry that completes must
+  # free it exactly once.
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+printf '%s\n' '🌳 Worktree returned to pool.'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_CLOSE_FAIL=1 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-close-retain: teardown succeeded while the exact pane was never confirmed gone"
+  assert_grep "not confirmed gone" "$case_dir/stderr" \
+    "herdr-close-retain: the unconfirmed close refusal was not explained visibly"
+  # The slot must remain leased to this task: the isolated copy is still here
+  # with its branch intact, and treehouse was never asked to return it.
+  [ -d "$case_dir/wt" ] \
+    || fail "herdr-close-retain: an unconfirmed close freed the isolated copy; a live task could reclaim it"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "fm/task-x1" ] \
+    || fail "herdr-close-retain: an unconfirmed close dropped the task branch"
+  [ ! -s "$thlog" ] \
+    || fail "herdr-close-retain: the first attempt returned the isolated copy before the close was confirmed: $(cat "$thlog")"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-close-retain: an unconfirmed close erased the durable endpoint metadata"
+  [ -e "$case_dir/state/task-x1.status" ] \
+    || fail "herdr-close-retain: an unconfirmed close erased the task status record"
+  [ -e "$case_dir/state/task-x1.turn-ended" ] \
+    || fail "herdr-close-retain: an unconfirmed close erased the turn-end record"
+
+  # Retry once the close can actually run: the same slot was never freed, so
+  # this teardown is the one that returns the isolated copy - exactly once.
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_CLOSE_FAIL=0 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout2" 2> "$case_dir/stderr2" \
+    || fail "herdr-close-retain: the retry after the close became runnable failed: $(cat "$case_dir/stderr2")"
+  [ -e "$closed" ] \
+    || fail "herdr-close-retain: the successful retry never closed the pane under the lock"
+  [ -s "$thlog" ] \
+    || fail "herdr-close-retain: the successful retry never returned the isolated copy"
+  [ "$(wc -l < "$thlog")" -eq 1 ] \
+    || fail "herdr-close-retain: the isolated copy was returned more than once: $(cat "$thlog")"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-close-retain: the successful retry left the metadata behind"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
+    || fail "herdr-close-retain: the successful retry did not report completion"
+  pass "herdr teardown never frees the isolated copy while the close is unconfirmed, and the retry returns it exactly once"
 }
 
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
@@ -2042,6 +2110,7 @@ test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
+test_herdr_flat_teardown_failed_close_never_returns_worktree_retry_releases_once
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
