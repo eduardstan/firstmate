@@ -2624,6 +2624,20 @@ EOF
   fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
 }
 
+# fm_backend_herdr_agent_busy: 0 when <target>'s agent is currently mid-turn
+# (native agent_status genuinely working). The herdr twin of the tmux submit
+# core's fm_pane_is_busy predicate, used by the busy-queued Enter fallback in
+# fm_backend_herdr_send_text_submit below. Uses classify_agent_status (not the
+# submit-active variant) so a blocked agent - stuck waiting on the human, not
+# grinding - is never mistaken for a mid-turn queueing site.
+fm_backend_herdr_agent_busy() {  # <target>
+  local status
+  fm_backend_herdr_parse_target "$1" || return 1
+  status=$(fm_backend_herdr_classify_agent_status \
+    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  [ "$status" = busy ]
+}
+
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
 # (Enter only, never retyped) until herdr's NATIVE agent-state (agent get)
@@ -2686,7 +2700,7 @@ EOF
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep submit_state=""
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
@@ -2706,10 +2720,28 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
       unknown) printf 'unknown'; return 0 ;;
+      pending) submit_state=pending ;;
     esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    [ "$i" -lt "$retries" ] || break
   done
+  # Enter-retry budget spent with the submit still unconfirmed. Mirror the tmux
+  # submit core's busy-queued Enter exception (opencode 1.18.4, docs/herdr-backend.md
+  # "OpenCode busy-queue"): while opencode is mid-turn it accepts the Enter and
+  # queues it for after the turn, but keeps the typed text visible, so the
+  # composer-read path alone false-negatives. Once the budget is spent, a PROVEN
+  # pending composer on an agent that is STILL genuinely working means the Enter
+  # was accepted and queued - report empty (delivered) so the caller does not
+  # re-send. An idle agent keeps pending as a genuine swallow. Only proven
+  # composer-pending earns this conversion: the native agent-state path already
+  # turns a busy mid-turn into "busy" inside wait_for_working, and an unproven or
+  # unreadable composer never drops to delivered silently.
+  if [ "$submit_state" = pending ] && fm_backend_herdr_agent_busy "$target"; then
+    printf 'empty'
+  else
+    printf 'pending'
+  fi
+  return 0
 }
 
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors
