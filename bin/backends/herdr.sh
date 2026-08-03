@@ -2522,8 +2522,17 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
-fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
-  local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
+# <mode> is `inject` (default) or `confirm`. They differ on exactly one case: a
+# native Pi composer whose agent is mid-turn. `inject` asks "may I safely type
+# here?" and a working Pi must answer no. `confirm` asks the different question
+# "did the text I already typed leave the composer?", where a working agent is
+# not a hazard but the very condition being measured, so the structural read is
+# allowed to return its real empty/pending verdict. Every other refusal -
+# unreadable identity, non-Pi, incomplete or over-tall separator pair - is
+# unchanged in both modes.
+fm_backend_herdr_composer_state() {  # <target> [mode] -> empty|pending|unknown
+  local target=$1 mode=${2:-inject}
+  local session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
   local identity agent agent_status row=0 generic_line=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   session=$FM_BACKEND_HERDR_SESSION
@@ -2579,9 +2588,22 @@ EOF
           found=0
         fi
         ;;
-      pi:*|:*)
-        # A working Pi or unreadable identity cannot authorize injection, and
-        # the lower separator pair proves any generic row above is not current.
+      pi:*)
+        # A working Pi cannot authorize injection, and the lower separator pair
+        # proves any generic row above is not current. In confirm mode the
+        # question is delivery, not injection safety, so the same structural
+        # read is honoured (still only from a complete, in-budget pair).
+        if [ "$mode" = confirm ] && [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ]; then
+          shape=separated
+          raw_match=$FM_BACKEND_HERDR_PI_CONTENT
+          found=1
+        else
+          found=0
+        fi
+        ;;
+      :*)
+        # An unreadable identity cannot prove the lower pair is the live Pi
+        # composer, in either mode.
         found=0
         ;;
       *) : ;; # A known non-Pi agent keeps its established generic verdict.
@@ -2714,7 +2736,7 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
     else
       sleep "$sleep_s"
-      verdict=$(fm_backend_herdr_composer_state "$target")
+      verdict=$(fm_backend_herdr_composer_state "$target" confirm)
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
@@ -2729,8 +2751,12 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
   # submit core's busy-queued Enter exception (opencode 1.18.4, docs/herdr-backend.md
   # "OpenCode busy-queue"): while opencode is mid-turn it accepts the Enter and
   # queues it for after the turn, but keeps the typed text visible, so the
-  # composer-read path alone false-negatives. Once the budget is spent, a PROVEN
-  # pending composer on an agent that is STILL genuinely working means the Enter
+  # composer-read path alone false-negatives (observed live 2026-08-03 against a
+  # busy Pi-hosted opencode worker: fm-send reported verdict=unknown three times
+  # for text the worker had already queued, and the retries duplicated it). The
+  # confirm-mode read above is the other half of that fix; this is the part that
+  # covers a composer still visibly holding the queued text. Once the budget is
+  # spent, a PROVEN pending composer on an agent that is STILL genuinely working means the Enter
   # was accepted and queued - report empty (delivered) so the caller does not
   # re-send. An idle agent keeps pending as a genuine swallow. Only proven
   # composer-pending earns this conversion: the native agent-state path already
