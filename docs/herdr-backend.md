@@ -291,7 +291,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
-  The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
+  Both tmux and Herdr apply the same busy-queue fallback in their submit core (`fm_tmux_submit_enter_core` and `fm_backend_herdr_send_text_submit`): once the Enter-retry budget is spent, a proven-pending composer on an agent that is still mid-turn reports delivered because the Enter was queued, while an idle target keeps the swallow.
+  Herdr's submit path additionally reads the composer in confirm mode, which honours the structural read of a mid-turn Pi composer that injection-safety mode refuses; without it a busy Pi-hosted worker returned `unknown` for text it had already queued.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points
