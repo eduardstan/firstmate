@@ -211,7 +211,7 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 
 Herdr has no direct cursor-row primitive.
 The adapter locates the bottom-most recognized bordered row, Claude `❯` row, Codex `›` row, or a Pi separator region admitted only when native identity is exactly Pi and state is idle, done, or blocked.
-A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
+A working Pi, pending middle row, missing identity, incomplete Pi separator pair, or over-tall candidate remains pending or unknown.
 A lone trailing separator with no matching opening one discards a recognized row above it only on a Pi or unidentifiable target, because other harnesses draw horizontal rules as ordinary chrome: Claude frames its own live composer between a labelled upper rule and a bare lower one.
 
 ANSI capture preserves de-emphasized placeholder style, and it is also the only capture that preserves invisible composer padding, which Herdr's plain read normalizes away.
