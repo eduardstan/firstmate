@@ -2440,7 +2440,13 @@ fm_backend_herdr_strip_ansi() {  # <text>
 # afk-herdr-false-pending); it superseded a herdr-only faint byte-pattern check
 # that recognized only codex's bold-wrapped bare prompt and missed claude's own
 # dim ghost - the overnight away-mode injection wedge on the primary claude pane.
-FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-20}
+# Rows of the pane tail the structural composer scan looks at. WHY 40: a harness
+# footer plus a multi-line custom statusline can occupy 11-12 rows under the
+# composer, and at 20 the composer row itself falls out of the window, which
+# reads as `unknown` and defers injection just as a false `pending` does. The
+# read is free: the capture already pulls 200 rows and this only bounds the tail
+# it scans.
+FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-40}
 # Known ghost/placeholder composer text. Extend this if another
 # herdr-verified harness needs its own idle placeholder recognized.
 FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
@@ -2588,9 +2594,29 @@ EOF
     esac
   elif [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -eq 0 ] \
        && [ "$FM_BACKEND_HERDR_PI_LAST_SEPARATOR_LINE" -gt "$generic_line" ]; then
-    # A lower unmatched separator proves the generic row is stale, but does
-    # not provide the complete Pi composer structure required for injection.
-    found=0
+    # A lower unmatched separator can mean the generic row is stale - a partly
+    # captured Pi composer whose opening separator fell out of the window, with
+    # a decorative box still visible above it - without providing the complete
+    # Pi composer structure injection requires.
+    #
+    # It only means that on a Pi target. A solid `─` rule is ordinary chrome for
+    # other harnesses: claude frames its own live composer between two rules, and
+    # the upper one carries a label ("─── name ──") so it is not a bare
+    # separator, leaving exactly the lone-trailing-rule shape above. Reading that
+    # as staleness discarded a live, idle claude composer and returned `unknown`
+    # on every poll, which deferred every away-mode escalation for a whole night.
+    # Gate on the same native identity the complete-pair branch above already
+    # relies on: only a Pi pane's separator invalidates a generic match. An
+    # unreadable identity cannot rule Pi out, so it still invalidates - doubt
+    # keeps blocking injection, exactly as before.
+    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
+    IFS=$'\t' read -r agent agent_status <<EOF
+$identity
+EOF
+    case "$agent" in
+      ''|pi) found=0 ;;
+      *) : ;;  # A known non-Pi agent keeps its established generic verdict.
+    esac
   fi
   [ "$found" -eq 1 ] || { printf 'unknown'; return 0; }
   # Content: extract the real typed text from the raw row with the shared,

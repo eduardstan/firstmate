@@ -212,9 +212,10 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 Herdr has no direct cursor-row primitive.
 The adapter locates the bottom-most recognized bordered row, Claude `❯` row, Codex `›` row, or a Pi separator region admitted only when native identity is exactly Pi and state is idle, done, or blocked.
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
+A lone trailing separator with no matching opening one discards a recognized row above it only on a Pi or unidentifiable target, because other harnesses draw horizontal rules as ordinary chrome: Claude frames its own live composer between a labelled upper rule and a bare lower one.
 
-ANSI capture preserves de-emphasized placeholder style.
-`bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.
+ANSI capture preserves de-emphasized placeholder style, and it is also the only capture that preserves invisible composer padding, which Herdr's plain read normalizes away.
+`bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input, and that normalizes invisible padding such as the U+00A0 Claude pads its idle composer with, so an idle composer reads empty rather than as unsent text.
 If a future Herdr version strips ANSI style, ghost suggestions become pending rather than empty, which safely defers injection and eventually raises the wedge alarm.
 
 A bare shell prompt is never an empty agent composer.
