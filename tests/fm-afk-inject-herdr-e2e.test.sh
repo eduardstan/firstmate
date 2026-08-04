@@ -634,7 +634,22 @@ test_scenario_e_claude_shape() {
   [ "$verdict" = pending ] \
     || fail "Scenario E: typed text in a rule-framed claude composer read '$verdict', not pending"
   echo "needs-decision: pick A or B" > "$STATE_DIR/fake-c1.status"
-  sleep 6
+  # Wait for the daemon to actually REACH an injection decision instead of
+  # assuming a fixed sleep is enough: the mid-scenario reset_state removes state
+  # under a running watcher, which ends that watcher cleanly and costs a 5s
+  # restart backoff before the next escalation cycle. A fixed sleep shorter than
+  # the backoff reads as "no deferral recorded" no matter how the pane classifies.
+  local deferred=0 waited=0
+  while [ "$waited" -lt 30 ]; do
+    if tail -n +"$((defer_log_start + 1))" "$STATE_DIR/.supervise-daemon.log" 2>/dev/null \
+      | grep -q 'inject deferred: supervisor composer not confirmed-empty'; then
+      deferred=1
+      break
+    fi
+    grep -q 'Supervisor escalate' "$LOG_FILE" && break
+    sleep 1
+    waited=$((waited + 1))
+  done
   if grep -q 'Supervisor escalate' "$LOG_FILE"; then
     fail "Scenario E: the daemon injected over a claude composer that held human text"
   fi
@@ -643,9 +658,10 @@ test_scenario_e_claude_shape() {
   # deferral record and a live daemon behind it.
   kill -0 "$DAEMON_PID" 2>/dev/null \
     || fail "Scenario E: the daemon died instead of deferring over the human's typed text"
-  tail -n +"$((defer_log_start + 1))" "$STATE_DIR/.supervise-daemon.log" 2>/dev/null \
-    | grep -q 'inject deferred: supervisor composer not confirmed-empty' \
-    || fail "Scenario E: the daemon never recorded a composer deferral, so the absent delivery proves nothing"
+  if [ "$deferred" -ne 1 ]; then
+    tail -n +"$((defer_log_start + 1))" "$STATE_DIR/.supervise-daemon.log" 2>/dev/null | sed 's/^/    /' >&2
+    fail "Scenario E: the daemon never recorded a composer deferral, so the absent delivery proves nothing"
+  fi
   fm_backend_herdr_send_key "$SUPERVISOR_TARGET" Enter
   sleep 0.5
 
