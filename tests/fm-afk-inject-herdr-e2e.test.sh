@@ -626,6 +626,8 @@ test_scenario_e_claude_shape() {
 
   # Real typed text in that same shape must still defer.
   reset_state
+  local defer_log_start=0
+  [ ! -f "$STATE_DIR/.supervise-daemon.log" ] || defer_log_start=$(wc -l < "$STATE_DIR/.supervise-daemon.log")
   fm_backend_herdr_send_literal "$SUPERVISOR_TARGET" "human draft text"
   sleep 0.5
   verdict=$(PATH="$HERDR_SHIM_DIR:$PATH" fm_backend_herdr_composer_state "$SUPERVISOR_TARGET")
@@ -636,6 +638,14 @@ test_scenario_e_claude_shape() {
   if grep -q 'Supervisor escalate' "$LOG_FILE"; then
     fail "Scenario E: the daemon injected over a claude composer that held human text"
   fi
+  # Absence of a delivery line alone would also pass if the mid-run reset_state
+  # had knocked the daemon out of escalating at all, so require the positive
+  # deferral record and a live daemon behind it.
+  kill -0 "$DAEMON_PID" 2>/dev/null \
+    || fail "Scenario E: the daemon died instead of deferring over the human's typed text"
+  tail -n +"$((defer_log_start + 1))" "$STATE_DIR/.supervise-daemon.log" 2>/dev/null \
+    | grep -q 'inject deferred: supervisor composer not confirmed-empty' \
+    || fail "Scenario E: the daemon never recorded a composer deferral, so the absent delivery proves nothing"
   fm_backend_herdr_send_key "$SUPERVISOR_TARGET" Enter
   sleep 0.5
 

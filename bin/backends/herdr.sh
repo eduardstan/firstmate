@@ -2592,7 +2592,8 @@ EOF
         ;;
       *) : ;; # A known non-Pi agent keeps its established generic verdict.
     esac
-  elif [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -eq 0 ] \
+  elif [ "$found" -eq 1 ] \
+       && [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -eq 0 ] \
        && [ "$FM_BACKEND_HERDR_PI_LAST_SEPARATOR_LINE" -gt "$generic_line" ]; then
     # A lower unmatched separator can mean the generic row is stale - a partly
     # captured Pi composer whose opening separator fell out of the window, with
