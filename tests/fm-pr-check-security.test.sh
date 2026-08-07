@@ -2621,6 +2621,8 @@ test_teardown_removes_poll_artifacts() {
   printf 'data\n' > "$dir/home/state/task-a.pr-poll"
   printf 'registration\n' > "$dir/home/state/task-a.pr-poll-registration"
   printf 'trust\n' > "$dir/home/state/task-a.check-trust"
+  fm_pr_poll_closed_marker_publish "$dir/home/state" task-a \
+    || fail "could not seed the closed-unmerged wake marker"
   mkdir -p "$dir/home/state/.pr-check-quarantine"
   chmod 0700 "$dir/home/state/.pr-check-quarantine"
   printf 'legacy\n' > "$dir/home/state/.pr-check-quarantine/task-a.check.abc123"
@@ -2639,6 +2641,8 @@ SH
   [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "teardown left the sidecar"
   [ ! -e "$dir/home/state/task-a.pr-poll-registration" ] || fail "teardown left the PR poll registration"
   [ ! -e "$dir/home/state/task-a.check-trust" ] || fail "teardown left the custom check registration"
+  [ ! -e "$(fm_pr_poll_closed_marker_path "$dir/home/state" task-a)" ] \
+    || fail "teardown left the closed-unmerged wake marker"
   ! find "$dir/home/state/.pr-check-quarantine" -name 'task-a.*' -print 2>/dev/null | grep . >/dev/null \
     || fail "teardown left task quarantine artifacts"
 
