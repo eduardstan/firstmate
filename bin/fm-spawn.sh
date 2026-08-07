@@ -51,9 +51,12 @@
 #   outside herdr has no workspace to inherit and uses this home's own labeled
 #   workspace, which must then match exactly one. --secondmate is the deliberate
 #   exception: it stands up that secondmate home's own workspace.
-#   Herdr additionally supports a default-off presentation-only layout when the
-#   local config/herdr-presentation-spaces flag exists. A clean fresh task first
-#   writes state/<id>.herdr-presentation atomically, then creates a disposable
+#   Herdr additionally uses a presentation-only layout by default when the
+#   selected client and running server meet the Herdr 0.8.0 floor. The local
+#   config/herdr-presentation-spaces file can say off to disable it or on to
+#   opt in below that floor; an empty file remains the historical opt-in form.
+#   A clean fresh task first writes state/<id>.herdr-presentation atomically,
+#   then creates a disposable
 #   workspace containing only the ordinary task pane. A successful clean create
 #   upgrades its attempt journal with exact home, session, workspace, tab, pane,
 #   parent, and label bindings. On a same-identity restart, that complete binding
@@ -83,7 +86,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. pi-signed launches that exact executable name from PATH and
@@ -133,6 +136,9 @@
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
+# muse installs no hook at all - its plugin engine is off in the default build - so
+# it writes state/<id>.muse-session to bind the pane to muse's own session event
+# log; muse is crewmate/scout only and is refused for --secondmate.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -142,6 +148,13 @@
 # one W3C traceparent= carrier, the same value injected into the pane as
 # TRACEPARENT; the default-off path writes neither, leaving the generated meta
 # and launch environment unchanged.
+#   --traceparent <carrier> delivers a carrier that a REMOTE parent already
+#   resolved and will record, instead of resolving one from this home's frozen
+#   decision. It is accepted only for --secondmate spawns, only as a strictly
+#   validated W3C traceparent, and exists because a remote secondmate's task
+#   identity is owned by the parent home that holds its task metadata, while the
+#   pane export happens on the remote host (bin/fm-remote-secondmate-control.sh).
+#   Local spawns never pass it and resolve their own carrier exactly as before.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -202,6 +215,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
+# shellcheck source=bin/fm-remote-readiness-lib.sh
+. "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -215,12 +230,14 @@ EFFORT=
 BACKEND_ARG=
 MODE=
 YOLO=
+TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
+TRACEPARENT_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -235,6 +252,7 @@ for a in "$@"; do
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -255,6 +273,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --traceparent) want_value=traceparent ;;
+    --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -265,6 +285,20 @@ done
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
+[ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+# A parent-delivered carrier replaces this home's own resolution, so it is
+# refused unless it is a secondmate spawn carrying a strictly valid W3C value.
+# Nothing else may reach the pane's TRACEPARENT export.
+if [ "$TRACEPARENT_SET" -eq 1 ]; then
+  [ "$KIND" = secondmate ] || {
+    echo "error: --traceparent applies only to --secondmate spawns; every other spawn resolves its own carrier from this home's frozen trace-context decision" >&2
+    exit 1
+  }
+  fm_trace_context_valid "$TRACEPARENT_ARG" || {
+    echo "error: --traceparent is not a valid W3C traceparent" >&2
+    exit 1
+  }
+fi
 case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
@@ -307,7 +341,9 @@ fi
 
 spawn_remote_secondmate() {
   local id=$1 remote host root home harness positional model effort backend out rc meta tmp
-  local remote_backend remote_target remote_harness registry_lock remote_lock remote_generation
+  local remote_backend remote_target remote_harness remote_herdr_session registry_lock remote_lock remote_generation
+  local remote_traceparent remote_recorded_traceparent
+  local -a launch_args
   id=${POS[0]:-}
   fm_task_id_creation_valid "$id" || { echo "error: invalid task id" >&2; return 2; }
   mkdir -p "$STATE" || { echo "error: could not create parent state directory" >&2; return 1; }
@@ -366,7 +402,19 @@ spawn_remote_secondmate() {
       [ -n "$effort" ] || effort=-
     fi
   fi
-  backend=${BACKEND_ARG:--}
+  # A remote second mate always runs on Herdr: its server belongs to the host's
+  # own GUI login session, so the endpoint outlives every SSH connection that
+  # supervises it. bin/fm-remote-doctor.sh gates that host on the same
+  # requirement, and the remote home's config/backend never overrides it.
+  case "${BACKEND_ARG:--}" in
+    -|herdr) backend=herdr ;;
+    *)
+      fm_lock_release "$registry_lock" || true
+      fm_lock_release "$SPAWN_TASK_LOCK" || true
+      echo "error: a remote secondmate runs only on the herdr backend, not '$BACKEND_ARG'" >&2
+      return 1
+      ;;
+  esac
   case "$effort" in
     -|low|medium|high|xhigh|max) ;;
     *)
@@ -388,6 +436,27 @@ spawn_remote_secondmate() {
       echo "error: existing metadata for $id does not identify this remote secondmate route" >&2
       return 1
     fi
+  fi
+  # Gate the host before anything is published or transferred, so a host that
+  # cannot hold a durable Herdr endpoint refuses here rather than half-way
+  # through a launch. This is also the readiness gate every liveness relaunch
+  # passes through, because recovery respawns through this same route.
+  rc=0
+  fm_remote_readiness_ensure "$SCRIPT_DIR" "$id" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    # Summary first, then the doctor's own text: a caller that reports only the
+    # first line, such as the startup liveness sweep, must still say something
+    # actionable.
+    if [ "$rc" -eq 255 ]; then
+      echo "error: remote secondmate $id readiness could not be confirmed; preserved route $host:$home" >&2
+    else
+      echo "error: remote secondmate $id host $host is not ready for a remote second mate; launch refused" >&2
+    fi
+    [ -z "$FM_REMOTE_READINESS_OUT" ] || printf '%s\n' "$FM_REMOTE_READINESS_OUT" >&2
+    [ "$rc" -ne 255 ] || return 255
+    return 1
   fi
   remote_lock=$(fm_remote_inherit_transaction_lock_path "$STATE" "$id")
   if ! fm_lock_acquire_wait "$remote_lock"; then
@@ -418,8 +487,21 @@ spawn_remote_secondmate() {
     fi
     return "$rc"
   fi
+  # This parent home owns the remote secondmate's task identity because it holds
+  # the task metadata an observer reads, exactly as for a local spawn: the
+  # carrier is resolved against THIS task's own meta (reused verbatim on
+  # relaunch, freshly rooted otherwise, never adopting this process's ambient
+  # TRACEPARENT) under this home's frozen decision, then handed to the remote
+  # host to export into the agent's pane. Disabled resolves to empty and the
+  # remote launch call stays byte-identical to the untraced one.
+  remote_traceparent=
+  if [ "$(fm_trace_context_session_effective "$STATE/.trace-context-effective")" = on ]; then
+    remote_traceparent=$(FM_TRACE_CONTEXT=on fm_trace_context_resolve "$CONFIG" "$meta" || true)
+  fi
+  launch_args=("$id" "$harness" "$model" "$effort" "$backend")
+  [ -z "$remote_traceparent" ] || launch_args+=("$remote_traceparent")
   if out=$("$SCRIPT_DIR/fm-on.sh" "$id" fm-remote-secondmate-control.sh launch \
-    "$id" "$harness" "$model" "$effort" "$backend" 2>&1); then
+    "${launch_args[@]}" < /dev/null 2>&1); then
     rc=0
   else
     rc=$?
@@ -437,13 +519,36 @@ spawn_remote_secondmate() {
   remote_backend=$(printf '%s\n' "$out" | sed -n 's/^backend=//p' | tail -1)
   remote_target=$(printf '%s\n' "$out" | sed -n 's/^target=//p' | tail -1)
   remote_harness=$(printf '%s\n' "$out" | sed -n 's/^harness=//p' | tail -1)
-  [ -n "$remote_backend" ] && [ -n "$remote_target" ] && [ "$remote_harness" = "$harness" ] || {
+  remote_herdr_session=$(printf '%s\n' "$out" | sed -n 's/^herdr_session=//p' | tail -1)
+  if [ "$remote_backend" != herdr ]; then
+    fm_lock_release "$remote_lock" || true
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    echo "error: remote launch returned backend '${remote_backend:-missing}', expected herdr; preserving the remote route for reconciliation" >&2
+    return 1
+  fi
+  [ -n "$remote_target" ] && [ "$remote_harness" = "$harness" ] || {
     fm_lock_release "$remote_lock" || true
     fm_lock_release "$registry_lock" || true
     fm_lock_release "$SPAWN_TASK_LOCK" || true
     echo "error: remote launch returned malformed route metadata; preserving the remote route for reconciliation" >&2
     return 1
   }
+  if [ "$remote_herdr_session" != fm-remote ] || [ "${remote_target%%:*}" != "$remote_herdr_session" ]; then
+    fm_lock_release "$remote_lock" || true
+    fm_lock_release "$registry_lock" || true
+    fm_lock_release "$SPAWN_TASK_LOCK" || true
+    echo "error: remote launch returned Herdr session '${remote_herdr_session:-missing}', expected 'fm-remote'; preserving the remote route for reconciliation" >&2
+    return 1
+  fi
+  # Record what the remote endpoint ACTUALLY carries, read back from its own
+  # launch, rather than what this side hoped to deliver. That keeps the #995
+  # guarantee that the recorded carrier is the identity the child received even
+  # when the remote host already had a live agent and reused its endpoint. An
+  # off decision delivers no carrier, but an endpoint already holding one still
+  # reports it here so the parent does not deny the agent's actual identity.
+  remote_recorded_traceparent=$(printf '%s\n' "$out" | sed -n 's/^traceparent=//p' | tail -1)
+  fm_trace_context_valid "$remote_recorded_traceparent" || remote_recorded_traceparent=
   tmp="$meta.tmp.$$"
   {
     echo "window=remote:$id"
@@ -462,7 +567,9 @@ spawn_remote_secondmate() {
     echo "remote_host=$host"
     echo "remote_root=$root"
     echo "remote_backend=$remote_backend"
+    echo "remote_herdr_session=$remote_herdr_session"
     echo "remote_target=$remote_target"
+    [ -z "$remote_recorded_traceparent" ] || echo "traceparent=$remote_recorded_traceparent"
   } > "$tmp"
   mv -f -- "$tmp" "$meta"
   fm_lock_release "$remote_lock" || true
@@ -682,7 +789,7 @@ FIRSTMATE_HOME=
 
 if [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi)
+    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -748,6 +855,28 @@ launch_template() {
     # Its turn-end signal is a globally configured Stop hook plus a guarded
     # per-task worktree token, so no launch placeholder belongs here.
     kimi) printf '%s' '__KIMIBIN__ __MODELFLAG__--auto' ;;
+    # muse (Muse Code): a positional prompt starts the supervised interactive
+    # session. --yolo is the single flag that makes a crewmate pane viable: muse
+    # ships approval prompts AND a filesystem/network sandbox ON by default
+    # (--sandbox-network defaults to proxy-only, which refuses outright without a
+    # managed proxy), and it gates a fresh workspace behind a trust dialog. One
+    # --yolo disables approval, disables the sandbox so git and network work, and
+    # trusts the workspace for the run, so no dialog appears on the fresh
+    # per-task worktree (verified, muse 0.1.0-R708.1).
+    # MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on is the privacy control:
+    # muse otherwise loads the OPERATOR's foreign personal rules from ~/.claude
+    # into every run and ships them to Meta-hosted inference, even under an
+    # isolated XDG_CONFIG_HOME. exec mode's --no-foreign-personal-context flag is
+    # NOT accepted by the interactive TUI (it exits with "unexpected argument"),
+    # so this env var is the only control that reaches a pane worker. Verified to
+    # drop the foreign rules_file context block while KEEPING the project's own
+    # AGENTS.md rules, which the crewmate contract depends on.
+    # muse's turn-end signal rides neither the launch command nor a hook: its
+    # plugin engine is off in the default build, so firstmate folds muse's own
+    # session event log instead (bin/fm-busy-lib.sh), bound by the sidecar
+    # written below. Nothing to place in the template for it.
+    # codex, opencode, and kimi are also markerless and share this inherited-marker hazard; changing their verified launch boundaries belongs in follow-up work.
+    muse) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS XDG_CONFIG_HOME=__MUSECONFIG__ XDG_DATA_HOME=__MUSEDATA__ MUSE_EXPERIMENTAL_FOREIGN_PERSONAL_CONTEXT_KILL=on __MUSEBIN__ --yolo __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -791,6 +920,17 @@ esac
 case "$HARNESS" in
   pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
 esac
+
+# muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
+# instance, so it needs a primary supervision protocol; muse has none, and its
+# Claude-compatible hook dialect explicitly rejects the model-reawakening and
+# asyncRewake handlers that firstmate's primary turn-end supervision is built on
+# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
+# secondmate whose supervision cycle could never be armed.
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
+  echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
+  exit 1
+fi
 
 # pi-signed is an explicitly selected executable identity, not an alias that may
 # silently fall back to pi. Resolve it from PATH before creating an endpoint and
@@ -856,11 +996,60 @@ resolve_kimi_binary() {
   return 1
 }
 
+resolve_muse_binary() {
+  local candidate dir
+  candidate=$(command -v muse 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    case "$candidate" in
+      /*) printf '%s\n' "$candidate"; return 0 ;;
+      *)
+        dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || dir=
+        if [ -n "$dir" ]; then
+          printf '%s/%s\n' "$dir" "$(basename "$candidate")"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  echo "error: muse executable not found on PATH; install Muse Code or select a different verified harness" >&2
+  return 1
+}
+
+# muse_credential_present: 0 when a launched muse pane can reach its provider
+# without an interactive login. muse offers exactly two credential paths
+# (verified, muse 0.1.0-R708.1): the META_API_KEY environment variable, which
+# always takes priority, and a stored credential written by `muse auth set` or
+# `muse login` into <config>/muse/auth.json. This is a PREFLIGHT rather than a
+# rendered-screen check because an unauthenticated pane does not exit - it sits
+# on an OAuth device-code prompt ("Sign in at this page ... Waiting for
+# approval...") waiting for a human who is not there, which would look to
+# supervision like a wedged worker rather than a missing credential.
+muse_worker_meta_api_key_present() {
+  local session worker_env
+  [ "$BACKEND" = tmux ] || return 1
+  if [ -n "${TMUX:-}" ]; then
+    session=$(tmux display-message -p '#S' 2>/dev/null) || return 1
+  else
+    tmux has-session -t firstmate 2>/dev/null || return 1
+    session=firstmate
+  fi
+  worker_env=$(tmux show-environment -t "$session" META_API_KEY 2>/dev/null) || return 1
+  case "$worker_env" in
+    META_API_KEY=?*) return 0 ;;
+  esac
+  return 1
+}
+
+muse_credential_present() {
+  local auth=$1
+  [ -s "$auth" ] || muse_worker_meta_api_key_present
+}
+
 model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -899,6 +1088,20 @@ effort_flag_for_harness() {
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
+    muse)
+      # muse 0.1.0-R708.1 --reasoning-effort accepts none|minimal|low|medium|
+      # high|xhigh|ultra and defaults to high, so low..xhigh map straight across.
+      # ultra is muse's max-CLASS level, so firstmate's max maps onto it - but
+      # only ever as an EXPLICIT captain choice, never as a fallback, because
+      # AGENTS.md section 4 forbids selecting max without captain preference and
+      # the omitted effort here leaves muse on its own high default. muse's extra
+      # none/minimal levels sit below firstmate's shared vocabulary and are
+      # deliberately unreachable rather than remapped onto low.
+      case "$effort" in
+        low|medium|high|xhigh) printf -- '--reasoning-effort %s ' "$(shell_quote "$effort")" ;;
+        max) printf -- '--reasoning-effort %s ' "$(shell_quote ultra)" ;;
+      esac
+      ;;
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
@@ -906,6 +1109,26 @@ effort_flag_for_harness() {
     # task metadata but never reaches the launch command.
   esac
 }
+
+case "$LAUNCH" in
+  *__MUSEBIN__*)
+    MUSE_BIN=$(resolve_muse_binary) || exit 1
+    MUSE_CONFIG_HOME=$(resolve_directory_input XDG_CONFIG_HOME "${XDG_CONFIG_HOME:-${HOME:-}/.config}") || exit 1
+    MUSE_DATA_HOME=$(resolve_directory_input XDG_DATA_HOME "${XDG_DATA_HOME:-${HOME:-}/.local/share}") || exit 1
+    MUSE_AUTH_FILE="$MUSE_CONFIG_HOME/muse/auth.json"
+    if ! muse_credential_present "$MUSE_AUTH_FILE"; then
+      if [ -n "${META_API_KEY:-}" ]; then
+        echo "error: muse has no worker-reachable credential; META_API_KEY is set for fm-spawn but cannot be proven present in the $BACKEND worker environment. Store the fleet credential at '$MUSE_AUTH_FILE' with 'muse login' or 'muse auth set --api-key-stdin'. The secret will not be copied into the launch command." >&2
+      else
+        echo "error: muse has no worker-reachable credential; META_API_KEY cannot be proven present in the $BACKEND worker environment and '$MUSE_AUTH_FILE' is absent or empty. Store the fleet credential with 'muse login' or 'muse auth set --api-key-stdin'." >&2
+      fi
+      exit 1
+    fi
+    LAUNCH=${LAUNCH//__MUSEBIN__/$(shell_quote "$MUSE_BIN")}
+    LAUNCH=${LAUNCH//__MUSECONFIG__/$(shell_quote "$MUSE_CONFIG_HOME")}
+    LAUNCH=${LAUNCH//__MUSEDATA__/$(shell_quote "$MUSE_DATA_HOME")}
+    ;;
+esac
 
 case "$LAUNCH" in
   *__KIMIBIN__*)
@@ -1307,7 +1530,7 @@ case "$BACKEND" in
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
-    if [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
+    if [ "$KIND" != secondmate ] && fm_backend_herdr_presentation_enabled "$CONFIG" "$STATE"; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
       if [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; then
@@ -1357,6 +1580,9 @@ case "$BACKEND" in
         # live named-session socket before journal publication.
         if ! fm_backend_herdr_server_ensure "$HERDR_SES"; then
           echo "warning: herdr presentation could not ensure its session server; using the ordinary flat layout without projection" >&2
+        elif [ "${FM_BACKEND_HERDR_PRESENTATION_PREFERENCE:-default}" = default ] \
+          && ! fm_backend_herdr_presentation_default_supported "$STATE" "$HERDR_SES"; then
+          :
         elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
           # The projected child is placed and bound UNDER this launcher's exact
           # parent workspace. Its own herdr pane identity names that workspace
@@ -1867,6 +2093,34 @@ EOF
       printf 'token=%s\n' "${auth_file##*/}" > "$WT/.fm-grok-turnend"
       exclude_path '.fm-grok-turnend'
       ;;
+    muse*)
+      # muse's turn lifecycle is neither a hook nor a launch flag: its plugin
+      # engine (the only hook surface) is disabled in the default build, so
+      # firstmate reads muse's own durable session event log instead
+      # (bin/fm-busy-lib.sh owns the fold). That is a PULL
+      # source with no writer, so nothing is armed and no record is seeded -
+      # exactly the reason standalone Kimi is not armed either.
+      # This sidecar is the whole binding: it pins the sessions root, the
+      # workspace root that muse records in each log's metadata, this pane's
+      # binding identity, and every matching main log that predates this pane.
+      # The classifier then accepts only one new matching log, so it never
+      # guesses between pane incarnations. Recording the resolved root here
+      # also means a later change to XDG_DATA_HOME cannot silently re-point an
+      # already-running task at a different log tree.
+      MUSE_SESSIONS_ROOT="${MUSE_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}}/muse/sessions"
+      MUSE_BINDING_ID="$$.$RANDOM.$(date +%s)"
+      rm -f "$STATE/$ID.muse-session-current"
+      {
+        printf 'sessions_root=%s\n' "$MUSE_SESSIONS_ROOT"
+        printf 'workspace_root=%s\n' "$WT"
+        printf 'binding_id=%s\n' "$MUSE_BINDING_ID"
+        while IFS= read -r MUSE_PRIOR_LOG; do
+          [ -n "$MUSE_PRIOR_LOG" ] && printf 'prior_log=%s\n' "$MUSE_PRIOR_LOG"
+        done <<EOF
+$(fm_busy_muse_matching_logs "$MUSE_SESSIONS_ROOT" "$WT" || true)
+EOF
+      } > "$STATE/$ID.muse-session"
+      ;;
     kimi*)
       # Kimi's Stop hook is global, but it is inert unless cwd contains this
       # task's token pointer and the token resolves through Firstmate's private
@@ -1911,11 +2165,22 @@ fi
 #
 # The session-start path owns input resolution. Spawn consumes only the frozen
 # home-session state and reuses it for the carrier and Secondmate launch prefix.
-SPAWN_TRACE_EFFECTIVE=$(fm_trace_context_session_effective "$STATE/.trace-context-effective")
-if [ "$SPAWN_TRACE_EFFECTIVE" = on ]; then
-  SPAWN_TRACEPARENT=$(FM_TRACE_CONTEXT=on fm_trace_context_resolve "$CONFIG" "$STATE/$ID.meta" || true)
+#
+# A remote secondmate launch is the one case where this process is not the home
+# that owns the task's identity: the parent home resolved and will record the
+# carrier, and this host only delivers it. The validated --traceparent value
+# then IS the decision, so the enablement snapshot handed to the new Secondmate
+# agrees with the carrier it receives exactly as on the local path.
+if [ "$TRACEPARENT_SET" -eq 1 ]; then
+  SPAWN_TRACE_EFFECTIVE=on
+  SPAWN_TRACEPARENT=$TRACEPARENT_ARG
 else
-  SPAWN_TRACEPARENT=
+  SPAWN_TRACE_EFFECTIVE=$(fm_trace_context_session_effective "$STATE/.trace-context-effective")
+  if [ "$SPAWN_TRACE_EFFECTIVE" = on ]; then
+    SPAWN_TRACEPARENT=$(FM_TRACE_CONTEXT=on fm_trace_context_resolve "$CONFIG" "$STATE/$ID.meta" || true)
+  else
+    SPAWN_TRACEPARENT=
+  fi
 fi
 
 META_WINDOW=$T
@@ -1993,6 +2258,10 @@ fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   sq_primary_home=$(shell_quote "$FM_HOME")
+  case "$HARNESS" in
+    claude) supervision_model=autoarm ;;
+    *) supervision_model=persistent ;;
+  esac
   # Deliver the primary's EFFECTIVE trace-context decision as a normalized on/off
   # literal (never the raw FM_TRACE_CONTEXT string) so a FM_TRACE_CONTEXT override
   # on the primary reaches the secondmate's OWN workers, not just the copied
@@ -2000,7 +2269,7 @@ if [ "$KIND" = secondmate ]; then
   # not enable them across the launch boundary (bin/fm-trace-context-lib.sh header).
   # Reuse the single frozen decision from the carrier resolution above so the
   # injected carrier and this on/off snapshot are guaranteed to agree.
-  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE $LAUNCH"
+  LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE FM_SUPERVISION_MODEL=$supervision_model $LAUNCH"
 fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
