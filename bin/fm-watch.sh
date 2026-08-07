@@ -841,12 +841,16 @@ while :; do
       if [ -n "$out" ]; then
         reason="check: $c: $out"
         fm_wake_append check "$c" "$reason" || exit 1
-        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
+        # Both terminal results retire the poll. A closed-unmerged PR is not a
+        # failure and not a merge: the change may have landed in a successor, so
+        # the wake above is what firstmate reconciles against. Retiring here is
+        # what keeps that single wake from repeating every check interval.
+        if [ "$is_pr_poll" -eq 1 ] && { [ "$out" = merged ] || [ "$out" = closed ]; }; then
           if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
             fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-              || triage_log "merged PR poll retirement remains recoverable for $id"
+              || triage_log "$out PR poll retirement remains recoverable for $id"
           else
-            triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+            triage_log "$out PR poll retirement deferred because its canonical snapshot changed for $id"
           fi
         fi
         touch "$STATE/.last-check"

@@ -714,17 +714,21 @@ test_static_poll_contract() {
   dir=$(make_case poll-contract)
   make_poll_fixture "$dir"
 
-  for state in OPEN CLOSED EMPTY MALFORMED; do
+  for state in OPEN EMPTY MALFORMED; do
     case "$state" in
       EMPTY) value= ;;
       MALFORMED) value='not-a-state' ;;
       *) value=$state ;;
     esac
     out=$(FM_TEST_GH_STATE="$value" run_poll "$dir")
-    [ -z "$out" ] || fail "static poll emitted for non-merged state"
+    [ -z "$out" ] || fail "static poll emitted for non-terminal state"
   done
   out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
   [ "$out" = merged ] || fail "static poll did not emit exactly one merged line"
+  # A pull request closed without merging is terminal too, and must never be
+  # reported as a merge: the change may have landed in a successor.
+  out=$(FM_TEST_GH_STATE=CLOSED run_poll "$dir")
+  [ "$out" = closed ] || fail "static poll did not emit exactly one closed line"
   out=$(FM_TEST_GH_FAIL=1 run_poll "$dir")
   [ -z "$out" ] || fail "static poll emitted after gh failure"
 
@@ -2803,14 +2807,17 @@ gitlab.example
 group/subgroup/project
 7" ] || fail "published GitLab sidecar bytes were not exact"
 
-  # Only an exact merged state wakes firstmate. Every other reading, including
-  # an unreadable merge request and a changed output format, stays silent.
-  for value in opened closed locked '' not-a-state MERGED merged-but-not; do
+  # Only an exact merged or an exact closed state wakes firstmate. Every other
+  # reading, including an unreadable merge request and a changed output format,
+  # stays silent.
+  for value in opened locked '' not-a-state MERGED CLOSED merged-but-not closed-but-not; do
     out=$(FM_TEST_GLAB_STATE="$value" run_poll "$dir")
-    [ -z "$out" ] || fail "GitLab poll emitted for a non-merged state"
+    [ -z "$out" ] || fail "GitLab poll emitted for a non-terminal state"
   done
   out=$(FM_TEST_GLAB_STATE=merged run_poll "$dir")
   [ "$out" = merged ] || fail "GitLab poll did not emit exactly one merged line"
+  out=$(FM_TEST_GLAB_STATE=closed run_poll "$dir")
+  [ "$out" = closed ] || fail "GitLab poll did not emit exactly one closed line"
   out=$(FM_TEST_GLAB_FAIL=1 run_poll "$dir")
   [ -z "$out" ] || fail "GitLab poll emitted after a glab failure"
 
@@ -3130,15 +3137,12 @@ test_external_merge_transition_retires_only_terminal_poll() {
   add_stop_custom_check "$dir"
   before=$(poll_artifact_snapshot "$state" task-a)
 
-  for label in open-green open-red closed-unmerged forge-error malformed; do
+  for label in open-green open-red forge-error malformed; do
     rm -f "$state/.last-check"
     set +e
     case "$label" in
       open-green|open-red)
         FM_TEST_GH_STATE=OPEN run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
-        ;;
-      closed-unmerged)
-        FM_TEST_GH_STATE=CLOSED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
         ;;
       forge-error)
         FM_TEST_GH_FAIL=1 run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
@@ -3162,7 +3166,50 @@ test_external_merge_transition_retires_only_terminal_poll() {
   [ "$rc" -eq 0 ] || fail "external merged transition failed: $(cat "$dir/merged.err")"
   case "$(cat "$dir/merged.out")" in check:*task-a.check.sh:*merged) ;; *) fail "external merge did not preserve its notification" ;; esac
   assert_poll_absent "$state" task-a
-  pass "open/red, closed-unmerged, malformed, and forge errors remain armed until an exact merged transition"
+  pass "open/red, malformed, and forge errors remain armed until an exact merged transition"
+}
+
+# A pull request closed without merging is a normal outcome, not a failure and
+# not a merge, and it must wake firstmate exactly once so it can reconcile
+# whether the work landed in a successor pull request. Retiring the poll on that
+# same result is what stops the one wake becoming one wake per check interval.
+test_closed_unmerged_poll_wakes_once_and_retires() {
+  local dir state rc first second meta_before
+  dir=$(make_case closed-unmerged-retirement)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/31
+  meta_before=$(cat "$state/task-a.meta")
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/31
+  add_stop_custom_check "$dir"
+
+  set +e
+  FM_TEST_GH_STATE=CLOSED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "closed-unmerged watcher failed: $(cat "$dir/watch-1.err")"
+  first=$(cat "$dir/watch-1.out")
+  case "$first" in
+    check:*task-a.check.sh:*closed) ;;
+    *) fail "closed-unmerged pull request did not produce its own wake: $first" ;;
+  esac
+  ! grep -F 'task-a.check.sh: merged' "$dir/watch-1.out" >/dev/null \
+    || fail "closed-unmerged pull request was reported as a merge"
+  assert_poll_absent "$state" task-a
+  [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "closed retirement changed canonical metadata"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=CLOSED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second watcher cycle failed: $(cat "$dir/watch-2.err")"
+  second=$(cat "$dir/watch-2.out")
+  case "$second" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "second cycle did not reach the control check: $second" ;; esac
+  ! grep -F 'task-a.check.sh: closed' "$dir/watch-2.out" >/dev/null \
+    || fail "retired closed-unmerged poll executed a second time"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "closed-unmerged poll did not queue exactly one terminal notification"
+  pass "a closed-unmerged pull request wakes firstmate once, distinctly from a merge, and retires its poll"
 }
 
 test_retirement_refuses_replacement_and_nonterminal_results() {
@@ -3328,6 +3375,7 @@ test_gitlab_merged_poll_retires() {
 test_parser_matrix
 test_gitlab_merge_watch
 test_merged_poll_retires_once
+test_closed_unmerged_poll_wakes_once_and_retires
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery
 test_external_merge_transition_retires_only_terminal_poll
