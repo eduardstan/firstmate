@@ -12,12 +12,16 @@
 # consumer re-derives the identity from the stored URL and refuses any record
 # whose parts do not reconstruct that exact URL.
 #
-# A validated exact terminal result - merged, or closed without merging - is
-# retired through a private receipt only after its durable wake is appended.
-# The receipt records which of the two was observed, so a closed PR is never
-# recoverable as a merge.
+# A validated exact merged result is retired through a private receipt only
+# after its durable wake is appended.
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
+#
+# A validated exact closed result is NOT retired: a closed pull request can be
+# reopened and merged, so its poll stays armed and the merge still wakes
+# firstmate. Its one-time wake is instead suppressed by a .seen-* marker in the
+# watcher's own dedupe family, cleared here whenever a poll is published so a
+# re-armed task watching a new pull request wakes on its own closure.
 
 FM_PR_PROVIDER=
 FM_PR_URL=
@@ -523,9 +527,40 @@ fm_pr_poll_prepare() {
   fi
 }
 
+# Suppressor for the one-time closed-unmerged wake, in the watcher's .seen-*
+# dedupe family. The poll stays armed on a closed result, so the same reading
+# returns every check interval and only this marker keeps it to a single wake.
+fm_pr_poll_closed_marker_path() {  # <state> <id>
+  local state=$1 id=$2
+  fm_pr_task_id_valid "$id" || return 1
+  printf '%s/.seen-pr-closed-%s\n' "$state" "$id"
+}
+
+# Written only after the durable wake is appended, the same order scan_signals
+# and the process-event surfacing use, so a watcher killed mid-cycle repeats the
+# wake rather than swallowing it.
+fm_pr_poll_closed_marker_publish() {  # <state> <id>
+  local state=$1 id=$2 marker tmp
+  marker=$(fm_pr_poll_closed_marker_path "$state" "$id") || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  tmp=$(umask 077; mktemp "$state/.seen-pr-closed.XXXXXX") || return 1
+  mv -f -- "$tmp" "$marker" || { rm -f -- "$tmp"; return 1; }
+}
+
+fm_pr_poll_closed_marker_clear() {  # <state> <id>
+  local marker
+  marker=$(fm_pr_poll_closed_marker_path "$1" "$2") || return 1
+  rm -f -- "$marker"
+}
+
 fm_pr_poll_publish_prepared() {
   [ -n "$FM_PR_POLL_DATA_TMP" ] && [ -n "$FM_PR_POLL_CHECK_TMP" ] \
     && [ -n "$FM_PR_POLL_REG_TMP" ] || return 1
+  # A published poll is a fresh watch: whatever closure the previous poll for
+  # this task already reported must not suppress this one's own closed wake.
+  # Cleared before anything is published, so a failed publish leaves no
+  # suppressor claiming a wake that was never surfaced for this poll.
+  fm_pr_poll_closed_marker_clear "${FM_PR_POLL_DATA_DEST%/*}" "$FM_PR_POLL_EXPECT_ID" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_PR_POLL_DATA_DEST" "$FM_PR_POLL_STATE_DEVICE" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_PR_POLL_REG_DEST" "$FM_PR_POLL_STATE_DEVICE" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_PR_POLL_CHECK_DEST" "$FM_PR_POLL_STATE_DEVICE" || return 1
@@ -707,10 +742,7 @@ fm_pr_poll_retirement_parse() {
   [[ "$check_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
   [[ "$reg_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
   [[ "$reg_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
-  case "$result" in
-    merged|closed) ;;
-    *) return 1 ;;
-  esac
+  [ "$result" = merged ] || return 1
   FM_PR_RETIRE_ID=$id
   FM_PR_RETIRE_PROVIDER=$provider
   FM_PR_RETIRE_URL=$url
@@ -857,10 +889,7 @@ fm_pr_poll_retirement_discard_obsolete() {
 
 fm_pr_poll_retirement_publish() {
   local state=$1 id=$2 template=$3 result=$4 receipt state_device tmp
-  case "$result" in
-    merged|closed) ;;
-    *) return 1 ;;
-  esac
+  [ "$result" = merged ] || return 1
   fm_pr_poll_snapshot_matches "$state" "$id" "$template" || return 1
   state_device=$(fm_pr_file_device "$state") || return 1
   receipt="$state/$id.pr-poll-retirement"
@@ -882,7 +911,7 @@ fm_pr_poll_retirement_publish() {
       "$FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY" \
       "$FM_PR_POLL_SNAPSHOT_REG_HASH" \
       "$FM_PR_POLL_SNAPSHOT_REG_IDENTITY" \
-      "$result" > "$tmp" \
+      merged > "$tmp" \
     || ! chmod 0600 "$tmp" \
     || ! fm_pr_private_file_valid "$tmp" 600 "$state_device" \
     || ! fm_pr_poll_retirement_parse "$tmp" \

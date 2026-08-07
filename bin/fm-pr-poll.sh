@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Static watcher program for a validated PR/MR poll sidecar.
-# It emits exactly one terminal line for a PR or MR that has reached one:
-# merged for a merged PR or MR, closed for one closed without merging. It stays
-# silent otherwise, including on every error, so a failed lookup can never be
-# read as a merge and a closed PR is never reported as one. A closed PR is not a
-# failure - its work may have landed in a successor - so the two results are
-# distinct and firstmate reconciles the closed one.
+# It emits exactly one merged line for a merged PR or MR, and on GitHub one
+# closed line for a pull request closed without merging. It stays silent
+# otherwise, including on every error, so a failed lookup can never be read as a
+# merge and a closed pull request is never reported as one. A closed pull request
+# is not a failure - its work may have landed in a successor - so the two results
+# are distinct and firstmate reconciles the closed one.
+# The GitLab path emits merged only: the token glab prints for a closed merge
+# request could not be verified against a real glab here, and an unverified token
+# would make that half a silent no-op, so it is deliberately left out of scope.
 # The provider-tagged identity is data in the sidecar and is never
 # interpolated into this source: these bytes are identical for every task.
 # Each provider is read through its own standard CLI, gh for GitHub and glab
@@ -106,15 +109,11 @@ case "$provider" in
     # to git for the current repository, and the watcher runs in no repository.
     # The state is read from glab's own field output rather than its JSON,
     # because plain glab has no field selector and firstmate does not require a
-    # JSON processor; only an exact "merged" or "closed" wakes, so a changed
-    # format or an unreadable merge request stays silent instead of reporting a
-    # terminal state.
+    # JSON processor; only an exact "merged" wakes, so a changed format or an
+    # unreadable merge request stays silent instead of reporting a merge.
     raw=$(glab mr view "$number" -R "https://$host/$path" 2>/dev/null) || exit 0
     state=$(printf '%s\n' "$raw" | sed -n 's/^state:[[:space:]]*//p' | head -1) || exit 0
-    case "$state" in
-      merged) printf '%s\n' merged ;;
-      closed) printf '%s\n' closed ;;
-    esac
+    [ "$state" = merged ] && printf '%s\n' merged
     ;;
   *) exit 0 ;;
 esac

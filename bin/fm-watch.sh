@@ -920,18 +920,30 @@ while :; do
         fi
       fi
       if [ -n "$out" ]; then
+        # A closed-unmerged PR is neither a merge nor a failure: the change may
+        # have landed in a successor, so it wakes firstmate to reconcile. It does
+        # NOT retire the poll - a closed PR can be reopened and merged, and
+        # GitHub closes one automatically when its base branch is deleted, so
+        # retiring here would lose the merge wake that fires today. The poll
+        # therefore stays armed and keeps reporting closed every interval; the
+        # .seen-* marker is what holds that to one wake, and it is written only
+        # after the durable wake is appended.
+        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = closed ] \
+          && [ -e "$(fm_pr_poll_closed_marker_path "$STATE" "$id")" ]; then
+          continue
+        fi
         reason="check: $c: $out"
         fm_wake_append check "$c" "$reason" || exit 1
-        # Both terminal results retire the poll. A closed-unmerged PR is not a
-        # failure and not a merge: the change may have landed in a successor, so
-        # the wake above is what firstmate reconciles against. Retiring here is
-        # what keeps that single wake from repeating every check interval.
-        if [ "$is_pr_poll" -eq 1 ] && { [ "$out" = merged ] || [ "$out" = closed ]; }; then
+        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = closed ]; then
+          fm_pr_poll_closed_marker_publish "$STATE" "$id" \
+            || triage_log "closed PR poll wake marker could not be recorded for $id"
+        fi
+        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
           if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
             fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-              || triage_log "$out PR poll retirement remains recoverable for $id"
+              || triage_log "merged PR poll retirement remains recoverable for $id"
           else
-            triage_log "$out PR poll retirement deferred because its canonical snapshot changed for $id"
+            triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
           fi
         fi
         touch "$STATE/.last-check"
