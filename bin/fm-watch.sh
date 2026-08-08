@@ -839,6 +839,17 @@ while :; do
         fi
       fi
       if [ -n "$out" ]; then
+        # A positive open reading is not a wake: it is how a previous closure is
+        # forgotten. A closed PR that is reopened and closed again is two genuine
+        # events, and the second one deserves its wake. Only this reading clears
+        # the marker - silence must never do it, because silence is also an
+        # unreadable PR or a failed CLI lookup, and clearing on that would re-fire
+        # the wake on every flaky forge lookup.
+        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = open ]; then
+          fm_pr_poll_closed_marker_clear "$STATE" "$id" \
+            || triage_log "closed PR poll wake marker could not be cleared for $id"
+          continue
+        fi
         # A closed-unmerged PR is neither a merge nor a failure: the change may
         # have landed in a successor, so it wakes firstmate to reconcile. It does
         # NOT retire the poll - a closed PR can be reopened and merged, and
