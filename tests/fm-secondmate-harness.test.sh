@@ -1093,6 +1093,18 @@ test_registry_runtime_edit_action() {
   [ "$rc" -ne 0 ] || fail "edit: an unverified harness should be refused"
   assert_contains "$out" "unverified harness for sm: muse" "edit: refusal does not name the harness"
   [ "$(cat "$reg")" = "$before" ] || fail "edit: a refused harness changed the stored record"
+
+  # An empty value is an input error, not a second spelling of the "-" clear
+  # sentinel: an unset shell variable expanding into the assignment must never
+  # erase a recorded axis and report success.
+  local axis
+  for axis in harness model effort; do
+    rc=0
+    out=$(seed_runtime sm "$axis=" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "edit: an empty $axis value should be refused"
+    assert_contains "$out" "empty value for $axis on sm" "edit: refusal does not name the empty axis '$axis'"
+    [ "$(cat "$reg")" = "$before" ] || fail "edit: an empty $axis value changed the stored record"
+  done
   pass "D6 registry: the runtime edit action sets, clears, and refuses per axis without disturbing the record"
 }
 

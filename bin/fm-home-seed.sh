@@ -225,7 +225,7 @@ registry_line_is_for_id() {
 # registry is validated as a whole before it replaces the live file, so a refused
 # edit leaves the record exactly as it was.
 runtime_set_locked() {
-  local id=$1 assignment key value tmp line existing
+  local id=$1 assignment key value clear tmp line existing
   shift
   if ! secondmate_registry_line_for_id "$REG" "$id"; then
     [ -z "$SECONDMATE_REGISTRY_ERROR" ] || { printf 'error: %s\n' "$SECONDMATE_REGISTRY_ERROR" >&2; return 1; }
@@ -236,7 +236,12 @@ runtime_set_locked() {
     key=${assignment%%=*}
     value=${assignment#*=}
     [ "$key" != "$assignment" ] || { echo "error: expected <harness|model|effort>=<value|->, got: $assignment" >&2; return 1; }
-    [ "$value" != - ] || value=
+    clear=0
+    [ "$value" != - ] || { clear=1; value=; }
+    if [ "$clear" -eq 0 ] && [ -z "$value" ]; then
+      echo "error: empty value for $key on $id; pass '-' to clear this axis" >&2
+      return 1
+    fi
     case "$key" in
       harness)
         [ -z "$value" ] || secondmate_registry_runtime_harness_ok "$value" || {
