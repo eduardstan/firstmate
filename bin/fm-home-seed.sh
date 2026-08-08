@@ -836,7 +836,7 @@ initialize_no_mistakes_project() {
 # cannot drift from the format bin/fm-secondmate-registry-lib.sh parses.
 write_registry() {
   local id=$1 home=$2 projects_csv=$3 brief=$4 scope summary tmp today
-  local kept_harness= kept_model= kept_effort=
+  local kept_harness='' kept_model='' kept_effort=''
   mkdir -p "$DATA"
   scope=$(registry_scope_for_brief "$brief")
   summary=$(registry_summary_for_brief "$brief")
