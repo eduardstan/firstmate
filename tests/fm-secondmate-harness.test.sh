@@ -1206,6 +1206,32 @@ test_registry_runtime_survives_reseed() {
   pass "D7 registry: a re-seed of an already-registered mate preserves its recorded runtime"
 }
 
+test_registry_reseed_keeps_dotted_id_siblings() {
+  local w out reg
+  w="$TMP_ROOT/registry-reseed-dotted-ids"
+  mkdir -p "$w/home/config" "$w/home/state" "$w/home/data" "$w/home/projects"
+  reg="$w/home/data/secondmates.md"
+
+  run_seed() {
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w/home" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+      FM_SECONDMATE_CHARTER='dotted id charter' \
+      "$ROOT/bin/fm-home-seed.sh" "$@"
+  }
+
+  out=$(run_seed a.b "$w/a.b" --no-projects 2>&1) || fail "dotted ids: seeding a.b failed"$'\n'"$out"
+  out=$(run_seed axb "$w/axb" --no-projects 2>&1) || fail "dotted ids: seeding axb failed"$'\n'"$out"
+  out=$(run_seed a.b "$w/a.b" --no-projects 2>&1) || fail "dotted ids: re-seeding a.b failed"$'\n'"$out"
+
+  [ "$(grep -c '^- axb ' "$reg")" = 1 ] \
+    || fail "dotted ids: re-seeding a.b unregistered the sibling axb"$'\n'"$(cat "$reg")"
+  [ "$(grep -c '^- a\.b ' "$reg")" = 1 ] \
+    || fail "dotted ids: re-seeding a.b did not leave exactly one a.b record"$'\n'"$(cat "$reg")"
+  out=$(run_seed validate 2>&1) || fail "dotted ids: the rewritten registry does not validate"$'\n'"$out"
+  pass "D8 registry: a re-seed matches its id exactly and keeps dotted-id siblings"
+}
+
 test_spawned_secondmate_uses_its_harness_supervision_model() {
   local harness expected w sm launchlog launch fakebin out
   for harness in codex claude; do
@@ -2871,6 +2897,7 @@ test_registry_runtime_invalid_values_refused
 test_registry_runtime_precedence_edges
 test_registry_runtime_edit_action
 test_registry_runtime_survives_reseed
+test_registry_reseed_keeps_dotted_id_siblings
 test_spawned_secondmate_uses_its_harness_supervision_model
 test_spawn_fallback_chain_and_crew_scout_unaffected
 test_bootstrap_sweep_propagates_and_reconverges

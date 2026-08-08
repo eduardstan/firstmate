@@ -219,7 +219,7 @@ if [ -f "$REG" ] && [ ! -L "$REG" ] && secondmate_registry_line_for_id "$REG" "$
   KEPT_MODEL=$SECONDMATE_REGISTRY_MODEL
   KEPT_EFFORT=$SECONDMATE_REGISTRY_EFFORT
 fi
-if [ -f "$REG" ]; then grep -vE "^- $ID( |$)" "$REG" > "$REG_TMP" || true; else : > "$REG_TMP"; fi
+if [ -f "$REG" ]; then secondmate_registry_without_id "$REG" "$ID" > "$REG_TMP" || true; else : > "$REG_TMP"; fi
 SECONDMATE_REGISTRY_ID=$ID
 SECONDMATE_REGISTRY_SUMMARY=$SUMMARY
 SECONDMATE_REGISTRY_REMOTE=1

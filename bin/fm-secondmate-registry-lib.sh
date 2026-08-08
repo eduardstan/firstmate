@@ -185,6 +185,24 @@ secondmate_registry_parse_line() {
   return 0
 }
 
+# Whether a registry line is this id's record. Matching is literal because an id
+# may contain "." and "-": a pattern or regex match would let "a.b" claim the
+# unrelated record "axb", and the writers below rewrite whatever this matches.
+secondmate_registry_line_is_for_id() {
+  case "$1" in "- $2"|"- $2 "*) return 0 ;; esac
+  return 1
+}
+
+# Emit every registry line except this id's record, for the writers that replace
+# a record in place.
+secondmate_registry_without_id() {
+  local reg=$1 id=$2 line
+  while IFS= read -r line || [ -n "$line" ]; do
+    if secondmate_registry_line_is_for_id "$line" "$id"; then continue; fi
+    printf '%s\n' "$line"
+  done < "$reg"
+}
+
 secondmate_registry_line_for_id() {
   local reg=$1 id=$2 line count=0
   # Cleared here as well as in the parser so a caller can tell "no record for
@@ -193,7 +211,7 @@ secondmate_registry_line_for_id() {
   case "$id" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
   [ -f "$reg" ] && [ ! -L "$reg" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
-    [ "$line" = "- $id" ] || case "$line" in "- $id "*) ;; *) continue ;; esac
+    secondmate_registry_line_is_for_id "$line" "$id" || continue
     count=$((count + 1))
     [ "$count" -eq 1 ] || return 1
     SECONDMATE_REGISTRY_LINE=$line

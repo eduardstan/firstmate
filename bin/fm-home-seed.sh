@@ -215,11 +215,6 @@ validate_registry() {
   }
 }
 
-registry_line_is_for_id() {
-  case "$1" in "- $2"|"- $2 "*) return 0 ;; esac
-  return 1
-}
-
 # Record or clear this secondmate's own durable runtime fields on its existing
 # record. Every value is validated before anything is written, and the rewritten
 # registry is validated as a whole before it replaces the live file, so a refused
@@ -274,7 +269,7 @@ runtime_set_locked() {
   tmp="$REG.tmp.$$"
   : > "$tmp"
   while IFS= read -r existing || [ -n "$existing" ]; do
-    if registry_line_is_for_id "$existing" "$id"; then
+    if secondmate_registry_line_is_for_id "$existing" "$id"; then
       printf '%s\n' "$line" >> "$tmp"
     else
       printf '%s\n' "$existing" >> "$tmp"
@@ -848,7 +843,7 @@ write_registry() {
   fi
   tmp="$REG.tmp.$$"
   if [ -f "$REG" ]; then
-    grep -vE "^- $id( |$)" "$REG" > "$tmp" || true
+    secondmate_registry_without_id "$REG" "$id" > "$tmp" || true
   else
     : > "$tmp"
   fi
