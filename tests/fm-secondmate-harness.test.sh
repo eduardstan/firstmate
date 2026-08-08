@@ -1165,6 +1165,47 @@ test_registry_runtime_edit_action() {
   pass "D6 registry: the runtime edit action sets, clears, and refuses per axis without disturbing the record"
 }
 
+# Re-seeding an already-registered mate at the same home is a supported flow
+# (adding a project, refreshing the charter). It rewrites that mate's record, so
+# it must carry the recorded runtime forward: the pin is durable across every
+# rewrite of the record, not only across relaunches.
+test_registry_runtime_survives_reseed() {
+  local w sm meta launchlog out status
+  w="$TMP_ROOT/registry-runtime-reseed"
+  sm="$w/sm"
+  launchlog="$w/launch.log"
+  mkdir -p "$w/home/config" "$w/home/state" "$w/home/data" "$w/home/projects"
+  printf 'claude opus high\n' > "$w/home/config/secondmate-harness"
+
+  run_seed() {
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w/home" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+      FM_SECONDMATE_CHARTER='runtime durability charter' \
+      "$ROOT/bin/fm-home-seed.sh" "$@"
+  }
+
+  out=$(run_seed sm "$sm" --no-projects 2>&1) || fail "reseed: initial seed failed"$'\n'"$out"
+  out=$(run_seed runtime sm harness=codex model=gpt-x effort=xhigh 2>&1) \
+    || fail "reseed: recording the runtime failed"$'\n'"$out"
+
+  out=$(run_seed sm "$sm" --no-projects 2>&1) || fail "reseed: re-seeding the same home failed"$'\n'"$out"
+  out=$(run_seed validate 2>&1) || fail "reseed: the rewritten registry does not validate"$'\n'"$out"
+
+  out=$(spawn_secondmate_from_record "$w" sm "$launchlog" 2>&1); status=$?
+  expect_code 0 "$status" "reseed: the re-seeded mate should launch"$'\n'"$out"
+  meta="$w/home/state/sm.meta"
+  [ "$(meta_field "$meta" harness)" = codex ] \
+    || fail "reseed: harness reverted to the home-wide pin (got '$(meta_field "$meta" harness)')"
+  [ "$(meta_field "$meta" model)" = gpt-x ] \
+    || fail "reseed: model reverted to the home-wide pin (got '$(meta_field "$meta" model)')"
+  [ "$(meta_field "$meta" effort)" = xhigh ] \
+    || fail "reseed: effort reverted to the home-wide pin (got '$(meta_field "$meta" effort)')"
+  assert_contains "$(cat "$launchlog")" "--model 'gpt-x'" "reseed: the launch lost the recorded model"
+  assert_not_contains "$(cat "$launchlog")" "--model 'opus'" "reseed: the launch reverted to the home-wide model"
+  pass "D7 registry: a re-seed of an already-registered mate preserves its recorded runtime"
+}
+
 test_spawned_secondmate_uses_its_harness_supervision_model() {
   local harness expected w sm launchlog launch fakebin out
   for harness in codex claude; do
@@ -2829,6 +2870,7 @@ test_registry_pre_change_record_unchanged
 test_registry_runtime_invalid_values_refused
 test_registry_runtime_precedence_edges
 test_registry_runtime_edit_action
+test_registry_runtime_survives_reseed
 test_spawned_secondmate_uses_its_harness_supervision_model
 test_spawn_fallback_chain_and_crew_scout_unaffected
 test_bootstrap_sweep_propagates_and_reconverges
