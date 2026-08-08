@@ -1061,7 +1061,27 @@ test_registry_runtime_invalid_values_refused() {
     "$ROOT/bin/fm-home-seed.sh" validate 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "invalid: registry validation should refuse the same record"
   assert_contains "$out" "invalid recorded effort for sm: turbo" "invalid: validation does not name the recorded effort"
-  pass "D4 spawn: an invalid recorded harness or effort is refused loudly, at launch and at validation"
+
+  # "-" and "default" are the launch routes' own "no model" sentinels and mean
+  # opposite things on the two routes, so neither is a recordable model.
+  local sentinel
+  for sentinel in - default; do
+    rm -f "$w/home/data/secondmates.md"
+    write_secondmate_record "$w" sm "$sm" " model: $sentinel;"
+    rc=0
+    err=$(spawn_secondmate_from_record "$w" sm "$launchlog" 2>&1 >/dev/null) || rc=$?
+    [ "$rc" -ne 0 ] || fail "invalid: a recorded '$sentinel' model should refuse the spawn"
+    assert_contains "$err" "unusable recorded model for sm: $sentinel" \
+      "invalid: refusal does not name the recorded model sentinel '$sentinel'"
+    [ -e "$w/home/state/sm.meta" ] && fail "invalid: a meta was written despite the model refusal"
+    rc=0
+    out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$w/home" \
+      FM_STATE_OVERRIDE="$w/home/state" FM_DATA_OVERRIDE="$w/home/data" \
+      FM_PROJECTS_OVERRIDE="$w/home/projects" FM_CONFIG_OVERRIDE="$w/home/config" \
+      "$ROOT/bin/fm-home-seed.sh" validate 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "invalid: validation should refuse a recorded '$sentinel' model"
+  done
+  pass "D4 spawn: an invalid recorded harness, effort, or model sentinel is refused loudly, at launch and at validation"
 }
 
 # A recorded harness suppresses the config tokens (they were written against the

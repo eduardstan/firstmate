@@ -18,7 +18,7 @@
 # inherit the rest. A record with none of them is the legacy form and parses
 # exactly as before. The segment fails closed: any other key, a repeated key, a
 # segment missing its terminating ";", an unverified harness, an effort outside
-# low|medium|high|xhigh|max, or an empty/whitespace-bearing model makes the whole
+# low|medium|high|xhigh|max, or an unusable model makes the whole
 # record malformed and sets SECONDMATE_REGISTRY_ERROR, so an unreadable pin can
 # never degrade into a silent launch on something the record does not name.
 # bin/fm-spawn.sh owns how these outrank config/secondmate-harness, and the
@@ -63,9 +63,13 @@ secondmate_registry_runtime_effort_ok() {
 
 # A model reaches a launch command as one shell-quoted word, so a value carrying
 # whitespace or control characters is a record this parser cannot honor verbatim.
+# "-" and "default" are the two reserved "no model" sentinels of the launch
+# routes (the remote route drops "-", bin/fm-spawn.sh drops "default"), so a
+# record naming either would resolve differently on the two routes; neither is a
+# recordable model.
 secondmate_registry_runtime_model_ok() {
   case "$1" in
-    ''|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;;
+    ''|-|default|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;;
   esac
   return 0
 }
