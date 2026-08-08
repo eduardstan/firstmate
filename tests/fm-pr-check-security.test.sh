@@ -81,7 +81,7 @@ case " $* " in
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
-    printf '%s\n' "${FM_TEST_GH_STATE:-OPEN}"
+    printf '%s\n' "${FM_TEST_GH_STATE-OPEN}"
     ;;
 esac
 SH
@@ -726,14 +726,14 @@ test_static_poll_contract() {
   dir=$(make_case poll-contract)
   make_poll_fixture "$dir"
 
-  for state in OPEN EMPTY MALFORMED; do
+  for state in EMPTY MALFORMED; do
     case "$state" in
       EMPTY) value= ;;
       MALFORMED) value='not-a-state' ;;
       *) value=$state ;;
     esac
     out=$(FM_TEST_GH_STATE="$value" run_poll "$dir")
-    [ -z "$out" ] || fail "static poll emitted for non-terminal state"
+    [ -z "$out" ] || fail "static poll emitted for an unreadable state"
   done
   out=$(FM_TEST_GH_STATE=MERGED run_poll "$dir")
   [ "$out" = merged ] || fail "static poll did not emit exactly one merged line"
@@ -741,6 +741,10 @@ test_static_poll_contract() {
   # reported as a merge: the change may have landed in a successor.
   out=$(FM_TEST_GH_STATE=CLOSED run_poll "$dir")
   [ "$out" = closed ] || fail "static poll did not emit exactly one closed line"
+  # A still-open pull request is reported positively rather than by silence, so
+  # the watcher can tell "definitely open again" apart from "could not read it".
+  out=$(FM_TEST_GH_STATE=OPEN run_poll "$dir")
+  [ "$out" = open ] || fail "static poll did not emit exactly one open line"
   out=$(FM_TEST_GH_FAIL=1 run_poll "$dir")
   [ -z "$out" ] || fail "static poll emitted after gh failure"
 
@@ -2826,11 +2830,8 @@ group/subgroup/project
 7" ] || fail "published GitLab sidecar bytes were not exact"
 
   # Only an exact merged state wakes firstmate. Every other reading, including
-  # an unreadable merge request and a changed output format, stays silent. The
-  # closed-unmerged result is GitHub-only: the token glab prints for a closed
-  # merge request is unverified here, so this path stays silent on every
-  # spelling of it.
-  for value in opened closed locked '' not-a-state MERGED CLOSED merged-but-not closed-but-not; do
+  # an unreadable merge request and a changed output format, stays silent.
+  for value in opened closed locked '' not-a-state MERGED merged-but-not; do
     out=$(FM_TEST_GLAB_STATE="$value" run_poll "$dir")
     [ -z "$out" ] || fail "GitLab poll emitted for a non-merged state"
   done
@@ -3280,6 +3281,64 @@ test_closed_unmerged_poll_wakes_once_and_stays_armed() {
   pass "a closed-unmerged pull request wakes firstmate once, stays armed, and a later merge still wakes and retires"
 }
 
+# A pull request closed, reopened, and closed again is TWO genuine events, and
+# the second one deserves its own wake. The suppressing marker is therefore
+# forgotten on a positive open reading - the poll already reads the state every
+# cycle - rather than only on teardown or re-arming. An open reading itself
+# wakes nobody, and silence never clears the marker, because silence is also an
+# unreadable pull request or a failed forge lookup and clearing on it would
+# re-fire the wake on every flaky lookup.
+test_reopened_pull_request_wakes_on_its_second_closure() {
+  local dir state rc armed marker out
+  dir=$(make_case reopened-second-closure)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/41
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/41
+  add_stop_custom_check "$dir"
+  armed=$(poll_artifact_snapshot "$state" task-a)
+  marker=$(fm_pr_poll_closed_marker_path "$state" task-a) \
+    || fail "could not resolve the closed-unmerged wake marker path"
+
+  set +e
+  FM_TEST_GH_STATE=CLOSED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/closed-1.out" 2> "$dir/closed-1.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "first closure watcher failed: $(cat "$dir/closed-1.err")"
+  case "$(cat "$dir/closed-1.out")" in
+    check:*task-a.check.sh:*closed) ;;
+    *) fail "the first closure did not wake: $(cat "$dir/closed-1.out")" ;;
+  esac
+  [ -e "$marker" ] || fail "the first closure did not record its wake marker"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=OPEN run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/reopened.out" 2> "$dir/reopened.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "reopened watcher failed: $(cat "$dir/reopened.err")"
+  out=$(cat "$dir/reopened.out")
+  case "$out" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "the reopened cycle did not reach the control check: $out" ;; esac
+  ! grep -F 'task-a.check.sh: open' "$dir/reopened.out" >/dev/null \
+    || fail "a reopened pull request queued a wake of its own"
+  [ ! -e "$marker" ] || fail "a reopened pull request did not clear the closed-unmerged wake marker"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=CLOSED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/closed-2.out" 2> "$dir/closed-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second closure watcher failed: $(cat "$dir/closed-2.err")"
+  case "$(cat "$dir/closed-2.out")" in
+    check:*task-a.check.sh:*closed) ;;
+    *) fail "the second genuine closure never woke anyone: $(cat "$dir/closed-2.out")" ;;
+  esac
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 2 ] \
+    || fail "a closed, reopened, and re-closed pull request did not queue exactly two notifications"
+  [ "$(poll_artifact_snapshot "$state" task-a)" = "$armed" ] \
+    || fail "the reopen and re-closure changed the still-armed poll"
+  pass "a reopened pull request forgets its closure and its second closure wakes firstmate again"
+}
+
 test_retirement_refuses_replacement_and_nonterminal_results() {
   local dir state before rc replacement_check replacement_data replacement_registration replacement_meta
   local historical_poll current_poll
@@ -3300,7 +3359,7 @@ test_retirement_refuses_replacement_and_nonterminal_results() {
   # every other reading: it wakes firstmate but leaves the poll armed, so a
   # reopened pull request that is later merged still retires through this path.
   fm_pr_poll_snapshot_capture "$state" task-a "$POLL" || fail "could not snapshot nonterminal fixture"
-  for result in OPEN CLOSED closed ERROR 'merged extra'; do
+  for result in OPEN CLOSED closed open ERROR 'merged extra'; do
     fm_pr_poll_retirement_publish "$state" task-a "$POLL" "$result" \
       && fail "non-merged result '$result' received retirement authority"
   done
@@ -3452,6 +3511,7 @@ test_parser_matrix
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_closed_unmerged_poll_wakes_once_and_stays_armed
+test_reopened_pull_request_wakes_on_its_second_closure
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery
 test_external_merge_transition_retires_only_terminal_poll
