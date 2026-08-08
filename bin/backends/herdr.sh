@@ -1887,7 +1887,7 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence status agent fg_rc
+  local session=$1 pane_id=$2 out code presence status agent fg_rc live_rc
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -1912,13 +1912,25 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
       # prime-agent 0.7.1). Registration is therefore not proof of a live agent
       # for this harness, and reporting `live` here would leave a quit
       # secondmate pane classified `alive` forever - never relaunched, and its
-      # detached worker never retired. Confirmed absence from the pane's
-      # foreground (exit 1 only) is a husk; an unreadable probe (exit 2) keeps
-      # the registered verdict.
+      # detached worker never retired.
+      #
+      # Absence from the FOREGROUND alone is not that proof, because
+      # prime-agent takes itself out of the foreground on purpose: Ctrl+Z stops
+      # its whole process group with SIGTSTP and hands the terminal back to the
+      # login shell while the agent - a stopped child of that shell - is still
+      # very much alive. Only a pane whose process subtree holds no prime-agent
+      # process AT ALL has genuinely returned to a bare shell, which is what
+      # `/quit` leaves behind. Both probes must positively confirm (exit 1);
+      # an unreadable one (exit 2) keeps the registered verdict, so a probe this
+      # backend cannot answer never licenses closing a live agent's pane.
       if [ "$agent" = prime-agent ]; then
         fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane_id"
         fg_rc=$?
-        if [ "$fg_rc" -eq 1 ]; then printf 'no-agent'; return 0; fi
+        if [ "$fg_rc" -eq 1 ]; then
+          fm_backend_herdr_pane_prime_agent_in_subtree "$session" "$pane_id"
+          live_rc=$?
+          if [ "$live_rc" -eq 1 ]; then printf 'no-agent'; return 0; fi
+        fi
       fi
       printf 'live'
       ;;
@@ -2847,6 +2859,63 @@ fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
       )
   ' >/dev/null 2>&1 || return 1
   return 0
+}
+
+# fm_backend_herdr_pane_prime_agent_in_subtree: does the pane still HOST a
+# prime-agent process anywhere below its shell, foreground or not?
+#
+# This is the discriminator the recovery classifier needs and the foreground
+# probe above cannot give it. prime-agent removes itself from the foreground
+# deliberately: Ctrl+Z stops its whole group with SIGTSTP (verified in
+# prime-agent 0.7.1's interactive mode), so a suspended - fully live - agent
+# and a `/quit` pane look identical from the foreground alone. They differ in
+# the process table: the suspended agent is still a stopped child of the pane's
+# shell, while a quit one has exited and left nothing behind.
+#
+# Same three outcomes and the same fail-safe direction as the foreground probe:
+#   0 - a prime-agent process is present in the pane's subtree.
+#   1 - the pane's shell was located in the process table and has no
+#       prime-agent process under it.
+#   2 - unusable: no process-info, no shell pid, no ps, or a process table that
+#       does not even contain the pane's own shell (which is what a pane hosted
+#       on another machine looks like from here).
+fm_backend_herdr_pane_prime_agent_in_subtree() {  # <session> <pane-id>
+  local session=$1 pane=$2 info shell_pid ps_bin rows rc
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
+  shell_pid=$(printf '%s' "$info" | jq -er --arg pane "$pane" '
+    select(.result.type == "pane_process_info" and .result.process_info.pane_id == $pane)
+    | .result.process_info.shell_pid
+    | select(type == "number" and . > 1)
+    | floor
+  ' 2>/dev/null) || return 2
+  ps_bin=${FM_HERDR_PS_BIN:-ps}
+  command -v "$ps_bin" >/dev/null 2>&1 || return 2
+  rows=$("$ps_bin" -axo pid=,ppid=,comm= 2>/dev/null) || return 2
+  [ -n "$rows" ] || return 2
+  printf '%s\n' "$rows" | awk -v root="$shell_pid" '
+    { pid[NR] = $1; ppid[NR] = $2; comm[NR] = $3; n = NR; known[$1] = 1 }
+    END {
+      if (!known[root]) exit 2
+      inpane[root] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= n; i++) {
+          if (!inpane[pid[i]] && inpane[ppid[i]]) { inpane[pid[i]] = 1; changed = 1 }
+        }
+      }
+      for (i = 1; i <= n; i++) {
+        if (!inpane[pid[i]] || pid[i] == root) continue
+        name = comm[i]
+        sub(/^-/, "", name)
+        sub(/.*\//, "", name)
+        if (name == "prime-agent") exit 0
+      }
+      exit 1
+    }
+  '
+  rc=$?
+  case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac
 }
 
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown

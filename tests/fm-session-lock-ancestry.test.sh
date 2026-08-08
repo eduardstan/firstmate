@@ -405,13 +405,24 @@ SH
   # a subagent child never has a client. `attached-behind-subagent` puts such a
   # zero-client child FIRST in the listing, so a verdict read off one arbitrary
   # entry would hand this home's lock away while its operator is still working.
-  for case_id in abandoned attached attached-behind-subagent wedged-daemon; do
+  # `mid-turn-detached` and `unknown-activity` are the other half of the same
+  # question: a pane that died mid-turn leaves NO client attached while the
+  # worker keeps writing the home, so client count alone would invite a second
+  # writer into the same worktree.
+  local idle busy
+  idle='"isSessionActive":false,"isStreaming":false,"isCompacting":false,"isRunningTools":false,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":0'
+  busy='"isSessionActive":true,"isStreaming":true,"isCompacting":false,"isRunningTools":true,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":1'
+  for case_id in abandoned attached attached-behind-subagent mid-turn-detached unknown-activity wedged-daemon; do
     case "$case_id" in
-      abandoned) sessions='{"id":"s1","cwd":"/x","workerPid":OLD,"attachedClients":0}' ;;
-      attached) sessions='{"id":"s1","cwd":"/x","workerPid":OLD,"attachedClients":1}' ;;
+      abandoned) sessions="{\"id\":\"s1\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle}" ;;
+      attached) sessions="{\"id\":\"s1\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":1,$idle}" ;;
       attached-behind-subagent)
-        sessions='{"id":"sub","kind":"subagent","cwd":"/x","workerPid":OLD,"attachedClients":0},{"id":"root","cwd":"/x","workerPid":OLD,"attachedClients":1}'
+        sessions="{\"id\":\"sub\",\"kind\":\"subagent\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle},{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":1,$idle}"
         ;;
+      mid-turn-detached)
+        sessions="{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$busy}"
+        ;;
+      unknown-activity) sessions='{"id":"s1","cwd":"/x","workerPid":OLD,"attachedClients":0}' ;;
       wedged-daemon) sessions= ;;
     esac
     cat > "$fakebin/prime-agent" <<SH
@@ -446,8 +457,8 @@ SH
         [ "$lock_after" = "$old" ] || fail "an unreadable listing was treated as an abandoned worker"
         ;;
       *)
-        expect_code 1 "$status" "a session someone is still attached to lost its lock ($case_id)"
-        [ "$lock_after" = "$old" ] || fail "an attached holder's lock was overwritten ($case_id)"
+        expect_code 1 "$status" "a worker that is still live lost its home's lock ($case_id)"
+        [ "$lock_after" = "$old" ] || fail "a live holder's lock was overwritten ($case_id)"
         assert_contains "$out" "another live firstmate session holds the lock" \
           "the live-holder refusal changed shape"
         ;;
@@ -455,12 +466,27 @@ SH
   done
   kill "$old" "$new" 2>/dev/null || true
   wait "$old" "$new" 2>/dev/null || true
-  pass "session-lock: an abandoned prime-agent worker is reclaimable while an attached one still holds the lock"
+  pass "session-lock: only an idle unattended prime-agent worker is reclaimable; attached or working ones keep the lock"
+}
+
+# The lock lib is sourced by hooks and other libs, several of which are written
+# without nounset, so sourcing it must hand the caller's shell flags back
+# exactly as it found them.
+test_sourcing_the_lock_lib_leaves_shell_flags_alone() {
+  local before after
+  before=$(bash -c 'echo "$-"')
+  after=$(bash -c '. "$0"; echo "$-"' "$LIB")
+  [ "$before" = "$after" ] \
+    || fail "sourcing the session-lock lib changed the caller's shell flags: '$before' -> '$after'"
+  bash -c 'set -u; . "$0"; case $- in *u*) ;; *) exit 1 ;; esac' "$LIB" \
+    || fail "sourcing the session-lock lib cleared a caller's own nounset"
+  pass "session-lock: sourcing the lib has no side effect on the caller's shell flags"
 }
 
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
 test_abandoned_prime_agent_worker_never_blocks_its_home
+test_sourcing_the_lock_lib_leaves_shell_flags_alone
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home

@@ -34,8 +34,17 @@
 FM_PRIME_AGENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F fm_run_timed >/dev/null 2>&1 \
   && [ -r "$FM_PRIME_AGENT_LIB_DIR/fm-timeout-lib.sh" ]; then
+  # The bound runner enables nounset at file scope, and this lib is sourced from
+  # source-only libs that promise the caller's shell flags back unchanged, so
+  # restore whatever the caller had.
+  case $- in
+    *u*) FM_PRIME_AGENT_LIB_NOUNSET=1 ;;
+    *) FM_PRIME_AGENT_LIB_NOUNSET=0 ;;
+  esac
   # shellcheck source=bin/fm-timeout-lib.sh
   . "$FM_PRIME_AGENT_LIB_DIR/fm-timeout-lib.sh"
+  [ "$FM_PRIME_AGENT_LIB_NOUNSET" = 1 ] || set +u
+  unset FM_PRIME_AGENT_LIB_NOUNSET
 fi
 
 # Every prime-agent CLI call goes through here, BOUNDED. `list` makes the
@@ -79,7 +88,7 @@ EOF
 
 # fm_prime_agent_worker_abandoned <pid>
 # True (0) only when <pid> is a prime-agent DAEMON SESSION WORKER that no client
-# is attached to any more.
+# is attached to any more AND none of its sessions is still doing anything.
 #
 # The session lock records the harness ancestor pid, which for prime-agent is
 # that worker rather than the client, and the worker outlives both the pane and
@@ -97,19 +106,43 @@ EOF
 #
 # One worker hosts MANY sessions and every one of them carries that worker's
 # pid, including subagent/RLM children no client ever attaches to. The verdict
-# is therefore the MAXIMUM client count across all of the worker's sessions:
-# "abandoned" means no client is attached to any of them, so a single
-# zero-client child can never speak for a session an operator is still driving.
+# is therefore taken across ALL of the worker's sessions: "abandoned" means no
+# client is attached to any of them, so a single zero-client child can never
+# speak for a session an operator is still driving.
+#
+# A client count of zero is NOT enough on its own. The same detachment happens
+# when a pane dies MID-TURN, and that worker keeps streaming into the home it
+# is bound to - handing its lock to a second session would put two writers in
+# one worktree, which is the thing the lock exists to prevent. So every session
+# must also prove it is doing nothing: the vendor's own idle-eviction predicate
+# is `!isSessionActive && attachedClients === 0`, and the summary carries the
+# rest of the in-flight signals (streaming, compacting, running tools, running
+# bash, running RLM children, unfinished actions) alongside it. A signal that is
+# missing or not a boolean counts as BUSY, so a listing from a version that
+# stopped publishing one of them refuses the reclaim instead of guessing.
 fm_prime_agent_worker_abandoned() {  # <pid>
-  local pid=$1 clients
+  local pid=$1 verdict
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   command -v prime-agent >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
-  clients=$(fm_prime_agent_cli list --json 2>/dev/null \
+  verdict=$(fm_prime_agent_cli list --json 2>/dev/null \
     | jq -r --arg pid "$pid" '
+        def busy_flag($v): if ($v | type) == "boolean" then $v else true end;
         .sessions // []
         | map(select(((.workerPid // "") | tostring) == $pid))
-        | if length == 0 then empty else (map(.attachedClients // 0) | max) end' 2>/dev/null) || return 1
-  case "$clients" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$clients" -eq 0 ]
+        | if length == 0 then "unknown"
+          else
+            map(
+              ((.attachedClients // 1) > 0)
+              or busy_flag(.isSessionActive)
+              or busy_flag(.isStreaming)
+              or busy_flag(.isCompacting)
+              or busy_flag(.isRunningTools)
+              or busy_flag(.isBashRunning)
+              or busy_flag(.hasRunningRlmChildren)
+              or ((.unfinishedActionCount // 1) > 0)
+            )
+            | if any then "live" else "abandoned" end
+          end' 2>/dev/null) || return 1
+  [ "$verdict" = abandoned ]
 }

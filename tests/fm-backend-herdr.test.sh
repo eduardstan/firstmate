@@ -3114,8 +3114,22 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown() {
 # returned to a login shell (verified live, 2026-08-08) - so identity alone
 # would hand a shell with `PS1='> '` an injection target.
 prime_agent_process_info() {  # <pane> <foreground-name>
-  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","foreground_processes":[{"name":"/home/x/.local/bin/%s","argv":["%s"],"pid":42}]}}}\n' \
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":42,"foreground_process_group_id":42,"foreground_processes":[{"name":"/home/x/.local/bin/%s","argv":["%s"],"pid":42}]}}}\n' \
     "$1" "$2" "$2"
+}
+
+# A process table for the pane's own subtree, in the exact `pid ppid comm`
+# shape the subtree probe reads from ps.
+prime_agent_fake_ps() {  # <path> <row>...
+  local path=$1
+  shift
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'cat <<ROWS\n'
+    printf '%s\n' "$@"
+    printf 'ROWS\n'
+  } > "$path"
+  chmod +x "$path"
 }
 
 test_composer_state_prime_agent_bare_prompt_needs_both_signals() {
@@ -3172,14 +3186,26 @@ test_composer_state_prime_agent_real_text_is_pending() {
 # never retired, so the live foreground process is what settles it - and only
 # when the probe is actually readable.
 test_agent_state_prime_agent_quit_pane_is_dead() {
-  local dir log resp fb out case_id
-  for case_id in quit-shell live-agent unreadable-probe other-harness; do
+  local dir log resp fb out case_id ps_bin
+  for case_id in quit-shell suspended-agent live-agent unreadable-probe unreadable-table other-harness; do
     dir="$TMP_ROOT/agent-state-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    ps_bin="$dir/ps"
     printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+    # Only the pane's own shell survives a quit; nothing else is left running.
+    prime_agent_fake_ps "$ps_bin" '  1     0 systemd' ' 42     1 bash'
     case "$case_id" in
       quit-shell)
         printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
         prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        prime_agent_process_info w1:p2 bash > "$resp/4.out"
+        ;;
+      suspended-agent)
+        # Ctrl+Z: the shell is back in the foreground, but prime-agent is still
+        # there as its stopped child.
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        prime_agent_process_info w1:p2 bash > "$resp/4.out"
+        prime_agent_fake_ps "$ps_bin" '  1     0 systemd' ' 42     1 bash' ' 43    42 prime-agent'
         ;;
       live-agent)
         printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
@@ -3189,12 +3215,20 @@ test_agent_state_prime_agent_quit_pane_is_dead() {
         printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"working"}}}\n' > "$resp/2.out"
         printf '{"error":{"code":"internal"}}\n' > "$resp/3.out"
         ;;
+      unreadable-table)
+        # A process table that does not even hold the pane's own shell answers
+        # nothing about it - a pane hosted on another machine looks like this.
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        prime_agent_process_info w1:p2 bash > "$resp/4.out"
+        prime_agent_fake_ps "$ps_bin" '  1     0 systemd'
+        ;;
       other-harness)
         printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/2.out"
         ;;
     esac
     fb=$(make_herdr_fakebin "$dir")
-    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_PS_BIN="$ps_bin" \
       bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state default:w1:p2' "$ROOT" )
     case "$case_id" in
       quit-shell)
@@ -3208,7 +3242,7 @@ test_agent_state_prime_agent_quit_pane_is_dead() {
   # A harness that is not prime-agent never pays for the extra probe.
   assert_no_grep 'process-info' "$TMP_ROOT/agent-state-prime-other-harness/log" \
     "a non-prime-agent pane was charged a foreground-process probe"
-  pass "fm_backend_herdr_agent_state: a quit prime-agent pane is dead, while a live or unreadable one stays alive"
+  pass "fm_backend_herdr_agent_state: only a quit prime-agent pane is dead; suspended, live and unreadable stay alive"
 }
 
 test_composer_state_pi_separator_requires_safe_native_identity() {
