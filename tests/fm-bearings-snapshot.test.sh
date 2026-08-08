@@ -849,6 +849,44 @@ test_registry_unavailability_and_bounds_are_explicit() {
   pass "registry unavailability and bounded truncation remain explicit"
 }
 
+# A record may carry this secondmate's own runtime (harness/model/effort) between
+# "projects:" and "added". The snapshot's registry reader is a second parser over
+# the same record format as bin/fm-secondmate-registry-lib.sh, so it must keep
+# reading home, and a remote record's host/root placement, through that segment
+# instead of reporting a working mate as a broken entry with no home.
+test_registry_runtime_records_keep_placement() {
+  local home fakebin canonical json local_mate remote_mate
+  home=$(make_home registry-runtime)
+  local_mate="$TMP_ROOT/registry-runtime-local"
+  remote_mate="/remote/homes/registry-runtime-remote"
+  make_valid_secondmate_home rt-local "$local_mate"
+  {
+    printf -- '- rt-local - fixture domain (home: %s; scope: fixture; projects: sample; harness: codex; model: gpt-x; effort: xhigh; added 2026-07-13)\n' \
+      "$local_mate"
+    printf -- '- rt-remote - fixture domain (host: remote-mac; root: /remote/root; home: %s; scope: fixture; projects: sample; model: gpt-x; added 2026-07-13)\n' \
+      "$remote_mate"
+  } > "$home/data/secondmates.md"
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e --arg home "$local_mate" '
+    .secondmate_current.registry.records
+    | (any(.[]; .id == "rt-local" and .home == $home and .remote == false
+        and .registry_error == null))
+  ' >/dev/null || fail "a runtime-bearing local record lost its home: $canonical"
+  printf '%s' "$canonical" | jq -e --arg home "$remote_mate" '
+    .secondmate_current.registry.records
+    | (any(.[]; .id == "rt-remote" and .home == $home and .remote == true
+        and .host == "remote-mac" and .root == "/remote/root"
+        and .registry_error == null))
+  ' >/dev/null || fail "a runtime-bearing remote record lost its placement: $canonical"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    (.omitted // []) | any(.surface | test("registry entry has no home")) | not
+  ' >/dev/null || fail "bearings reported a runtime-bearing record as unregistered: $json"
+  pass "runtime-bearing registry records keep home and remote placement in the snapshot"
+}
+
 test_current_landed_baseline_is_repeatable_and_prior_report_independent() {
   local home fakebin one two
   home=$(make_home standalone-baseline); write_fixture "$home"
@@ -1901,6 +1939,7 @@ test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
+test_registry_runtime_records_keep_placement
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
 test_toon_json_parity
