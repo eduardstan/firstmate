@@ -2732,12 +2732,7 @@ fm_backend_herdr_strip_ansi() {  # <text>
 FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-20}
 # Known ghost/placeholder composer text. Extend this if another
 # herdr-verified harness needs its own idle placeholder recognized.
-# prime-agent's rotating placeholder is the second, independent signal for its
-# shape below: it is normally removed as dark-truecolor ghost text, so this
-# pattern only carries the verdict if a theme ever renders it at full
-# intensity. Anchored on the literal @<filepath> token every one of its five
-# variants contains, so ordinary typed text cannot match it.
-FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$|^Try "[^"]*@<filepath>[^"]*"$'}
+FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
 # Known bare (unbordered) prompt glyphs a composer row may start with: ❯
 # (claude) and › (codex) only. Generic shell-style glyphs > $ % # are still
 # recognized after a bordered composer row has already been structurally found.
@@ -2757,6 +2752,7 @@ FM_BACKEND_HERDR_BARE_PROMPT_RE=${FM_BACKEND_HERDR_BARE_PROMPT_RE:-'^(❯|›)'}
 # end of row after the glyph keeps a redirection-looking transcript row
 # (`>>foo`) out of the candidate set.
 FM_BACKEND_HERDR_PRIME_PROMPT_RE=${FM_BACKEND_HERDR_PRIME_PROMPT_RE:-'^>( |$)'}
+FM_BACKEND_HERDR_PRIME_IDLE_RE=${FM_BACKEND_HERDR_PRIME_IDLE_RE:-'^Try "[^"]*@<filepath>[^"]*"$'}
 # Pi allows a multi-line composer between its horizontal separators. Bound the
 # structural candidate so two unrelated transcript rules with an arbitrarily
 # large region between them can never be promoted into a composer.
@@ -2919,7 +2915,7 @@ fm_backend_herdr_pane_prime_agent_in_subtree() {  # <session> <pane-id>
 }
 
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
-  local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
+  local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped idle_re
   local identity agent agent_status row=0 generic_line=0
   local prime_raw="" prime_line=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
@@ -3048,7 +3044,11 @@ EOF
   # via the no-composer-row path above, exactly as before. The one bare
   # shell-style glyph that CAN reach here is prime-agent's `>`, and only with
   # bordered=1 already set from its native identity.
-  fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
+  idle_re=$FM_BACKEND_HERDR_IDLE_RE
+  if [ "$shape" = prime ]; then
+    idle_re="$idle_re|$FM_BACKEND_HERDR_PRIME_IDLE_RE"
+  fi
+  fm_composer_classify_content "$bordered" "$stripped" "$idle_re"
 }
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,

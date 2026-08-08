@@ -27,9 +27,8 @@
 # `prime-agent status` is deliberately NOT consulted: it marks even a live
 # session's forkserver `stale`, so that word is not a health signal.
 #
-# Sourcing: set -u and set -e safe. Every failure path is a silent no-op, so a
-# missing binary, missing jq, a hit timeout, or a refused stop never blocks the
-# caller.
+# Sourcing: set -u and set -e safe. Best-effort retirement is a silent no-op on
+# failure; strict retirement returns nonzero unless every selected stop succeeds.
 
 FM_PRIME_AGENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F fm_run_timed >/dev/null 2>&1 \
@@ -62,7 +61,20 @@ fm_prime_agent_cli() {  # <arg>...
   fi
 }
 
-# fm_prime_agent_stop_sessions_under <directory> [label-stream]
+fm_prime_agent_session_ids_under() {  # <resolved-directory> <all|resident>
+  local resolved=$1 scope=$2 listing
+  listing=$(fm_prime_agent_cli list --json 2>/dev/null) || return 1
+  printf '%s\n' "$listing" \
+    | jq -r --arg dir "$resolved" --arg scope "$scope" '
+        if (.sessions | type) == "array" then .sessions else error("sessions are missing") end
+        | map(select((.cwd // "") == $dir or ((.cwd // "") | startswith($dir + "/"))))
+        | map(select((.lifecycle // "") != "stopped"))
+        | if $scope == "resident" then map(select(.activeSessionId != null)) else . end
+        | .[]
+        | if (((.id // null) | type) == "string" and (.id | length) > 0) then .id else error("session id is missing") end' 2>/dev/null
+}
+
+# fm_prime_agent_stop_sessions_under <directory>
 # Stops each prime-agent session whose cwd is <directory> or inside it.
 # Prints one line per stopped session to stderr.
 fm_prime_agent_stop_sessions_under() {  # <directory>
@@ -71,12 +83,7 @@ fm_prime_agent_stop_sessions_under() {  # <directory>
   command -v prime-agent >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
   resolved=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || resolved=$dir
-  ids=$(fm_prime_agent_cli list --json 2>/dev/null \
-    | jq -r --arg dir "$resolved" '
-        .sessions // []
-        | map(select((.cwd // "") == $dir or ((.cwd // "") | startswith($dir + "/"))))
-        | map(select((.lifecycle // "") != "stopped"))
-        | .[].id // empty' 2>/dev/null) || return 0
+  ids=$(fm_prime_agent_session_ids_under "$resolved" all) || return 0
   while IFS= read -r id; do
     case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
     echo "prime-agent: stopping detached session $id bound to $resolved" >&2
@@ -84,6 +91,29 @@ fm_prime_agent_stop_sessions_under() {  # <directory>
   done <<EOF
 $ids
 EOF
+}
+
+fm_prime_agent_stop_sessions_under_strict() {  # <directory>
+  local dir=$1 resolved ids id failed=0
+  [ -n "$dir" ] || return 1
+  command -v prime-agent >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  resolved=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || return 1
+  ids=$(fm_prime_agent_session_ids_under "$resolved" resident) || return 1
+  while IFS= read -r id; do
+    case "$id" in
+      '') continue ;;
+      *[!A-Za-z0-9._-]*) failed=1; continue ;;
+    esac
+    echo "prime-agent: stopping detached session $id bound to $resolved" >&2
+    if ! fm_prime_agent_cli stop "$id" >/dev/null 2>&1; then
+      echo "error: prime-agent session $id bound to $resolved did not stop" >&2
+      failed=1
+    fi
+  done <<EOF
+$ids
+EOF
+  return "$failed"
 }
 
 # fm_prime_agent_worker_abandoned <pid>

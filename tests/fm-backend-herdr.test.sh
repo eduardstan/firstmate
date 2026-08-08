@@ -3179,6 +3179,27 @@ test_composer_state_prime_agent_real_text_is_pending() {
   pass "fm_backend_herdr_composer_state: a working prime-agent pane still reports pending composer text"
 }
 
+test_composer_state_prime_placeholder_is_scoped_to_prime_shape() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-prime-placeholder-scope"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '  │ ❯ Try "review @<filepath> carefully" │\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = pending ] || fail "Prime placeholder text in another harness must remain pending, got '$out'"
+
+  : > "$log"
+  rm -f "$resp/.count"
+  printf '> Try "review @<filepath> carefully"\n' > "$resp/1.out"
+  prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] || fail "Prime placeholder text in a proven Prime composer must read empty, got '$out'"
+
+  pass "fm_backend_herdr_composer_state: Prime placeholder fallback is shape-scoped"
+}
+
 # The same reporter-survives-the-agent fact decides RECOVERY, not just the
 # composer: after `/quit` the pane is a login shell while `agent get` still
 # answers `agent: prime-agent, agent_status: idle`. Reporting that pane `alive`
@@ -4464,6 +4485,7 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
 test_composer_state_pi_separator_requires_safe_native_identity
 test_composer_state_prime_agent_bare_prompt_needs_both_signals
 test_composer_state_prime_agent_real_text_is_pending
+test_composer_state_prime_placeholder_is_scoped_to_prime_shape
 test_agent_state_prime_agent_quit_pane_is_dead
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending

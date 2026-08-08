@@ -211,7 +211,7 @@ test_secondmate_launch_loads_both_primary_extensions() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> '$calls'
 if [ "\${1:-}" = list ]; then
-  printf '{"sessions":[{"id":"stale1","lifecycle":"live","cwd":"%s"},{"id":"other1","lifecycle":"live","cwd":"%s"}]}\n' \\
+  printf '{"sessions":[{"id":"stale1","activeSessionId":"stale1","lifecycle":"live","cwd":"%s"},{"id":"other1","activeSessionId":"other1","lifecycle":"live","cwd":"%s"}]}\n' \\
     '$subhome' '$case_dir/elsewhere'
 fi
 exit 0
@@ -241,6 +241,42 @@ SH
   assert_no_grep 'shutdown' "$calls" "relaunch used the fleet-wide prime-agent shutdown"
 
   pass "prime-agent secondmate launches with both primary extensions and retires the home's stale worker"
+}
+
+test_secondmate_relaunch_refuses_failed_retirement() {
+  local case_dir home proj wt fakebin id log out status subhome calls
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case retirement-failure)
+  log="$case_dir/launch.log"
+  : > "$log"
+  subhome="$case_dir/subhome"
+  mkdir -p "$subhome/state" "$subhome/config" "$subhome/projects" "$subhome/bin" "$subhome/data"
+  printf '# scratch secondmate home\n' > "$subhome/AGENTS.md"
+  printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
+  printf 'scratch charter\n' > "$subhome/data/charter.md"
+  calls="$case_dir/prime-calls.log"
+  : > "$calls"
+  cat > "$fakebin/prime-agent" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+if [ "\${1:-}" = list ]; then
+  printf '{"sessions":[{"id":"stale1","activeSessionId":"stale1","lifecycle":"live","cwd":"%s"}]}\n' '$subhome'
+fi
+if [ "\${1:-}" = stop ]; then
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/prime-agent"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$subhome" --harness prime-agent --secondmate) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "prime-agent secondmate relaunched after retirement failed"
+  assert_contains "$out" "refusing secondmate relaunch" \
+    "failed retirement did not produce the relaunch refusal"
+  assert_grep 'stop stale1' "$calls" "strict retirement did not attempt the resident session stop"
+  assert_no_grep 'prime-agent' "$log" "failed retirement still delivered a second prime-agent launch"
+
+  pass "prime-agent secondmate relaunch fails closed on retirement failure"
 }
 
 test_duplicate_secondmate_spawn_preserves_live_worker() {
@@ -400,6 +436,9 @@ if [ "\${1:-}" = list ]; then
   printf '{"sessions":[{"id":"mine01","lifecycle":"live","cwd":"%s"},{"id":"theirs9","lifecycle":"live","cwd":"%s"}]}\n' \\
     '$wt' '$other'
 fi
+if [ "\${1:-}" = stop ]; then
+  exit 1
+fi
 exit 0
 SH
   chmod +x "$fakebin/prime-agent"
@@ -467,6 +506,7 @@ SH
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_secondmate_launch_loads_both_primary_extensions
+test_secondmate_relaunch_refuses_failed_retirement
 test_duplicate_secondmate_spawn_preserves_live_worker
 test_primary_extensions_ignore_inline_child_sessions
 test_bare_prompt_stays_a_dead_shell

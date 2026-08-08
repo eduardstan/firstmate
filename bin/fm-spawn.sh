@@ -2023,7 +2023,10 @@ EOF
 esac
 fi
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = prime-agent ]; then
-  fm_prime_agent_stop_sessions_under "$PROJ_ABS"
+  if ! fm_prime_agent_stop_sessions_under_strict "$PROJ_ABS"; then
+    echo "error: could not retire every resident prime-agent session bound to $PROJ_ABS; refusing secondmate relaunch" >&2
+    exit 1
+  fi
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
