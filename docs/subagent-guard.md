@@ -185,6 +185,7 @@ Applicability turns on one question: does the harness expose built-in delegation
 | Grok | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
 | OpenCode | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
 | Pi | none reported | Not wired pending live verification. See below. |
+| prime-agent | not reviewed | The adapter landed after this review; the guard is not wired and its delegation surface has not been enumerated. |
 
 ### Codex, verified not applicable
 

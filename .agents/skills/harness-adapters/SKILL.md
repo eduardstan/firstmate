@@ -75,9 +75,9 @@ When changing any primary turn-end hook, validate the real harness behavior in a
 
 ## Primary pre-arm (PreToolUse) seatbelt
 
-The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` also have wired PreToolUse-equivalent hooks that deny a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
+The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `prime-agent`, and `grok` also have wired PreToolUse-equivalent hooks that deny a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
 `claude` and `codex` block directly through PreToolUse hooks; `grok` blocks the same way but requires every `$VAR` reference in its hook `command` string to carry an inline `:-default` or it fails to launch the hook entirely.
-`opencode`, `pi`, and `pi-signed` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`.
+`opencode`, `pi`, `pi-signed`, and `prime-agent` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`.
 The exact hook files, commands, output-shaping quirks (Claude Code only honors the deny when stdout is empty), and validation transcripts are owned by `docs/arm-pretool-check.md`.
 When changing any watcher-arm PreToolUse hook, validate the real harness behavior in a scratch project before trusting it, then update that doc.
 ## Primary delegation-shape guard
@@ -306,7 +306,7 @@ The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.
 Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-primary-pi-watch.ts` extension, same trust-once discovery as the turn-end guard.
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
-`bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
+`bin/fm-session-start.sh` reports when the live pi or pi-signed session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback; prime-agent has its own report because it has no trust gate.
 When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
 
 ## prime-agent (VERIFIED 2026-08-08, Prime Agent 0.7.1)

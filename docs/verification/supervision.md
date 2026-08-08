@@ -328,7 +328,9 @@ tests/fm-pi-primary-types.test.sh
 
 Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and `/fork`, plus same-instance shutdown-plus-start, the replacement generation armed again without a Pi restart and without the `watcher: not armed - Pi session is shutting down` refusal.
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
-Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
+Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner.
+prime-agent carries the same contract in its own `.prime/agent/extensions/fm-primary-prime-watch.ts`, covered deterministically by `tests/fm-prime-watch-extension.test.sh`; this live Pi pass is not evidence for it.
+Other primary harnesses are not applicable because they do not use this extension lifecycle.
 
 Deterministic entry points:
 

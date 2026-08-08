@@ -222,7 +222,7 @@ Launch mechanics, including the verified command templates, live in [`bin/fm-spa
 Enabled primary-session turn-end guard integrations are tracked as repo-level hook files and documented in [`docs/turnend-guard.md`](turnend-guard.md).
 Kimi remains outside the primary turn-end guard integrations; [`docs/turnend-guard.md`](turnend-guard.md#compatibility-limits) owns its separate captain-approved crew wake hook.
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
-Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, and OpenCode uses its TUI plugin.
+[`docs/architecture.md`](architecture.md) owns the per-harness summary of those wait shapes.
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.
 When pi-signed is selected, Firstmate launches the executable named `pi-signed` from `PATH` with `FM_PI_HARNESS=pi-signed` and refuses the launch if it is unavailable rather than falling back to pi.
 Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cannot relabel a plain Pi worker.
@@ -246,6 +246,7 @@ Kimi continues to use the captain's normal Kimi home, including the existing con
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+prime-agent secondmate launches do the same with that home's tracked `.prime/agent/extensions/fm-primary-prime-watch.ts` and `.prime/agent/extensions/fm-primary-turnend-guard.ts`, which need no trust grant to load.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
