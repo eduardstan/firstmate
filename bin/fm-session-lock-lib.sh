@@ -10,8 +10,12 @@
 #
 # prime-agent's detached-daemon knowledge has ONE owner, so pull it in here
 # rather than restating it: every caller of fm_harness_pid_alive needs the same
-# answer about an abandoned worker.
-if ! declare -F fm_prime_agent_worker_abandoned >/dev/null 2>&1; then
+# answer about an abandoned worker. This lib is also COPIED on its own into
+# test-lab checkouts, so the sibling is optional rather than required: an absent
+# one leaves the prime-agent question unanswered (fail safe: still a live
+# holder) instead of writing a sourcing error into every caller's output.
+if ! declare -F fm_prime_agent_worker_abandoned >/dev/null 2>&1 \
+  && [ -r "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-prime-agent-lib.sh" ]; then
   # shellcheck source=bin/fm-prime-agent-lib.sh
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-prime-agent-lib.sh"
 fi
@@ -168,7 +172,10 @@ fm_harness_pid_alive() {
   args=$(ps -o args= -p "$pid" 2>/dev/null)
   fm_harness_process_matches "$comm" "$args" || return 1
   case "$(basename -- "$comm")" in
-    prime-agent) fm_prime_agent_worker_abandoned "$pid" && return 1 ;;
+    prime-agent)
+      declare -F fm_prime_agent_worker_abandoned >/dev/null 2>&1 \
+        && fm_prime_agent_worker_abandoned "$pid" && return 1
+      ;;
   esac
   return 0
 }

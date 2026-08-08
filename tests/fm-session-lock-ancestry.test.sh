@@ -229,6 +229,8 @@ install_autoarm_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-prime-agent-lib.sh" "$dir/bin/fm-prime-agent-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/fm-timeout-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
   cp "$ROOT/bin/fm-lock.sh" "$dir/bin/fm-lock.sh"
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
@@ -301,6 +303,11 @@ run_fixture_tree() {  # <dir> <session-bin> [<daemon-bin>]
     i=$((i + 1))
   done
   [ -s "$dir/state/hook.rc" ] || fail "the fixture hook never finished"
+  # A lab checkout carries only the copied dependency set, so a lib that grew a
+  # new sibling must not start writing sourcing errors into the hook output the
+  # session reads.
+  assert_no_grep 'No such file or directory' "$dir/state/hook.out" \
+    "the hook wrote a missing-dependency error into its own output"
 }
 
 hook_rc() {
@@ -361,7 +368,7 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
 # lock. Liveness for this harness has to mean "a session someone is still
 # attached to", which is what the vendor's own attachedClients count answers.
 test_abandoned_prime_agent_worker_never_blocks_its_home() {
-  local dir fakebin lockbin old new out status lock_after case_id
+  local dir fakebin lockbin old new out status lock_after case_id sessions start elapsed
   dir="$TMP_ROOT/prime-detached-worker"
   fakebin=$(fm_fakebin "$dir/bin")
   lockbin="$dir/worker-bin"
@@ -394,19 +401,38 @@ esac
 SH
   chmod +x "$fakebin/ps"
 
-  for case_id in abandoned attached; do
+  # One worker hosts every session it forked, all stamped with its own pid, and
+  # a subagent child never has a client. `attached-behind-subagent` puts such a
+  # zero-client child FIRST in the listing, so a verdict read off one arbitrary
+  # entry would hand this home's lock away while its operator is still working.
+  for case_id in abandoned attached attached-behind-subagent wedged-daemon; do
+    case "$case_id" in
+      abandoned) sessions='{"id":"s1","cwd":"/x","workerPid":OLD,"attachedClients":0}' ;;
+      attached) sessions='{"id":"s1","cwd":"/x","workerPid":OLD,"attachedClients":1}' ;;
+      attached-behind-subagent)
+        sessions='{"id":"sub","kind":"subagent","cwd":"/x","workerPid":OLD,"attachedClients":0},{"id":"root","cwd":"/x","workerPid":OLD,"attachedClients":1}'
+        ;;
+      wedged-daemon) sessions= ;;
+    esac
     cat > "$fakebin/prime-agent" <<SH
 #!/usr/bin/env bash
 set -u
 if [ "\${1:-}" = list ]; then
-  printf '{"sessions":[{"id":"s1","lifecycle":"live","cwd":"/x","workerPid":$old,"attachedClients":%s}]}\n' \\
-    "\$( [ "$case_id" = attached ] && printf 1 || printf 0 )"
+  if [ "$case_id" = wedged-daemon ]; then
+    # A daemon socket that never answers: the bound, not the answer, has to end
+    # this call, or every lock acquisition inherits the daemon's wedge.
+    sleep 60
+  fi
+  printf '{"sessions":[%s]}\n' '$(printf '%s' "${sessions//OLD/$old}")'
 fi
 exit 0
 SH
     chmod +x "$fakebin/prime-agent"
     printf '%s\n' "$old" > "$dir/state/.lock"
-    out=$(PATH="$fakebin:$PATH" FM_HOME="$dir" "$ROOT/bin/fm-lock.sh" 2>&1) && status=0 || status=$?
+    start=$(date +%s)
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$dir" FM_PRIME_AGENT_CLI_TIMEOUT=2 \
+      "$ROOT/bin/fm-lock.sh" 2>&1) && status=0 || status=$?
+    elapsed=$(( $(date +%s) - start ))
     lock_after=$(tr -d '[:space:]' < "$dir/state/.lock")
     case "$case_id" in
       abandoned)
@@ -414,9 +440,14 @@ SH
         [ "$lock_after" = "$new" ] \
           || fail "the restarted session did not take the lock: expected $new, got $lock_after"
         ;;
-      attached)
-        expect_code 1 "$status" "a session someone is still attached to lost its lock"
-        [ "$lock_after" = "$old" ] || fail "an attached holder's lock was overwritten"
+      wedged-daemon)
+        [ "$elapsed" -lt 30 ] || fail "a wedged prime-agent daemon stalled lock acquisition for ${elapsed}s"
+        expect_code 1 "$status" "an unanswerable daemon must leave the recorded holder standing"
+        [ "$lock_after" = "$old" ] || fail "an unreadable listing was treated as an abandoned worker"
+        ;;
+      *)
+        expect_code 1 "$status" "a session someone is still attached to lost its lock ($case_id)"
+        [ "$lock_after" = "$old" ] || fail "an attached holder's lock was overwritten ($case_id)"
         assert_contains "$out" "another live firstmate session holds the lock" \
           "the live-holder refusal changed shape"
         ;;

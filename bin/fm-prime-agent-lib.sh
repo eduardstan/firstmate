@@ -28,7 +28,30 @@
 # session's forkserver `stale`, so that word is not a health signal.
 #
 # Sourcing: set -u and set -e safe. Every failure path is a silent no-op, so a
-# missing binary, missing jq, or a refused stop never blocks the caller.
+# missing binary, missing jq, a hit timeout, or a refused stop never blocks the
+# caller.
+
+FM_PRIME_AGENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! declare -F fm_run_timed >/dev/null 2>&1 \
+  && [ -r "$FM_PRIME_AGENT_LIB_DIR/fm-timeout-lib.sh" ]; then
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$FM_PRIME_AGENT_LIB_DIR/fm-timeout-lib.sh"
+fi
+
+# Every prime-agent CLI call goes through here, BOUNDED. `list` makes the
+# supervisor refresh every worker's summaries and sync agent peers before it
+# answers, so an unbounded call would let a wedged daemon socket stall whichever
+# caller asked - including bin/fm-lock.sh, and therefore session start. A hit
+# bound is just another unknown: the callers below already fail safe on one.
+fm_prime_agent_cli() {  # <arg>...
+  local bound=${FM_PRIME_AGENT_CLI_TIMEOUT:-5}
+  case "$bound" in ''|*[!0-9]*|0) bound=5 ;; esac
+  if declare -F fm_run_timed >/dev/null 2>&1; then
+    fm_run_timed "$bound" prime-agent "$@"
+  else
+    prime-agent "$@"
+  fi
+}
 
 # fm_prime_agent_stop_sessions_under <directory> [label-stream]
 # Stops each prime-agent session whose cwd is <directory> or inside it.
@@ -39,7 +62,7 @@ fm_prime_agent_stop_sessions_under() {  # <directory>
   command -v prime-agent >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
   resolved=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || resolved=$dir
-  ids=$(prime-agent list --json 2>/dev/null \
+  ids=$(fm_prime_agent_cli list --json 2>/dev/null \
     | jq -r --arg dir "$resolved" '
         .sessions // []
         | map(select((.cwd // "") == $dir or ((.cwd // "") | startswith($dir + "/"))))
@@ -48,7 +71,7 @@ fm_prime_agent_stop_sessions_under() {  # <directory>
   while IFS= read -r id; do
     case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
     echo "prime-agent: stopping detached session $id bound to $resolved" >&2
-    prime-agent stop "$id" >/dev/null 2>&1 || true
+    fm_prime_agent_cli stop "$id" >/dev/null 2>&1 || true
   done <<EOF
 $ids
 EOF
@@ -68,19 +91,25 @@ EOF
 # `attachedClients` is the vendor's own count of live client connections to the
 # session (dist bundle: `attachedClients: activeSession.clients.size`), so zero
 # is exactly "no client is driving this session". Every unknown - no binary, no
-# jq, an unparseable listing, or a pid that is not a session worker at all -
-# answers 1 (NOT abandoned), so the caller keeps its existing refusal and this
-# never widens who may take a lock.
+# jq, an unparseable listing, a hit timeout, or a pid that is not a session
+# worker at all - answers 1 (NOT abandoned), so the caller keeps its existing
+# refusal and this never widens who may take a lock.
+#
+# One worker hosts MANY sessions and every one of them carries that worker's
+# pid, including subagent/RLM children no client ever attaches to. The verdict
+# is therefore the MAXIMUM client count across all of the worker's sessions:
+# "abandoned" means no client is attached to any of them, so a single
+# zero-client child can never speak for a session an operator is still driving.
 fm_prime_agent_worker_abandoned() {  # <pid>
   local pid=$1 clients
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   command -v prime-agent >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
-  clients=$(prime-agent list --json 2>/dev/null \
+  clients=$(fm_prime_agent_cli list --json 2>/dev/null \
     | jq -r --arg pid "$pid" '
         .sessions // []
         | map(select(((.workerPid // "") | tostring) == $pid))
-        | .[0].attachedClients // empty' 2>/dev/null) || return 1
+        | if length == 0 then empty else (map(.attachedClients // 0) | max) end' 2>/dev/null) || return 1
   case "$clients" in ''|*[!0-9]*) return 1 ;; esac
   [ "$clients" -eq 0 ]
 }
