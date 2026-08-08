@@ -21,7 +21,9 @@
 # reopened and merged, so its poll stays armed and the merge still wakes
 # firstmate. Its one-time wake is instead suppressed by a .seen-* marker in the
 # watcher's own dedupe family, cleared here whenever a poll is published so a
-# re-armed task watching a new pull request wakes on its own closure.
+# re-armed task watching a new pull request wakes on its own closure, and
+# cleared by the watcher on a positive open reading so a reopened pull request
+# closed a second time wakes again.
 
 FM_PR_PROVIDER=
 FM_PR_URL=
