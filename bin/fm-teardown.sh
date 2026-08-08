@@ -2392,7 +2392,9 @@ if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   # Before the generic reaper, so prime-agent ends its own detached workers
   # cleanly instead of being SIGTERMed out from under its session leases.
-  fm_prime_agent_stop_sessions_under "$WT"
+  # Best effort, like the reaper below it: this is a cleanup courtesy, and a
+  # missing or unavailable helper must never fail the whole teardown.
+  fm_prime_agent_stop_sessions_under "$WT" || true
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
 
