@@ -50,16 +50,17 @@ test_detection_splits_the_pi_family() {
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed)
   [ "$out" = pi-signed ] || fail "pi-signed selection regressed (got '$out')"
 
-  # A pi/pi-signed worker launched into a multiplexer whose stored environment
-  # kept a prime-agent marker: its own launch boundary is the authority, since
-  # FM_PI_HARNESS never reaches a real prime-agent tool subprocess.
+  # FM_PI_HARNESS is subject to the SAME supervisor inheritance as CLAUDECODE:
+  # a supervisor first started from a pi-signed worker hands it to every later
+  # prime-agent worker. The per-tool-call vendor marker must therefore outrank
+  # it too, or that worker reports itself as a Pi it is not.
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed PRIME_AGENT_CODING_AGENT_DIR=/x)
-  [ "$out" = pi-signed ] \
-    || fail "a stale prime-agent marker outranked the pi-signed launch stamp (got '$out')"
+  [ "$out" = prime-agent ] \
+    || fail "an inherited FM_PI_HARNESS outranked prime-agent's own marker (got '$out')"
 
-  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi PRIME_AGENT_INTERNAL_DAEMON_WORKER=1)
-  [ "$out" = pi ] \
-    || fail "a stale prime-agent marker outranked the pi launch stamp (got '$out')"
+  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi PRIME_AGENT_INTERNAL_DAEMON_WORKER=1 CLAUDECODE=1)
+  [ "$out" = prime-agent ] \
+    || fail "an inherited launch stamp plus CLAUDECODE outranked the daemon-worker marker (got '$out')"
 
   # An empty marker value is not a marker.
   out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=)
@@ -305,8 +306,55 @@ SH
   pass "teardown stops only this worktree's prime-agent session and removes its extension"
 }
 
+test_teardown_stops_a_secondmate_homes_detached_session() {
+  local case_dir home proj wt fakebin id log out status calls subhome other
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case teardown-secondmate)
+  log="$case_dir/launch.log"
+  : > "$log"
+  subhome="$case_dir/subhome"
+  other="$case_dir/someone-elses-home"
+  mkdir -p "$subhome/state" "$subhome/config" "$subhome/projects" "$subhome/bin" "$subhome/data"
+  printf '# scratch secondmate home\n' > "$subhome/AGENTS.md"
+  printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
+  printf 'scratch charter\n' > "$subhome/data/charter.md"
+
+  calls="$case_dir/prime-calls.log"
+  : > "$calls"
+  cat > "$fakebin/prime-agent" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+if [ "\${1:-}" = list ]; then
+  printf '{"sessions":[{"id":"inhome","lifecycle":"live","cwd":"%s"},{"id":"theirs9","lifecycle":"live","cwd":"%s"}]}\n' \\
+    '$subhome' '$other'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/prime-agent"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$subhome" --harness prime-agent --secondmate) && status=0 || status=$?
+  expect_code 0 "$status" "prime-agent secondmate spawn failed: $out"
+
+  # Only the teardown's own calls, so the relaunch retirement cannot be
+  # mistaken for this one.
+  : > "$calls"
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$fakebin:$PATH" "$TEARDOWN" "$id" --force >/dev/null 2>&1 \
+    || fail "prime-agent secondmate teardown failed"
+
+  # The home is returned to the pool or removed here, so a worker still holding
+  # it as cwd would follow the worktree into its next task.
+  assert_grep 'stop inhome' "$calls" \
+    "secondmate teardown left the detached worker bound to the removed home running"
+  assert_no_grep 'stop theirs9' "$calls" "secondmate teardown stopped another home's session"
+  assert_no_grep 'shutdown' "$calls" "secondmate teardown used the fleet-wide prime-agent shutdown"
+
+  pass "teardown of a secondmate home retires the prime-agent worker bound to it"
+}
+
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_secondmate_launch_loads_both_primary_extensions
 test_bare_prompt_stays_a_dead_shell
 test_teardown_stops_the_detached_session
+test_teardown_stops_a_secondmate_homes_detached_session

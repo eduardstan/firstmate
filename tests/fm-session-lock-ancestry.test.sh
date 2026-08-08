@@ -354,8 +354,82 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+# prime-agent's session runs in a DETACHED daemon worker, so the pid the lock
+# records outlives the pane and an explicit /quit. An in-place restart - what
+# bin/fm-session-start.sh and the supervision protocol both tell the operator
+# to do - therefore meets a live `prime-agent` process holding its own home's
+# lock. Liveness for this harness has to mean "a session someone is still
+# attached to", which is what the vendor's own attachedClients count answers.
+test_abandoned_prime_agent_worker_never_blocks_its_home() {
+  local dir fakebin lockbin old new out status lock_after case_id
+  dir="$TMP_ROOT/prime-detached-worker"
+  fakebin=$(fm_fakebin "$dir/bin")
+  lockbin="$dir/worker-bin"
+  mkdir -p "$dir/state" "$lockbin"
+  # Two REAL processes named prime-agent: the abandoned worker the lock still
+  # names, and this restart's worker. `kill -0` must genuinely succeed for both,
+  # so the reclaim can only come from the attachment answer.
+  cp "$(command -v sleep)" "$lockbin/prime-agent"
+  "$lockbin/prime-agent" 120 & old=$!
+  "$lockbin/prime-agent" 120 & new=$!
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -o) field=\$2; shift 2 ;;
+    -p) pid=\$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "\$pid:\$field" in
+  $old:comm=|$new:comm=) printf '%s\n' prime-agent ;;
+  $old:args=|$new:args=) printf '%s\n' 'prime-agent' ;;
+  $old:ppid=|$new:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash bin/fm-lock.sh' ;;
+  *:ppid=) printf '%s\n' $new ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  for case_id in abandoned attached; do
+    cat > "$fakebin/prime-agent" <<SH
+#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = list ]; then
+  printf '{"sessions":[{"id":"s1","lifecycle":"live","cwd":"/x","workerPid":$old,"attachedClients":%s}]}\n' \\
+    "\$( [ "$case_id" = attached ] && printf 1 || printf 0 )"
+fi
+exit 0
+SH
+    chmod +x "$fakebin/prime-agent"
+    printf '%s\n' "$old" > "$dir/state/.lock"
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$dir" "$ROOT/bin/fm-lock.sh" 2>&1) && status=0 || status=$?
+    lock_after=$(tr -d '[:space:]' < "$dir/state/.lock")
+    case "$case_id" in
+      abandoned)
+        expect_code 0 "$status" "an in-place restart was refused its own home's lock: $out"
+        [ "$lock_after" = "$new" ] \
+          || fail "the restarted session did not take the lock: expected $new, got $lock_after"
+        ;;
+      attached)
+        expect_code 1 "$status" "a session someone is still attached to lost its lock"
+        [ "$lock_after" = "$old" ] || fail "an attached holder's lock was overwritten"
+        assert_contains "$out" "another live firstmate session holds the lock" \
+          "the live-holder refusal changed shape"
+        ;;
+    esac
+  done
+  kill "$old" "$new" 2>/dev/null || true
+  wait "$old" "$new" 2>/dev/null || true
+  pass "session-lock: an abandoned prime-agent worker is reclaimable while an attached one still holds the lock"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
+test_abandoned_prime_agent_worker_never_blocks_its_home
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home

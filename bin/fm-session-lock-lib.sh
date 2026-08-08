@@ -7,6 +7,14 @@
 # bin/fm-claude-stop-autoarm.sh uses it to prove a Stop hook fires inside the
 # lock-owning primary session before it may arm or rewake.
 # This file is sourced by scripts and has no side effects on source.
+#
+# prime-agent's detached-daemon knowledge has ONE owner, so pull it in here
+# rather than restating it: every caller of fm_harness_pid_alive needs the same
+# answer about an abandoned worker.
+if ! declare -F fm_prime_agent_worker_abandoned >/dev/null 2>&1; then
+  # shellcheck source=bin/fm-prime-agent-lib.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-prime-agent-lib.sh"
+fi
 
 # Known harness command names; extend when a new adapter is verified AS A
 # PRIMARY. This list decides who may hold and keep a home's fleet session lock,
@@ -17,10 +25,16 @@
 # prime-agent IS listed, and it needs one extra rule the others do not: the pid
 # this walk records for it is its DETACHED daemon session worker, which
 # survives both the pane and an explicit /quit (verified 2026-08-08 on
-# prime-agent 0.7.1). A worker abandoned by a dead pane would therefore keep
-# looking like a live lock holder forever. bin/fm-spawn.sh retires the worker
-# bound to a prime-agent home before relaunching it there
-# (bin/fm-prime-agent-lib.sh), which is what keeps this entry safe.
+# prime-agent 0.7.1). A worker abandoned by a dead pane or a quit session would
+# therefore keep looking like a live lock holder forever - including for an
+# IN-PLACE restart of the same home, which is what bin/fm-session-start.sh and
+# docs/supervision-protocols/prime-agent.md both instruct the operator to do.
+# fm_harness_pid_alive below closes that by asking prime-agent itself whether
+# any client is still attached to the recorded worker's session, so liveness
+# means "a session someone is actually driving" rather than "the process still
+# exists". bin/fm-spawn.sh --secondmate and bin/fm-teardown.sh additionally
+# RETIRE such a worker (bin/fm-prime-agent-lib.sh) when they replace or remove
+# the home it is bound to.
 FM_HARNESS_RE='claude|codex|opencode|grok|kimi|prime-agent|^pi$|^pi-signed$'
 
 # The same harnesses as exact executable names. Keep in sync with
@@ -141,13 +155,22 @@ EOF
   printf '%s\n' "$outermost"
 }
 
-# True if $1 is a live process that looks like a verified harness.
+# True if $1 is a live process that looks like a verified harness holding a
+# session someone can still be working in.
+#
+# For every harness except prime-agent that is the process itself. prime-agent's
+# recorded pid is a detached daemon worker that outlives its client, so an
+# abandoned one is reported as not alive - see the FM_HARNESS_RE note above.
 fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
   args=$(ps -o args= -p "$pid" 2>/dev/null)
-  fm_harness_process_matches "$comm" "$args"
+  fm_harness_process_matches "$comm" "$args" || return 1
+  case "$(basename -- "$comm")" in
+    prime-agent) fm_prime_agent_worker_abandoned "$pid" && return 1 ;;
+  esac
+  return 0
 }
 
 # True when state dir $1 holds a session lock whose pid is ANY harness ancestor

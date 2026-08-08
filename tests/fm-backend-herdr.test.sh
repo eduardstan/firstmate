@@ -3165,6 +3165,52 @@ test_composer_state_prime_agent_real_text_is_pending() {
   pass "fm_backend_herdr_composer_state: a working prime-agent pane still reports pending composer text"
 }
 
+# The same reporter-survives-the-agent fact decides RECOVERY, not just the
+# composer: after `/quit` the pane is a login shell while `agent get` still
+# answers `agent: prime-agent, agent_status: idle`. Reporting that pane `alive`
+# would leave a quit secondmate never relaunched and its detached daemon worker
+# never retired, so the live foreground process is what settles it - and only
+# when the probe is actually readable.
+test_agent_state_prime_agent_quit_pane_is_dead() {
+  local dir log resp fb out case_id
+  for case_id in quit-shell live-agent unreadable-probe other-harness; do
+    dir="$TMP_ROOT/agent-state-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+    case "$case_id" in
+      quit-shell)
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        ;;
+      live-agent)
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 prime-agent > "$resp/3.out"
+        ;;
+      unreadable-probe)
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"working"}}}\n' > "$resp/2.out"
+        printf '{"error":{"code":"internal"}}\n' > "$resp/3.out"
+        ;;
+      other-harness)
+        printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/2.out"
+        ;;
+    esac
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state default:w1:p2' "$ROOT" )
+    case "$case_id" in
+      quit-shell)
+        [ "$out" = dead ] || fail "a quit prime-agent pane must classify dead so recovery relaunches it, got '$out'"
+        ;;
+      *)
+        [ "$out" = alive ] || fail "prime-agent case '$case_id' must stay alive, got '$out'"
+        ;;
+    esac
+  done
+  # A harness that is not prime-agent never pays for the extra probe.
+  assert_no_grep 'process-info' "$TMP_ROOT/agent-state-prime-other-harness/log" \
+    "a non-prime-agent pane was charged a foreground-process probe"
+  pass "fm_backend_herdr_agent_state: a quit prime-agent pane is dead, while a live or unreadable one stays alive"
+}
+
 test_composer_state_pi_separator_requires_safe_native_identity() {
   local dir log resp fb out status case_id idx=0
   for case_id in working non-pi unreadable over-tall; do
@@ -4384,6 +4430,7 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
 test_composer_state_pi_separator_requires_safe_native_identity
 test_composer_state_prime_agent_bare_prompt_needs_both_signals
 test_composer_state_prime_agent_real_text_is_pending
+test_agent_state_prime_agent_quit_pane_is_dead
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins

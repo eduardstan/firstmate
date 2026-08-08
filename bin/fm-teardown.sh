@@ -1735,6 +1735,12 @@ remove_firstmate_home() {
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
+  # Every home removal - a secondmate teardown, and every nested home reached
+  # through cleanup_firstmate_home_children - passes here, so this is where a
+  # prime-agent worker still holding this home as its cwd is retired. Without
+  # it a `treehouse return` would hand the worktree to a new task while a
+  # foreign live agent still held it and its transcript lease.
+  fm_prime_agent_stop_sessions_under "$abs_home_path"
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?

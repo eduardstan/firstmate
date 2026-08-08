@@ -53,3 +53,34 @@ fm_prime_agent_stop_sessions_under() {  # <directory>
 $ids
 EOF
 }
+
+# fm_prime_agent_worker_abandoned <pid>
+# True (0) only when <pid> is a prime-agent DAEMON SESSION WORKER that no client
+# is attached to any more.
+#
+# The session lock records the harness ancestor pid, which for prime-agent is
+# that worker rather than the client, and the worker outlives both the pane and
+# an explicit /quit. Liveness of the pid alone therefore cannot answer "is a
+# firstmate session still running here?": after an in-place restart the previous
+# worker is still a live `prime-agent` process while its session has no operator
+# at all, and the new session would be refused its own home's lock forever.
+#
+# `attachedClients` is the vendor's own count of live client connections to the
+# session (dist bundle: `attachedClients: activeSession.clients.size`), so zero
+# is exactly "no client is driving this session". Every unknown - no binary, no
+# jq, an unparseable listing, or a pid that is not a session worker at all -
+# answers 1 (NOT abandoned), so the caller keeps its existing refusal and this
+# never widens who may take a lock.
+fm_prime_agent_worker_abandoned() {  # <pid>
+  local pid=$1 clients
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  command -v prime-agent >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  clients=$(prime-agent list --json 2>/dev/null \
+    | jq -r --arg pid "$pid" '
+        .sessions // []
+        | map(select(((.workerPid // "") | tostring) == $pid))
+        | .[0].attachedClients // empty' 2>/dev/null) || return 1
+  case "$clients" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$clients" -eq 0 ]
+}

@@ -1887,7 +1887,7 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence status
+  local session=$1 pane_id=$2 out code presence status agent fg_rc
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -1903,8 +1903,25 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     return 0
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+  agent=$(printf '%s' "$out" | jq -r '.result.agent.agent // empty' 2>/dev/null)
   case "$status" in
-    working|idle|done|blocked) printf 'live' ;;
+    working|idle|done|blocked)
+      # prime-agent's reporter identity SURVIVES the agent it describes: after
+      # `/quit` the pane is a login shell while `agent get` still answers
+      # `agent: prime-agent, agent_status: idle` (verified 2026-08-08 on
+      # prime-agent 0.7.1). Registration is therefore not proof of a live agent
+      # for this harness, and reporting `live` here would leave a quit
+      # secondmate pane classified `alive` forever - never relaunched, and its
+      # detached worker never retired. Confirmed absence from the pane's
+      # foreground (exit 1 only) is a husk; an unreadable probe (exit 2) keeps
+      # the registered verdict.
+      if [ "$agent" = prime-agent ]; then
+        fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane_id"
+        fg_rc=$?
+        if [ "$fg_rc" -eq 1 ]; then printf 'no-agent'; return 0; fi
+      fi
+      printf 'live'
+      ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -2803,22 +2820,33 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
 # the quit TUI's last composer row stays in the capture window. Without this
 # kernel-level check, a shell whose prompt happens to be `> ` would inherit
 # prime-agent's composer shape - exactly the dead-shell injection hazard the
-# shared composer rule exists to prevent. Fails closed on any unreadable field.
+# shared composer rule exists to prevent.
+#
+# Three outcomes, because the two callers need different fail-safe directions:
+#   0 - the foreground process IS prime-agent (read succeeded).
+#   1 - the read succeeded and prime-agent is NOT in the foreground: this pane
+#       has genuinely returned to a shell.
+#   2 - the read itself is unusable (RPC failure, unexpected shape, missing
+#       field). Never treat this as evidence either way.
+# The composer arm accepts only 0, so an unreadable probe keeps a bare `>` out
+# of the composer set exactly as before. The liveness classifier below demotes
+# only on 1, so an unreadable probe can never make it close a live agent's pane.
 fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
   local session=$1 pane=$2 info
-  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
     and .result.process_info.pane_id == $pane
-    and (
-      .result.process_info.foreground_processes
-      | select(type == "array")
-      | any(
-          ((.name // "") | split("/") | last) == "prime-agent"
-          or (((.argv0 // .argv[0]) // "") | ltrimstr("-") | split("/") | last) == "prime-agent"
-        )
-    )
-  ' >/dev/null 2>&1
+    and (.result.process_info.foreground_processes | type) == "array"
+  ' >/dev/null 2>&1 || return 2
+  printf '%s' "$info" | jq -e '
+    .result.process_info.foreground_processes
+    | any(
+        ((.name // "") | split("/") | last) == "prime-agent"
+        or (((.argv0 // .argv[0]) // "") | ltrimstr("-") | split("/") | last) == "prime-agent"
+      )
+  ' >/dev/null 2>&1 || return 1
+  return 0
 }
 
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
