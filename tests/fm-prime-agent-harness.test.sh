@@ -99,7 +99,10 @@ case "$*" in
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    [ -z "${FM_FAKE_EXISTING_WINDOW:-}" ] || printf '%s\n' "$FM_FAKE_EXISTING_WINDOW"
+    exit 0
+    ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
   send-keys)
     prev=
@@ -240,6 +243,115 @@ SH
   pass "prime-agent secondmate launches with both primary extensions and retires the home's stale worker"
 }
 
+test_duplicate_secondmate_spawn_preserves_live_worker() {
+  local case_dir home proj wt fakebin id log out status subhome calls
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case duplicate-secondmate)
+  log="$case_dir/launch.log"
+  : > "$log"
+  subhome="$case_dir/subhome"
+  mkdir -p "$subhome/state" "$subhome/config" "$subhome/projects" "$subhome/bin" "$subhome/data"
+  printf '# scratch secondmate home\n' > "$subhome/AGENTS.md"
+  printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
+  printf 'scratch charter\n' > "$subhome/data/charter.md"
+  calls="$case_dir/prime-calls.log"
+  : > "$calls"
+  cat > "$fakebin/prime-agent" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$calls'
+if [ "\${1:-}" = list ]; then
+  printf '{"sessions":[{"id":"live1","lifecycle":"live","cwd":"%s"}]}\n' '$subhome'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/prime-agent"
+
+  out=$(FM_FAKE_EXISTING_WINDOW="fm-$id" run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$subhome" --harness prime-agent --secondmate) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "duplicate prime-agent secondmate spawn unexpectedly succeeded"
+  assert_contains "$out" "window firstmate:fm-$id already exists" \
+    "duplicate secondmate spawn did not reach endpoint validation"
+  assert_no_grep 'stop live1' "$calls" "duplicate spawn stopped the live secondmate worker before refusing"
+
+  pass "duplicate secondmate spawn preserves the live prime-agent worker"
+}
+
+test_primary_extensions_ignore_inline_child_sessions() {
+  local fixture plugin home out status
+  fixture="$TMP_ROOT/primary-session-scope"
+  plugin="$fixture/.prime/agent/extensions/fm-primary-turnend-guard.ts"
+  home="$fixture/home"
+  mkdir -p "$fixture/.prime/agent/extensions" "$fixture/.pi/extensions/lib" "$fixture/bin" "$home/state"
+  cp "$ROOT/.prime/agent/extensions/fm-primary-turnend-guard.ts" "$plugin"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/bin/fm-operational-input.sh" "$fixture/bin/fm-operational-input.sh"
+  cat > "$fixture/bin/fm-sessionstart-run.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'sessionstart %s\n' "$*" >> "${FM_EVENT_LOG:?}"
+SH
+  cat > "$fixture/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'guard\n' >> "${FM_EVENT_LOG:?}"
+printf 'recover watcher\n' >&2
+exit 2
+SH
+  cat > "$fixture/bin/fm-cd-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'cd-check %s\n' "$*" >> "${FM_EVENT_LOG:?}"
+SH
+  cat > "$fixture/bin/fm-arm-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm-check %s\n' "$*" >> "${FM_EVENT_LOG:?}"
+SH
+  chmod +x "$fixture/bin/"*.sh
+  : > "$fixture/events.log"
+
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$fixture" FM_STATE_OVERRIDE="$home/state" FM_EVENT_LOG="$fixture/events.log" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+let followups = 0;
+const pi = {
+  on(event, handler) { handlers.set(event, handler); },
+  sendMessage() {},
+  sendUserMessage: async () => { followups += 1; },
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+const parentCtx = { sessionManager: {}, hasPendingMessages: () => false };
+const childCtx = { sessionManager: {}, hasPendingMessages: () => false };
+
+await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, parentCtx);
+await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, childCtx);
+await handlers.get("session_compact")?.({ type: "session_compact" }, childCtx);
+await handlers.get("tool_call")?.({ type: "tool_call", toolName: "bash", input: { command: "pwd" } }, childCtx);
+await handlers.get("agent_start")?.({ type: "agent_start" }, parentCtx);
+await handlers.get("agent_end")?.({ type: "agent_end", messages: [] }, childCtx);
+if (followups !== 0) throw new Error("an inline child agent_end ran the parent's settle guard");
+await handlers.get("agent_end")?.({ type: "agent_end", messages: [] }, parentCtx);
+if (followups !== 1) throw new Error(`the parent settle guard sent ${followups} follow-ups`);
+await handlers.get("tool_call")?.({ type: "tool_call", toolName: "bash", input: { command: "pwd" } }, parentCtx);
+
+const rows = readFileSync(process.env.FM_EVENT_LOG, "utf8").trim().split("\n");
+if (rows.filter((row) => row.startsWith("sessionstart ")).length !== 1) {
+  throw new Error(`inline child lifecycle invoked session-start delivery: ${rows.join(" | ")}`);
+}
+if (rows.filter((row) => row === "guard").length !== 1) {
+  throw new Error(`settle guard invocation count was not parent-scoped: ${rows.join(" | ")}`);
+}
+if (rows.filter((row) => row.startsWith("cd-check ")).length !== 1 || rows.filter((row) => row.startsWith("arm-check ")).length !== 1) {
+  throw new Error(`tool checks were not parent-scoped: ${rows.join(" | ")}`);
+}
+EOF
+  )
+  status=$?
+  expect_code 0 "$status" "prime-agent primary extensions must ignore inline child sessions"
+  [ -z "$out" ] || fail "prime-agent primary session-scope test printed output: $out"
+
+  pass "prime-agent primary extensions ignore inline child sessions"
+}
+
 # --- composer safety rule ----------------------------------------------------
 
 classify_content() {  # <bordered> <content>
@@ -355,6 +467,8 @@ SH
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_secondmate_launch_loads_both_primary_extensions
+test_duplicate_secondmate_spawn_preserves_live_worker
+test_primary_extensions_ignore_inline_child_sessions
 test_bare_prompt_stays_a_dead_shell
 test_teardown_stops_the_detached_session
 test_teardown_stops_a_secondmate_homes_detached_session

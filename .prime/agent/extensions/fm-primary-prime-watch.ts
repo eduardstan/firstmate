@@ -190,7 +190,19 @@ process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
+  let boundSessionManager: unknown;
   activateGeneration(generation);
+
+  function isBoundSession(ctx: unknown): boolean {
+    if (boundSessionManager === undefined) return true;
+    return (ctx as { sessionManager?: unknown } | undefined)?.sessionManager === boundSessionManager;
+  }
+
+  function bindSession(ctx: unknown): boolean {
+    const sessionManager = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
+    if (boundSessionManager === undefined && sessionManager !== undefined) boundSessionManager = sessionManager;
+    return isBoundSession(ctx);
+  }
 
   async function sendWake(owner: SessionGeneration, message: string): Promise<void> {
     if (!generationIsLive(owner)) return;
@@ -408,18 +420,21 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  pi.on?.("session_start", () => {
+  pi.on?.("session_start", (_event, ctx) => {
+    if (!bindSession(ctx)) return;
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     markLoaded();
   });
-  pi.on?.("session_shutdown", () => {
+  pi.on?.("session_shutdown", (_event, ctx) => {
+    if (!isBoundSession(ctx)) return;
     stopGeneration(generation);
   });
 
   pi.registerCommand?.("fm-watch-arm-prime", {
     description: "Arm firstmate watcher supervision through the prime-agent extension instead of foreground bash.",
     handler: async (_args, ctx) => {
+      if (!isBoundSession(ctx)) return;
       const result = startArm(generation);
       ctx.ui.notify(result.message, result.ok ? "info" : "warning");
     },
@@ -434,7 +449,14 @@ export default function (pi: ExtensionAPI) {
       "Call fm_watch_arm_prime only for the first required cycle or after a notification says the cycle is missing, failed, or unhealthy. Do not call it after ordinary work, turn completion, or ordinary signal, stale, check, or heartbeat handling because the extension owns re-arming. Never run bin/fm-watch-arm.sh through bash.",
     ],
     parameters: Type.Object({}),
-    execute: async () => {
+    execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+      if (!isBoundSession(ctx)) {
+        const result = { ok: false, message: "watcher: not armed - this tool belongs to the parent prime-agent session" };
+        return {
+          content: [{ type: "text", text: result.message }],
+          details: result,
+        };
+      }
       const result = startArm(generation);
       return {
         content: [{ type: "text", text: result.message }],

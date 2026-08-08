@@ -196,7 +196,19 @@ function lastAssistantStoppedOnError(event: unknown): boolean {
 
 export default function (pi: ExtensionAPI) {
   let agentActive = false;
+  let boundSessionManager: unknown;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const isBoundSession = (ctx: unknown): boolean => {
+    if (boundSessionManager === undefined) return true;
+    return (ctx as { sessionManager?: unknown } | undefined)?.sessionManager === boundSessionManager;
+  };
+
+  const bindSession = (ctx: unknown): boolean => {
+    const sessionManager = (ctx as { sessionManager?: unknown } | undefined)?.sessionManager;
+    if (boundSessionManager === undefined && sessionManager !== undefined) boundSessionManager = sessionManager;
+    return isBoundSession(ctx);
+  };
 
   const clearSettleTimer = (): void => {
     if (settleTimer) clearTimeout(settleTimer);
@@ -224,7 +236,8 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  pi.on?.("session_start", async (event) => {
+  pi.on?.("session_start", async (event, ctx) => {
+    if (!bindSession(ctx)) return;
     const reason = String((event as { reason?: unknown }).reason ?? "");
     const source = { startup: "startup", new: "clear", resume: "resume", fork: "fork" }[reason];
     markLoaded();
@@ -232,11 +245,13 @@ export default function (pi: ExtensionAPI) {
     await injectSessionstart(pi, source);
   });
 
-  pi.on?.("session_compact", async () => {
+  pi.on?.("session_compact", async (_event, ctx) => {
+    if (!isBoundSession(ctx)) return;
     await injectSessionstart(pi, "compact");
   });
 
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
+    if (!isBoundSession(ctx)) return {};
     if (event.type !== "tool_call" || event.toolName !== "bash") return {};
     const command = String((event.input as { command?: unknown })?.command ?? "");
     if (!command) return {};
@@ -249,7 +264,8 @@ export default function (pi: ExtensionAPI) {
     return { block: true, reason: result.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
   });
 
-  pi.on("agent_start", () => {
+  pi.on("agent_start", (_event, ctx) => {
+    if (!isBoundSession(ctx)) return;
     // A retry that starts inside the grace window cancels the held settle, which
     // is the whole reason the hold exists.
     clearSettleTimer();
@@ -257,6 +273,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", (event, ctx) => {
+    if (!isBoundSession(ctx)) return;
     // A duplicate or late end must not settle a run this instance never saw
     // start, or it would fire the guard against an agent that is still working.
     if (!agentActive) return;

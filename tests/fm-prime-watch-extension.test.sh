@@ -227,18 +227,29 @@ writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 
 const first = makePi();
+const parentManager = {};
+const childManager = {};
+const parentCtx = { sessionManager: parentManager };
+const childCtx = { sessionManager: childManager };
 mod.default(first.pi);
-await first.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
-const armed = await first.getTool().execute("startup", {}, undefined, undefined, {});
+await first.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, parentCtx);
+const armed = await first.getTool().execute("startup", {}, undefined, undefined, parentCtx);
 if (!armed.details?.ok) throw new Error(`startup arm failed: ${JSON.stringify(armed.details)}`);
 await waitFor(() => existsSync(process.env.FM_CHILD_PID_FILE), "startup arm child");
 const startupChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
 
+await first.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, childCtx);
+await first.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, childCtx);
+if (!pidAlive(startupChild)) throw new Error("an inline child session stopped the parent's arm child");
+const childArm = await first.getTool().execute("child", {}, undefined, undefined, childCtx);
+if (childArm.details?.ok !== false) throw new Error(`an inline child session controlled the parent watcher: ${JSON.stringify(childArm.details)}`);
+if (armPids().length !== 1) throw new Error(`an inline child session spawned another arm: ${armPids().join(",")}`);
+
 // The generation that owns the child is retired with the session, and its
 // stale tool must not be able to start a competing cycle afterwards.
-await first.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "replace" }, {});
+await first.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "replace" }, parentCtx);
 await waitFor(() => !pidAlive(startupChild), "startup arm child exit");
-const stale = await first.getTool().execute("stale", {}, undefined, undefined, {});
+const stale = await first.getTool().execute("stale", {}, undefined, undefined, parentCtx);
 if (stale.details?.ok !== false || !String(stale.details.message).includes("session is shutting down")) {
   throw new Error(`stale generation was allowed to rearm: ${JSON.stringify(stale.details)}`);
 }
@@ -246,9 +257,10 @@ if (armPids().length !== 1) throw new Error(`stale generation spawned another ar
 
 // A replacement session activates a new live generation that arms once.
 const second = makePi();
+const replacementCtx = { sessionManager: {} };
 mod.default(second.pi);
-await second.handlers.get("session_start")?.({ type: "session_start", reason: "replace" }, {});
-const rearmed = await second.getTool().execute("replacement", {}, undefined, undefined, {});
+await second.handlers.get("session_start")?.({ type: "session_start", reason: "replace" }, replacementCtx);
+const rearmed = await second.getTool().execute("replacement", {}, undefined, undefined, replacementCtx);
 if (!rearmed.details?.ok) throw new Error(`replacement arm failed: ${JSON.stringify(rearmed.details)}`);
 if (String(rearmed.details.message).includes("shutting down")) {
   throw new Error("replacement session inherited the shutting-down latch");

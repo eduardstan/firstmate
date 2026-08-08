@@ -1590,19 +1590,6 @@ if [ "$KIND" = secondmate ]; then
     echo "error: could not create secondmate state directory for $PROJ_ABS" >&2
     exit 1
   }
-  # prime-agent runs every root session in a DETACHED daemon worker that
-  # outlives both the pane and an explicit /quit (verified 2026-08-08,
-  # prime-agent 0.7.1). Firstmate's session lock records the harness ancestor
-  # pid, which for prime-agent IS that worker, so a home whose pane died would
-  # still have a live lock holder and every relaunch would land read-only with
-  # no work possible. Retire the previous worker bound to this home before
-  # launching its replacement. fm-spawn --secondmate only ever runs when the
-  # endpoint is gone or being replaced, so nothing live is stopped here.
-  # Best effort: a missing binary, missing jq, or a refused stop lets the launch
-  # continue and surface the lock refusal loudly rather than silently.
-  if [ "$HARNESS" = prime-agent ]; then
-    fm_prime_agent_stop_sessions_under "$PROJ_ABS"
-  fi
   if [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
     CONFIG_INHERIT_LOCK=$(fm_config_inherit_lock_path "$PROJ_ABS") || {
       echo "error: could not resolve secondmate inheritance lock for $PROJ_ABS" >&2
@@ -2034,6 +2021,9 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
+fi
+if [ "$KIND" = secondmate ] && [ "$HARNESS" = prime-agent ]; then
+  fm_prime_agent_stop_sessions_under "$PROJ_ABS"
 fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
