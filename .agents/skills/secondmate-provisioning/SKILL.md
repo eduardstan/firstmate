@@ -55,6 +55,7 @@ bin/fm-home-seed.sh runtime <id> model=-
 ```
 
 That action takes the registry lock, validates each value, and validates the whole rewritten registry before replacing it, so a refused edit leaves the record untouched; `bin/fm-home-seed.sh --help` owns its mechanics and `bin/fm-secondmate-registry-lib.sh` owns the record format.
+Re-seeding an already-registered id, local or remote, rewrites its placement and project list but carries the recorded runtime forward, so a re-seed never silently returns that mate to the home-wide pin.
 `bin/fm-spawn.sh` re-resolves these fields on every spawn, local and remote alike, exactly the way it re-resolves `home:`, so a per-mate choice survives recovery, `/updatefirstmate`, and restart.
 Per axis, strongest first: an explicit per-spawn `--harness`, `--model`, or `--effort` flag, then this mate's recorded field, then `config/secondmate-harness`.
 The axes are independent - a mate may pin only a model, or only an effort, and inherit the rest - with one deliberate exception: a recorded `harness:` suppresses that file's model and effort tokens, because those were written against the file's own harness.
