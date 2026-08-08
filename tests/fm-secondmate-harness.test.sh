@@ -1162,6 +1162,17 @@ test_registry_runtime_edit_action() {
     assert_contains "$out" "empty value for $axis on sm" "edit: refusal does not name the empty axis '$axis'"
     [ "$(cat "$reg")" = "$before" ] || fail "edit: an empty $axis value changed the stored record"
   done
+  # ";" and ")" terminate a runtime field and the record suffix, so a model
+  # carrying either cannot round-trip: the record either stops parsing or reads
+  # as a broken runtime pin in the fleet snapshot.
+  local separator
+  for separator in 'gpt-x;evil' 'gpt-x)evil'; do
+    rc=0
+    out=$(seed_runtime sm "model=$separator" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "edit: a model carrying a record separator should be refused: $separator"
+    assert_contains "$out" "unusable model for sm: $separator" "edit: refusal does not name the separator model '$separator'"
+    [ "$(cat "$reg")" = "$before" ] || fail "edit: a refused separator model changed the stored record"
+  done
   pass "D6 registry: the runtime edit action sets, clears, and refuses per axis without disturbing the record"
 }
 

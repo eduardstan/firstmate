@@ -63,13 +63,17 @@ secondmate_registry_runtime_effort_ok() {
 
 # A model reaches a launch command as one shell-quoted word, so a value carrying
 # whitespace or control characters is a record this parser cannot honor verbatim.
+# ";" and ")" are the record's own field and suffix terminators, so a value
+# carrying either cannot round-trip through the line format: every reader would
+# have to guess where the model ends, and bin/fm-fleet-snapshot.sh already reads
+# it as a broken pin.
 # "-" and "default" are the two reserved "no model" sentinels of the launch
 # routes (the remote route drops "-", bin/fm-spawn.sh drops "default"), so a
 # record naming either would resolve differently on the two routes; neither is a
 # recordable model.
 secondmate_registry_runtime_model_ok() {
   case "$1" in
-    ''|-|default|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;;
+    ''|-|default|*';'*|*')'*|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;;
   esac
   return 0
 }
