@@ -2330,7 +2330,7 @@ SH
 
 test_config_reread_serializes_concurrent_pushes() {
   local w head fakebin marker entered log first_out second_out first_pid first_status second_status
-  local first_instr second_instr first_line second_line
+  local first_instr second_instr first_line second_line entered_deadline
   w=$(new_world config-reread-serialized-pushes)
   head=$(git -C "$w/main" rev-parse HEAD)
   add_sm_worktree "$w" sm "$head"
@@ -2364,9 +2364,15 @@ SH
       "$ROOT/bin/fm-config-push.sh" > "$first_out" 2>&1
   ) &
   first_pid=$!
-  for _ in $(seq 1 100); do
-    [ -e "$entered" ] && break
-    sleep 0.02
+  # The backgrounded push must reach pointer delivery before the second one can
+  # overlap it. Bound that wait by wall clock, not by a fixed iteration count:
+  # the old 100 x 0.02s spin gave the whole push two seconds to start, discover
+  # the home, converge its config, and publish a generation, which a loaded
+  # multi-lane or CI host misses routinely - a slow machine then reported as a
+  # serialization defect. The bound still fails loudly if delivery never happens.
+  entered_deadline=$(( $(date +%s) + 60 ))
+  while [ ! -e "$entered" ] && [ "$(date +%s)" -lt "$entered_deadline" ]; do
+    sleep 0.05
   done
   [ -e "$entered" ] || fail "first config push did not reach pointer delivery"
   first_instr=$(reread_instruction_path "$w/sm") \
