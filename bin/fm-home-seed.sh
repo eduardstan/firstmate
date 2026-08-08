@@ -829,19 +829,42 @@ initialize_no_mistakes_project() {
   }
 }
 
+# Re-seeding an already-registered id rewrites its record, so this mate's OWN
+# recorded runtime is read back from the record it replaces and carried forward:
+# a re-seed changes placement and projects, never the runtime the captain pinned.
+# The line is rendered through the shared writer so the two registry writers
+# cannot drift from the format bin/fm-secondmate-registry-lib.sh parses.
 write_registry() {
   local id=$1 home=$2 projects_csv=$3 brief=$4 scope summary tmp today
+  local kept_harness= kept_model= kept_effort=
   mkdir -p "$DATA"
   scope=$(registry_scope_for_brief "$brief")
   summary=$(registry_summary_for_brief "$brief")
   today=$(date +%F)
+  if [ -f "$REG" ] && [ ! -L "$REG" ] && secondmate_registry_line_for_id "$REG" "$id"; then
+    kept_harness=$SECONDMATE_REGISTRY_HARNESS
+    kept_model=$SECONDMATE_REGISTRY_MODEL
+    kept_effort=$SECONDMATE_REGISTRY_EFFORT
+  fi
   tmp="$REG.tmp.$$"
   if [ -f "$REG" ]; then
     grep -vE "^- $id( |$)" "$REG" > "$tmp" || true
   else
     : > "$tmp"
   fi
-  printf -- '- %s - %s (home: %s; scope: %s; projects: %s; added %s)\n' "$id" "$summary" "$home" "$scope" "$projects_csv" "$today" >> "$tmp"
+  SECONDMATE_REGISTRY_ID=$id
+  SECONDMATE_REGISTRY_SUMMARY=$summary
+  SECONDMATE_REGISTRY_REMOTE=0
+  SECONDMATE_REGISTRY_HOST=
+  SECONDMATE_REGISTRY_ROOT=
+  SECONDMATE_REGISTRY_HOME=$home
+  SECONDMATE_REGISTRY_SCOPE=$scope
+  SECONDMATE_REGISTRY_PROJECTS=$projects_csv
+  SECONDMATE_REGISTRY_HARNESS=$kept_harness
+  SECONDMATE_REGISTRY_MODEL=$kept_model
+  SECONDMATE_REGISTRY_EFFORT=$kept_effort
+  SECONDMATE_REGISTRY_ADDED=$today
+  secondmate_registry_render_line >> "$tmp"
   mv "$tmp" "$REG"
 }
 
