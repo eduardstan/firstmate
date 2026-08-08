@@ -3107,6 +3107,64 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown() {
   pass "fm_backend_herdr_composer_state: an incomplete lower Pi separator cannot inherit a stale empty row"
 }
 
+# prime-agent 0.7.1 renders a bare `>` prompt with no border, which the shared
+# safety rule reads as a dead shell. Promotion requires BOTH the live
+# foreground process and the native reporter to say prime-agent, because
+# `/quit` leaves the reporter identity behind on a pane that has already
+# returned to a login shell (verified live, 2026-08-08) - so identity alone
+# would hand a shell with `PS1='> '` an injection target.
+prime_agent_process_info() {  # <pane> <foreground-name>
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","foreground_processes":[{"name":"/home/x/.local/bin/%s","argv":["%s"],"pid":42}]}}}\n' \
+    "$1" "$2" "$2"
+}
+
+test_composer_state_prime_agent_bare_prompt_needs_both_signals() {
+  local dir log resp fb out case_id
+  for case_id in both-live identity-only-dead-shell process-only; do
+    dir="$TMP_ROOT/composer-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    # The row prime-agent actually draws: the `>` glyph at normal intensity and
+    # its rotating placeholder in dark truecolor, which the ghost stripper drops.
+    printf '\x1b[0m\x1b[48;2;44;44;49m >  \x1b[0m\x1b[38;2;113;113;122mTry "explain how @<filepath> works"\x1b[0m\n' > "$resp/1.out"
+    case "$case_id" in
+      both-live)
+        prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
+      identity-only-dead-shell)
+        prime_agent_process_info w1:p2 bash > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
+      process-only)
+        prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"","agent_status":""}}}\n' > "$resp/3.out"
+        ;;
+    esac
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+    case "$case_id" in
+      both-live) [ "$out" = empty ] || fail "a live prime-agent composer should read empty, got '$out'" ;;
+      *) [ "$out" = unknown ] || fail "prime-agent case '$case_id' must remain unknown, got '$out'" ;;
+    esac
+  done
+  pass "fm_backend_herdr_composer_state: a bare '>' needs BOTH the live prime-agent process and its native identity"
+}
+
+test_composer_state_prime_agent_real_text_is_pending() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-prime-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '\x1b[0m\x1b[48;2;44;44;49m >  half-typed steer\x1b[0m\n' > "$resp/1.out"
+  prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"working"}}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  # A WORKING pane must still classify, unlike Pi's arm: mid-turn submit
+  # confirmation is exactly what falls back to this read.
+  [ "$out" = pending ] || fail "unsubmitted text in a working prime-agent composer should read pending, got '$out'"
+  pass "fm_backend_herdr_composer_state: a working prime-agent pane still reports pending composer text"
+}
+
 test_composer_state_pi_separator_requires_safe_native_identity() {
   local dir log resp fb out status case_id idx=0
   for case_id in working non-pi unreadable over-tall; do
@@ -4324,6 +4382,8 @@ test_composer_state_pi_separator_idle_is_empty
 test_composer_state_pi_separator_real_text_is_pending
 test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
 test_composer_state_pi_separator_requires_safe_native_identity
+test_composer_state_prime_agent_bare_prompt_needs_both_signals
+test_composer_state_prime_agent_real_text_is_pending
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins

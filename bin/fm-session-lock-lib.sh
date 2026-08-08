@@ -8,14 +8,26 @@
 # lock-owning primary session before it may arm or rewake.
 # This file is sourced by scripts and has no side effects on source.
 
-# Known harness command names; extend when a new adapter is verified.
-FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
+# Known harness command names; extend when a new adapter is verified AS A
+# PRIMARY. This list decides who may hold and keep a home's fleet session lock,
+# so a crewmate/scout-only adapter is deliberately absent: muse has no primary
+# supervision protocol at all, so nothing of its ancestry should ever be read
+# as a lock holder.
+#
+# prime-agent IS listed, and it needs one extra rule the others do not: the pid
+# this walk records for it is its DETACHED daemon session worker, which
+# survives both the pane and an explicit /quit (verified 2026-08-08 on
+# prime-agent 0.7.1). A worker abandoned by a dead pane would therefore keep
+# looking like a live lock holder forever. bin/fm-spawn.sh retires the worker
+# bound to a prime-agent home before relaunching it there
+# (bin/fm-prime-agent-lib.sh), which is what keeps this entry safe.
+FM_HARNESS_RE='claude|codex|opencode|grok|kimi|prime-agent|^pi$|^pi-signed$'
 
 # The same harnesses as exact executable names. Keep in sync with
 # FM_HARNESS_RE. Used only for the stricter path evidence below, where the
 # loose regex would also match ordinary firstmate paths such as
 # bin/fm-claude-stop-autoarm.sh.
-FM_HARNESS_NAMES=(claude codex opencode grok kimi pi-signed pi)
+FM_HARNESS_NAMES=(claude codex opencode grok kimi prime-agent pi-signed pi)
 
 # Print the exact harness name carried by executable path $1 - its own basename
 # or any directory component - or return 1.

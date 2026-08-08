@@ -631,6 +631,23 @@ if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
     printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
   fi
 fi
+
+if [ "$PRIMARY_HARNESS" = prime-agent ]; then
+  # prime-agent auto-discovers .prime/agent/extensions/ with no trust gate, so
+  # a not-loaded report here means discovery itself was disabled (--no-extensions
+  # or a settings override) rather than an unapproved project.
+  PRIME_EXT="$FM_ROOT/.prime/agent/extensions/fm-primary-prime-watch.ts"
+  PRIME_TURNEND_EXT="$FM_ROOT/.prime/agent/extensions/fm-primary-turnend-guard.ts"
+  PRIME_WATCH_MARKER="$STATE/.prime-watch-extension-loaded"
+  PRIME_TURNEND_MARKER="$STATE/.prime-turnend-extension-loaded"
+  PRIME_LOCK="$STATE/.lock"
+  PRIME_WATCH_VERSION=$(hash_file "$PRIME_EXT" || printf '')
+  PRIME_TURNEND_VERSION=$(hash_file "$PRIME_TURNEND_EXT" || printf '')
+  if ! pi_extension_loaded "$PRIME_WATCH_MARKER" "$PRIME_WATCH_VERSION" "$PRIME_LOCK" \
+    || ! pi_extension_loaded "$PRIME_TURNEND_MARKER" "$PRIME_TURNEND_VERSION" "$PRIME_LOCK"; then
+    printf 'PRIME_WATCH_EXTENSION: not loaded - restart prime-agent from this repo root so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s if extension discovery is disabled\n' "$PRIME_TURNEND_EXT" "$PRIME_EXT" "$PRIME_TURNEND_EXT" "$PRIME_EXT"
+  fi
+fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \
   --harness "$PRIMARY_HARNESS" \
   --read-only "$READ_ONLY" \

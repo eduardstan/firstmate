@@ -104,7 +104,8 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+#   /updatefirstmate, restart). A bare adapter name
+#   (claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. pi-signed launches that exact executable name from PATH and
@@ -148,6 +149,12 @@
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
+#     __PRIMEEXT__ absolute path to state/<task-id>.prime-ext.ts (prime-agent
+#                  crew turn-end extension, written by this script)
+#     __PRIMETURNEND__ absolute path to .prime/agent/extensions/fm-primary-turnend-guard.ts
+#                  in a prime-agent secondmate home
+#     __PRIMEWATCH__ absolute path to .prime/agent/extensions/fm-primary-prime-watch.ts
+#                  in a prime-agent secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
@@ -217,6 +224,8 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-prime-agent-lib.sh
+. "$SCRIPT_DIR/fm-prime-agent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
@@ -1023,7 +1032,11 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+    ''|claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|muse)
+      # Every bare adapter NAME belongs here, including the crewmate/scout-only
+      # ones (muse). Omitting one would make this parser read it as a firstmate
+      # home path and fail with a confusing directory error instead of either
+      # launching or refusing on the harness itself.
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1074,6 +1087,32 @@ launch_template() {
         printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
         printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      fi
+      ;;
+    # prime-agent (Prime Agent): Pi-family CLI, so the same single-positional
+    # brief and -e extension shape as pi, and the same one-positional rule -
+    # extra positionals become separate queued messages. prime-agent has no
+    # permission system and no project-trust store (verified: no trust file,
+    # and its extension API exposes no project_trust event, unlike pi 0.83.0),
+    # so no autonomy flag and no post-launch dialog keystroke are needed - and
+    # unlike Pi, the secondmate variant's project-local extensions need no
+    # trust grant to auto-load.
+    # `env -u CLAUDECODE -u GROK_AGENT` is the same foreign-marker clear muse
+    # needs. It is necessary but NOT sufficient here, and the identity contract
+    # does not rest on it: prime-agent's resident worker inherits the long-lived
+    # daemon supervisor's environment rather than this client's, so a foreign
+    # marker already captured by that supervisor survives this clear (verified
+    # live). bin/fm-harness.sh therefore keys prime-agent on the vendor's own
+    # per-tool-call markers, which are immune to that inheritance; this clear
+    # keeps the CLIENT process and any supervisor it is the first to start
+    # clean. FM_PI_HARNESS must survive - it is prepended as an assignment
+    # before this env call - and PI_CODING_AGENT is prime-agent's own export,
+    # so neither is cleared here.
+    prime-agent)
+      if [ "$kind" = secondmate ]; then
+        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __MODELFLAG____EFFORTFLAG__-e __PRIMETURNEND__ -e __PRIMEWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      else
+        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
@@ -1151,8 +1190,10 @@ case "$ARG3" in
     ;;
 esac
 
+# Every Pi-family adapter exports the same PI_CODING_AGENT=true, so the launch
+# boundary is where the concrete identity is stamped for bin/fm-harness.sh.
 case "$HARNESS" in
-  pi|pi-signed) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
+  pi|pi-signed|prime-agent) LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH" ;;
 esac
 
 # muse is verified as a CREWMATE/SCOUT adapter only. A secondmate is a firstmate
@@ -1165,6 +1206,7 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
+
 
 # pi-signed is an explicitly selected executable identity, not an alias that may
 # silently fall back to pi. Resolve it from PATH before creating an endpoint and
@@ -1283,7 +1325,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
+    claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|muse)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -1318,6 +1360,19 @@ effort_flag_for_harness() {
     pi|pi-signed)
       # Pi 0.80.6 accepts the full shared effort vocabulary, including max, through
       # its --thinking flag.
+      case "$effort" in
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    prime-agent)
+      # prime-agent 0.7.1 --thinking accepts off|minimal|low|medium|high|xhigh|
+      # max (verified by launching all seven), so the whole shared vocabulary
+      # maps straight across; off and minimal sit below it and stay unreachable.
+      # The flag IS applied, but the EFFECTIVE level is then clamped to the
+      # selected model's supported set by the shared pi-ai clampThinkingLevel,
+      # which walks UP to the next supported level first - so a model that
+      # supports only high/xhigh renders "high" for a requested "low". That is
+      # model capability, not a dropped flag; see the harness-adapters skill.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
@@ -1535,6 +1590,19 @@ if [ "$KIND" = secondmate ]; then
     echo "error: could not create secondmate state directory for $PROJ_ABS" >&2
     exit 1
   }
+  # prime-agent runs every root session in a DETACHED daemon worker that
+  # outlives both the pane and an explicit /quit (verified 2026-08-08,
+  # prime-agent 0.7.1). Firstmate's session lock records the harness ancestor
+  # pid, which for prime-agent IS that worker, so a home whose pane died would
+  # still have a live lock holder and every relaunch would land read-only with
+  # no work possible. Retire the previous worker bound to this home before
+  # launching its replacement. fm-spawn --secondmate only ever runs when the
+  # endpoint is gone or being replaced, so nothing live is stopped here.
+  # Best effort: a missing binary, missing jq, or a refused stop lets the launch
+  # continue and surface the lock refusal loudly rather than silently.
+  if [ "$HARNESS" = prime-agent ]; then
+    fm_prime_agent_stop_sessions_under "$PROJ_ABS"
+  fi
   if [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
     CONFIG_INHERIT_LOCK=$(fm_config_inherit_lock_path "$PROJ_ABS") || {
       echo "error: could not resolve secondmate inheritance lock for $PROJ_ABS" >&2
@@ -2314,6 +2382,30 @@ export default function (pi: any) {
 }
 EOF
       ;;
+    prime-agent)
+      # prime-agent's crew wake is a turn-end NOTIFICATION only, deliberately
+      # with no busy-state wiring. Under Herdr, prime-agent's OWN built-in
+      # reporter (dist/core/extensions/builtin/herdr-agent-state.js) already
+      # publishes pane agent state over Herdr's socket with no extension of
+      # ours, so bin/fm-busy-lib.sh's herdr-native arm already answers for this
+      # harness; adding a second reporter would only duplicate it. Nothing is
+      # armed for the same reason muse and standalone Kimi are not: a seeded
+      # busy record needs a writer that can clear it.
+      #
+      # Written OUTSIDE the worktree like the Pi extension, so the project stays
+      # clean. Cleaned by teardown.
+      cat > "$STATE/$ID.prime-ext.ts" <<EOF
+// Firstmate crew turn-end notification for prime-agent; written by fm-spawn.
+// "turn_end" fires at every completed turn boundary and is a wake NOTIFICATION
+// for the watcher, never current-state truth. prime-agent exposes no
+// agent_settled event at all, so no settle-based state is derived here; its own
+// built-in Herdr reporter owns busy/idle for this pane.
+import { execFile } from "node:child_process";
+export default function (pi: any) {
+  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+}
+EOF
+      ;;
     codex*)
       # Semantic busy-state source negotiation (bin/fm-busy-lib.sh owns the
       # probes and the evidence). Neither Codex path is usable on the
@@ -2551,6 +2643,9 @@ fi
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
+sq_primeext=$(shell_quote "$STATE/$ID.prime-ext.ts")
+sq_primeturnend=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-turnend-guard.ts")
+sq_primewatch=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-prime-watch.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
@@ -2561,6 +2656,9 @@ LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
+LAUNCH=${LAUNCH//__PRIMETURNEND__/$sq_primeturnend}
+LAUNCH=${LAUNCH//__PRIMEWATCH__/$sq_primewatch}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}

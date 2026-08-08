@@ -2647,6 +2647,24 @@ fm_backend_herdr_strip_ansi() {  # <text>
 #              deliberately narrower than the bordered content classifier so a
 #              no-agent shell fallback prompt (`>`, `$`, `%`, or `#`) falls
 #              through to `unknown` instead of being misread as delivered.
+#   prime    - prime-agent's composer is a bare row whose only prompt glyph is
+#              a plain `>` - the very glyph the shared safety rule treats as a
+#              dead shell on an unstructured row - followed by a rotating
+#              de-emphasised placeholder (`Try "explain how @<filepath>
+#              works"`, one of five). Like Pi's shape above, it is accepted
+#              only on an identity conjunction the rendered row cannot carry,
+#              but it needs TWO signals rather than Pi's one: the pane's live
+#              foreground process must BE prime-agent
+#              (fm_backend_herdr_pane_prime_agent_foreground, kernel-level) AND
+#              Herdr's native `agent get` must identify it as prime-agent. The
+#              reporter alone is not enough here, because a quit prime-agent
+#              leaves its identity behind while the pane returns to a login
+#              shell (verified 2026-08-08), and a shell prompt of `> ` would
+#              then inherit this shape. Unlike Pi's arm neither signal is gated
+#              on agent STATUS, because the busy pane is exactly the case this
+#              shape has to serve: mid-turn submit confirmation falls back to
+#              the composer read whenever the pre-Enter baseline is not legibly
+#              idle.
 #   separated - Pi's composer is one or more content rows between two solid
 #              horizontal `─` separator rows, with no prompt glyph or side
 #              borders. This shape is accepted ONLY when Herdr's native
@@ -2685,7 +2703,12 @@ fm_backend_herdr_strip_ansi() {  # <text>
 FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-20}
 # Known ghost/placeholder composer text. Extend this if another
 # herdr-verified harness needs its own idle placeholder recognized.
-FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
+# prime-agent's rotating placeholder is the second, independent signal for its
+# shape below: it is normally removed as dark-truecolor ghost text, so this
+# pattern only carries the verdict if a theme ever renders it at full
+# intensity. Anchored on the literal @<filepath> token every one of its five
+# variants contains, so ordinary typed text cannot match it.
+FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$|^Try "[^"]*@<filepath>[^"]*"$'}
 # Known bare (unbordered) prompt glyphs a composer row may start with: ❯
 # (claude) and › (codex) only. Generic shell-style glyphs > $ % # are still
 # recognized after a bordered composer row has already been structurally found.
@@ -2698,6 +2721,13 @@ FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
 # An alternation's branches are matched as whole literal byte sequences and
 # stay correct regardless of locale.
 FM_BACKEND_HERDR_BARE_PROMPT_RE=${FM_BACKEND_HERDR_BARE_PROMPT_RE:-'^(❯|›)'}
+# prime-agent's composer prompt. Deliberately NOT added to the bare shape
+# above: `>` is also a dead-shell prompt, so this candidate is only ever
+# promoted to a composer once native agent identity says the pane is running
+# prime-agent (see the `prime` shape in the header). Requiring a space or an
+# end of row after the glyph keeps a redirection-looking transcript row
+# (`>>foo`) out of the candidate set.
+FM_BACKEND_HERDR_PRIME_PROMPT_RE=${FM_BACKEND_HERDR_PRIME_PROMPT_RE:-'^>( |$)'}
 # Pi allows a multi-line composer between its horizontal separators. Bound the
 # structural candidate so two unrelated transcript rules with an arbitrarily
 # large region between them can never be promoted into a composer.
@@ -2764,9 +2794,37 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
+# fm_backend_herdr_pane_prime_agent_foreground: 0 only when the pane's LIVE
+# foreground process group actually contains the prime-agent binary right now.
+#
+# This exists because the reporter identity above is not proof of a live agent:
+# verified 2026-08-08 on prime-agent 0.7.1, `/quit` returns the pane to a login
+# shell while Herdr still reports `agent: prime-agent, agent_status: idle`, and
+# the quit TUI's last composer row stays in the capture window. Without this
+# kernel-level check, a shell whose prompt happens to be `> ` would inherit
+# prime-agent's composer shape - exactly the dead-shell injection hazard the
+# shared composer rule exists to prevent. Fails closed on any unreadable field.
+fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
+  local session=$1 pane=$2 info
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg pane "$pane" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+    and (
+      .result.process_info.foreground_processes
+      | select(type == "array")
+      | any(
+          ((.name // "") | split("/") | last) == "prime-agent"
+          or (((.argv0 // .argv[0]) // "") | ltrimstr("-") | split("/") | last) == "prime-agent"
+        )
+    )
+  ' >/dev/null 2>&1
+}
+
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
   local identity agent agent_status row=0 generic_line=0
+  local prime_raw="" prime_line=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
@@ -2795,10 +2853,32 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
           raw_match=$line
           generic_line=$row
           found=1
+        elif printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_PRIME_PROMPT_RE"; then
+          # Held aside, not accepted: only native prime-agent identity below
+          # can turn a bare `>` row into a composer.
+          prime_raw=$line
+          prime_line=$row
         fi
         ;;
     esac
   done < <(printf '%s\n' "$cap")
+  # prime-agent: promote the held-aside `>` row only when it is the bottom-most
+  # candidate AND both independent signals agree that this pane is running
+  # prime-agent right now - the live foreground process (kernel-level, and the
+  # one that survives a quit correctly) and Herdr's native reporter identity.
+  if [ "$prime_line" -gt "$generic_line" ] \
+     && fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane"; then
+    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
+    IFS=$'\t' read -r agent agent_status <<EOF
+$identity
+EOF
+    if [ "$agent" = prime-agent ]; then
+      shape=prime
+      raw_match=$prime_raw
+      generic_line=$prime_line
+      found=1
+    fi
+  fi
   # Pi has no prompt glyph or side border. Compare its bottom-most complete
   # separator pair with the last generic match so an earlier bordered transcript
   # row can never suppress the live Pi composer. Identity is consulted only when
@@ -2853,6 +2933,12 @@ EOF
     stripped=${stripped//|/}
     stripped="${stripped#"${stripped%%[![:space:]]*}"}"
     stripped="${stripped%"${stripped##*[![:space:]]}"}"
+  elif [ "$shape" = prime ]; then
+    # Native prime-agent identity is the genuine composer container here, the
+    # same conjunction the separated shape uses: with it, the bare `>` is this
+    # harness's own prompt glyph and the shared owner may read the row as an
+    # empty agent composer; without it the row never reached this point.
+    bordered=1
   elif [ "$shape" = separated ]; then
     # The native Pi identity plus the complete separator pair is the genuine
     # composer container, equivalent to a bordered box for shared content
@@ -2862,7 +2948,9 @@ EOF
   # Delegate the empty/pending/unknown decision to the shared owner. The bare
   # shape only ever starts with an AGENT glyph (FM_BACKEND_HERDR_BARE_PROMPT_RE
   # is '^(❯|›)'), so a bare shell prompt never reaches here - it stays 'unknown'
-  # via the no-composer-row path above, exactly as before.
+  # via the no-composer-row path above, exactly as before. The one bare
+  # shell-style glyph that CAN reach here is prime-agent's `>`, and only with
+  # bordered=1 already set from its native identity.
   fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
 }
 

@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, and muse.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, pi-signed, prime-agent, grok, kimi, and muse.
 user-invocable: false
 metadata:
   internal: true
@@ -43,7 +43,11 @@ If the captain asks for a new harness, propose verifying it first: spawn a trivi
 ## Detection
 
 `bin/fm-harness.sh` prints firstmate's own harness, using verified env markers first and then process ancestry.
-Within the Pi family, only the exact launch-boundary marker `FM_PI_HARNESS=pi-signed` alongside `PI_CODING_AGENT=true` selects the signed identity; unmarked shared launcher ancestry remains `pi`.
+Within the Pi family, `PI_CODING_AGENT=true` alone establishes only the family, because pi, pi-signed, and prime-agent all export it byte-identically.
+For pi and pi-signed the exact launch-boundary marker `FM_PI_HARNESS=pi-signed` selects the signed identity, while unmarked shared launcher ancestry remains `pi`.
+prime-agent is instead keyed on its OWN markers alongside `PI_CODING_AGENT=true` - `PRIME_AGENT_CODING_AGENT_DIR` on every tool subprocess, `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` on the daemon worker - and that pair is tested BEFORE the `CLAUDECODE` fast path.
+The reason is its daemon: a resident worker inherits the long-lived per-user SUPERVISOR's environment rather than the launching client's, so a supervisor first started from a Claude session hands `CLAUDECODE=1` to every later prime-agent worker, no launch-side `env -u` can reach it, and `FM_PI_HARNESS` never arrives at all.
+Both directions are pinned by `tests/fm-prime-agent-harness.test.sh`: the vendor marker outranks an inherited `CLAUDECODE`, and a lone stale `PRIME_AGENT_*` with no Pi-family marker still resolves to `claude`.
 `bin/fm-harness.sh crew` resolves the effective crewmate harness from `config/crew-harness` (absent or `default` -> own).
 `bin/fm-harness.sh secondmate` resolves the secondmate-launch harness through the chain `config/secondmate-harness` -> `config/crew-harness` -> own, so an unset `config/secondmate-harness` matches the crew harness.
 `bin/fm-spawn.sh` uses `crew` mode for a crewmate/scout launch and `secondmate` mode for a `--secondmate` launch, re-resolving on every spawn so the split is durable across respawns; an explicit per-spawn harness arg overrides either.
@@ -56,13 +60,14 @@ Use that value for interrupt, exit, resume, and skill-invocation facts.
 
 ## Primary turn-end guard
 
-The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` have empirically validated hook paths for the "no turn ends blind" guard.
+The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `prime-agent`, and `grok` have empirically validated hook paths for the "no turn ends blind" guard.
 `claude` and `codex` block directly through Stop hooks that preserve exit status 2 and stderr from `bin/fm-turnend-guard.sh`.
-`opencode`, `pi`, and `pi-signed` expose passive lifecycle callbacks and force one bounded follow-up when the shared predicate blocks.
+`opencode`, `pi`, `pi-signed`, and `prime-agent` expose passive lifecycle callbacks and force one bounded follow-up when the shared predicate blocks; prime-agent has no settled-run event, so its guard reconstructs one from `agent_end`.
 Grok selects native blocking or its pre-native bounded resume fallback from the exact running Stop payload; [`docs/turnend-guard.md`](../../../docs/turnend-guard.md) owns that contract.
 Kimi is outside the primary turn-end guard scope, while `docs/turnend-guard.md` owns its separate guarded global hook for crew wake signals.
 muse is CREWMATE/SCOUT ONLY and has no primary integration at all: its plugin engine (its only hook surface) is disabled in the default build, and its Claude-compatible hook dialect names `asyncRewake` and model reawakening as explicitly unsupported, which is exactly what a firstmate primary's turn-end supervision needs.
 `bin/fm-spawn.sh` refuses a `--secondmate` launch on muse for that reason.
+prime-agent has no `agent_settled` either, but it does support secondmates: its guard reconstructs the settle from `agent_end`, and `docs/turnend-guard.md` owns that contract.
 The exact hook files, commands, scoping rules, and fail-open tradeoffs are owned by `docs/turnend-guard.md`.
 `docs/verification/supervision.md` "Turn-end guard" owns active validation evidence.
 When changing any primary turn-end hook, validate the real harness behavior in a scratch project or throwaway home before trusting it, then update that doc and the relevant concise fact below.
@@ -100,6 +105,7 @@ Claude's Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns tokenles
 Codex uses bounded foreground checkpoints through `bin/fm-watch-checkpoint.sh` because Codex cannot reason while a foreground tool call is running.
 OpenCode uses `.opencode/plugins/fm-primary-watch-arm.js`, which coordinates with the turn-end guard plugin and wakes the TUI with `client.session.promptAsync`.
 Pi and pi-signed use the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions the Pi engine auto-discovers once trusted.
+prime-agent uses its own tracked pair under `.prime/agent/extensions/`, which it auto-discovers with no trust gate; its watcher tool is `fm_watch_arm_prime`.
 When changing any primary watcher adapter, update `docs/supervision-protocols/`, `docs/turnend-guard.md` if a shared idle or turn-end hook changed, and the relevant concise fact below.
 
 ## Launch profile axes
@@ -123,6 +129,7 @@ The supported launch-profile flags below are verified locally; each row records 
 | codex | `--model <model>` | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'` | Verified on codex-cli 0.142.1. The installed binary schema contains `model_reasoning_effort`, the active config uses it, and the bundled model catalog advertises only low/medium/high/xhigh. `max` is omitted. |
 | grok | `--model <model>` | `--reasoning-effort <low\|medium\|high>` | Verified on grok 0.2.99 (2026-07-13). `--effort` is an alias, but firstmate's profile axis is reasoning effort. As of 0.2.99 the ceiling is `high`; both `xhigh` and `max` are rejected with `use one of: high, medium, low`, so firstmate omits them. |
 | pi / pi-signed | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-27 on Pi and pi-signed 0.82.0. Both expose the same accepted thinking levels and completed the same model-qualified max-thinking smoke. |
+| prime-agent | `--model <model>` or `--model <provider>/<model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-08-08 on prime-agent 0.7.1 by launching all seven accepted values; its own validator takes `off\|minimal\|low\|medium\|high\|xhigh\|max`, so the whole shared vocabulary maps across. The published docs claiming a lower ceiling are wrong. The flag IS applied; the EFFECTIVE level is then clamped to the selected model's supported set by the shared pi-ai `clampThinkingLevel`, which walks UP first, so a model advertising only high/xhigh renders `high` for a requested `low`. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | kimi | `--model <model>` | none | Verified 2026-07-25 on Kimi Code CLI 0.29.1. |
 | muse | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>`, and `ultra` only for an explicit `max` | Verified 2026-08-05 on Muse Code 0.1.0-R708.1. The flag accepts `none\|minimal\|low\|medium\|high\|xhigh\|ultra` and defaults to `high`. `ultra` is muse's max-class level, so it is reachable only through an explicit captain `max`, never from the generic fallback; `none` and `minimal` sit below the shared vocabulary and stay unreachable. |
@@ -160,6 +167,7 @@ Natural language is acceptable if uncertain.
 - codex: `$<skill>`, for example `$no-mistakes`; `/<skill>` is claude-only and codex rejects it as "Unrecognized command".
 - opencode: no separate verified skill invocation beyond normal slash-command behavior; use natural language if the exact skill command is uncertain.
 - pi and pi-signed: no separate verified skill invocation beyond normal command behavior; use natural language if the exact skill command is uncertain.
+- prime-agent: `/skill:<skill>`, for example `/skill:no-mistakes`. The bare `/<skill>` form does not exist. Typing it opens an autocomplete popup, but one Enter submits through firstmate's shared submit path with no popup swallow (verified live).
 - grok: `/<skill>`, for example `/no-mistakes` (same form as claude). Verified end to end: grok discovers the user-level `no-mistakes` skill, `/no-mistakes` invokes it, and grok drives a real `no-mistakes axi run`. Like codex's `$`/`/` popups, typing `/<skill>` opens grok's slash-autocomplete, so a too-fast Enter selects the popup entry instead of sending, and for an argument-taking command (like `/no-mistakes`'s optional task-first argument) that first Enter only expands the popup selection into an argument-hint placeholder rather than submitting - a genuine second Enter is required (see the grok section below for the 2026-07-03 incident and fix). `fm_tmux_submit_core`'s retried Enter (used by `fm-send` on the tmux backend) handles this through the structural composer reader; the herdr backend needed a dedicated fix (`fm_backend_herdr_composer_state`, docs/herdr-backend.md) because its prior delta-based verification false-positived on that same popup-close content change.
 - kimi: `/<skill>`, for example `/no-mistakes`.
 
@@ -299,6 +307,63 @@ Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-prima
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
 When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
+
+## prime-agent (VERIFIED 2026-08-08, Prime Agent 0.7.1)
+
+Prime Agent is a Pi-family CLI, verified for crewmates, scouts, and LOCAL secondmates.
+Remote secondmates are not verified on it and stay refused by `bin/fm-remote-secondmate-control.sh`.
+Every fact below was established against the installed binary - a live pane, its own `dist/`, or both - never from the published documentation, which was already wrong about the accepted thinking levels.
+
+**It ships no documentation of its Herdr integration at all** - zero mentions across its 36 shipped doc files - so everything firstmate relies on about that integration comes from reading `dist/core/extensions/builtin/herdr-agent-state.js`. Re-read that file after any upgrade rather than assuming a release note would announce a change.
+
+| Fact | Value |
+|---|---|
+| Binary | Executable `prime-agent` from `PATH`. Its Node bundle sets its own process title, so the client TUI, the detached daemon supervisor, and every session worker all report the exact name `prime-agent` to `ps -o comm=`. |
+| Launch | Positional prompt, the Pi shape. Keep it as ONE positional: the usage is `[@files...] [message...]` and extra positionals become separate messages. |
+| Autonomy | None needed. prime-agent has no permission system, exactly like Pi; a crewmate ran git and shell tools unattended with no approval gate. |
+| Trust dialog | None, and no trust store on disk - its extension API has no `project_trust` event, which pi 0.83.0 does. Project-local extensions auto-load with no grant. First run on a machine that has never run it may show onboarding (`onboardingShown` in `settings.json`); not exercised here. |
+| Busy state | Not firstmate-owned. Under Herdr, prime-agent's own built-in reporter publishes pane agent state natively, so `bin/fm-busy-lib.sh`'s herdr-native arm already answers and no extension of ours is installed or armed. The per-task extension `fm-spawn` writes carries only the `turn_end` wake touch. |
+| Exit command | `/quit`. It exits the TUI to a shell and prints `Resume this session with: prime-agent --resume <session-uuid>`. It does NOT stop the daemon session - the session was still `lifecycle=live` afterwards. `Ctrl+D` exits on an empty editor; `Ctrl+C` interrupts and then exits. |
+| Interrupt | Single Escape cancels the running turn. It does NOT restore the interrupted prompt into the composer the way muse does, and it does NOT clear typed text - Escape on an idle pane leaves the composer untouched. Clear with `Ctrl+U`. |
+| Skill invocation | `/skill:<skill>`, e.g. `/skill:no-mistakes`; see the invocation list above. |
+| Environment marker | `PI_CODING_AGENT=true`, byte-identical to pi, so it identifies only the FAMILY. `PRIME_AGENT_CODING_AGENT_DIR` and `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` are its own and are what detection keys on; `FM_PI_HARNESS` does NOT reach a tool subprocess here. See Detection above. |
+| Composer | A bare `>` prompt glyph on a background-filled row with no border, plus one of five rotating placeholders `Try "... @<filepath> ..."` drawn in dark truecolor `38;2;113;113;122` (luminance ~114), which the shared ghost stripper removes. |
+| Resume | `prime-agent --resume <session-uuid>` (printed on quit), `-c` / `--continue`, or `prime-agent attach <agent>` for a still-running one. |
+| Extensions | `-e <path>`, same flag as Pi, plus auto-discovery of `.prime/agent/extensions/` - NOT `.pi/extensions/`, so the tracked Pi primary extensions are invisible to it. That includes `.pi/extensions/fm-calm.ts`, whose `registerEntryRenderer` call prime-agent's API does not have; nothing can load and throw, and there is no Calm surface under this adapter. |
+
+### The detached daemon is the defining difference from Pi
+
+Every root session runs in a detached daemon worker under one per-user supervisor.
+Closing the pane detaches the client, and so does `/quit`: both leave the worker `live`, holding its launch directory as cwd and a lease on its transcript.
+This was observed twice - a torn-down scout's session was still `live` on that worktree hours later, and an explicit `/quit` left its own session `live`.
+`prime-agent status` is not a health signal here: it marks even a live session's forkserver `stale`.
+
+`bin/fm-prime-agent-lib.sh` is the one owner of retiring those sessions, selected by a recorded session `cwd` that is the target directory or a path inside it. Two callers need it:
+
+- `bin/fm-teardown.sh`, before its generic leaked-process reaper, so the worker ends through prime-agent instead of being SIGTERMed out from under its lease and journals.
+- `bin/fm-spawn.sh --secondmate`, before relaunching a prime-agent home. Firstmate's session lock records the harness ancestor pid, which for prime-agent IS that detached worker, so a home whose pane died would otherwise keep a live lock holder and every relaunch would land read-only. This retirement is what makes the `prime-agent` entry in `bin/fm-session-lock-lib.sh` safe.
+
+Never `prime-agent shutdown`: one supervisor serves the whole user, so it would stop the captain's own sessions and every other home's workers.
+
+### No agent_settled, and how the guard settles anyway
+
+prime-agent's extension API has no `agent_settled` event; the complete set stops at `session_*`, `before_agent_start`, `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_*`, `tool_*`, `model_select`, `thinking_level_select`, `user_bash`, `before_provider_request`, `after_provider_response`, `resources_discover`, and `refine_complete`.
+Registering `agent_settled` is silently accepted and never fires, so the Pi extensions cannot be reused unchanged - which is why `.prime/agent/extensions/` holds its own pair rather than sharing Pi's.
+
+The settle is reconstructed from `agent_end` following the built-in Herdr reporter's shape: hold through a retry grace window when the last assistant message's `stopReason` is `error` (auto-retry starts AFTER `agent_end` fires), skip an end that still has queued messages behind it, otherwise settle now.
+Do NOT gate on `ctx.isIdle()` the way the Pi extension does: it was measured false throughout a live prime-agent run, so that gate would never settle at all.
+Extensions can also be evaluated more than once per session, and inline RLM child sessions reuse the parent's resource loader, so handlers must stay idempotent or session-bound.
+[`docs/turnend-guard.md`](../../../docs/turnend-guard.md) owns the guard contract and `docs/supervision-protocols/prime-agent.md` owns the watcher protocol.
+
+### Composer reads and the bare `>` prompt
+
+prime-agent's prompt glyph is a plain `>`, which the fleet-wide composer rule in `bin/fm-composer-lib.sh` treats as a DEAD SHELL on an unstructured row - correctly, and that rule is not relaxed for this adapter.
+The Herdr adapter instead proves the container: it promotes a bottom-most `>` row to a composer only when the pane's live foreground process IS prime-agent (kernel-level) AND Herdr's native reporter identifies it as prime-agent.
+Both signals are required because `/quit` leaves the reporter identity behind while the pane returns to a login shell, so the reporter alone would let a shell with `PS1='> '` inherit the composer shape.
+Without this arm the mid-turn steer path breaks: Herdr confirms an idle-baseline submit from native agent state, but falls back to the composer read whenever the pane is already working, so every steer to a BUSY prime-agent pane returned `unknown` and reported a false failure.
+
+Known gap, deliberately not patched blind: the tmux reader has no equivalent arm, so a prime-agent worker hosted on tmux still reads `unknown` for a mid-turn steer and fails loudly rather than silently.
+That check is harness-dependent on rendered output and this home runs Herdr, so it needs proving against a real prime-agent pane under real tmux before it ships.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit re-verified 2026-07-03 on 0.2.82; reasoning-effort ceiling re-verified 2026-07-13 on 0.2.99; exit paths re-verified 2026-07-19 on grok 0.2.103)
 
