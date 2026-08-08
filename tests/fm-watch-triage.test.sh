@@ -191,6 +191,17 @@ test_classifier_primitives() {
     && fail "FM_CAPTAIN_RE override bypassed paused: suppression"
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "custom-verb: x" \
     || fail "nonterminal suppression weakened custom bare-line behavior"
+  incident_line='blocked: report complete; decision-hold gate needs tasks-axi>=0.2.4 [key=decision-hold-gate]'
+  printf '%s\n' "$incident_line" > "$state/incident.status"
+  open=$(status_open_decisions "$state/incident.status")
+  printf '%s' "$open" | grep -F $'default\tblocked\treport complete; decision-hold gate needs tasks-axi>=0.2.4 [key=decision-hold-gate]' >/dev/null \
+    || fail "the exact trailing-key incident line no longer documents its compatibility behavior"
+  printf '%s' "$open" | grep -F $'decision-hold-gate\t' >/dev/null \
+    && fail "a trailing key token was unexpectedly accepted despite ambiguous note prose"
+  printf 'blocked [key=decision-hold-gate]: report complete; decision-hold gate needs tasks-axi>=0.2.4\n' > "$state/incident-correct.status"
+  open=$(status_open_decisions "$state/incident-correct.status")
+  printf '%s' "$open" | grep -F $'decision-hold-gate\tblocked\treport complete; decision-hold gate needs tasks-axi>=0.2.4' >/dev/null \
+    || fail "a correctly placed decision key was not read"
   printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \
