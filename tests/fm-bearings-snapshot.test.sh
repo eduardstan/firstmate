@@ -870,6 +870,8 @@ test_registry_runtime_records_keep_placement() {
       "$local_mate"
     printf -- '- rt-remote - fixture domain (host: remote-mac; root: /remote/root; home: %s; scope: fixture; projects: sample; model: gpt-x; added 2026-07-13)\n' \
       "$remote_mate"
+    printf -- '- rt-token - fixture domain (host: remote-mac; root: /remote/root; home: %s-token; scope: fixture; projects: sample; harness: codex; model: vendor-harness:model:v1; effort: max; added 2026-07-13)\n' \
+      "$remote_mate"
   } > "$home/data/secondmates.md"
   fakebin=$(make_fakebin "$home")
   canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
@@ -885,6 +887,12 @@ test_registry_runtime_records_keep_placement() {
         and .host == "remote-mac" and .root == "/remote/root"
         and .registry_error == null))
   ' >/dev/null || fail "a runtime-bearing remote record lost its placement: $canonical"
+  printf '%s' "$canonical" | jq -e --arg home "$remote_mate-token" '
+    .secondmate_current.registry.records
+    | (any(.[]; .id == "rt-token" and .home == $home and .remote == true
+        and .host == "remote-mac" and .root == "/remote/root"
+        and .registry_error == null))
+  ' >/dev/null || fail "a model value embedding a runtime key read as a repeated key: $canonical"
   json=$(run "$home" "$fakebin" --json)
   printf '%s' "$json" | jq -e '
     (.omitted // []) | any(.surface | test("registry entry has no home")) | not

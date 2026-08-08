@@ -869,7 +869,12 @@ BASH
       # then held to the same vocabulary bin/fm-secondmate-registry-lib.sh honors,
       # so this second parser refuses exactly what the owning parser refuses
       # instead of reporting a record the launcher rejects as a healthy mate.
-      ("^(?!.*harness:.*harness:)(?!.*model:.*model:)(?!.*effort:.*effort:)"
+      # A key only opens a field at the start of the segment or after the ";" that
+      # closed the previous one, so the repeated-key guards are anchored to that
+      # boundary: the same literal inside a model value is part of the value.
+      ("^(?!.*(?:^|;)[[:space:]]*harness:.*(?:^|;)[[:space:]]*harness:)"
+        + "(?!.*(?:^|;)[[:space:]]*model:.*(?:^|;)[[:space:]]*model:)"
+        + "(?!.*(?:^|;)[[:space:]]*effort:.*(?:^|;)[[:space:]]*effort:)"
         + "(?:[[:space:]]*(?:harness:[[:space:]]*(?:claude|codex|opencode|pi-signed|pi|grok|kimi)"
         + "|model:[[:space:]]*(?!(?:-|default)[[:space:]]*;)[^;)[:space:][:cntrl:]]+"
         + "|effort:[[:space:]]*(?:low|medium|high|xhigh|max))?[[:space:]]*;)*[[:space:]]*$") as $runtime_re
