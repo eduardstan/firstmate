@@ -892,6 +892,34 @@ test_registry_runtime_records_keep_placement() {
   pass "runtime-bearing registry records keep home and remote placement in the snapshot"
 }
 
+# The launcher refuses a runtime pin outside the recorded vocabulary, so the
+# snapshot's second parser must refuse it too rather than reading the record as a
+# healthy mate that no spawn route will ever accept.
+test_registry_malformed_runtime_is_not_healthy() {
+  local home fakebin canonical mate
+  home=$(make_home registry-runtime-bad)
+  mate="$TMP_ROOT/registry-runtime-bad-home"
+  make_valid_secondmate_home rt-bad "$mate"
+  {
+    printf -- '- rt-effort - fixture domain (home: %s/effort; scope: fixture; projects: sample; effort: turbo; added 2026-07-13)\n' "$mate"
+    printf -- '- rt-key - fixture domain (home: %s/key; scope: fixture; projects: sample; mode: fast; added 2026-07-13)\n' "$mate"
+    printf -- '- rt-model - fixture domain (home: %s/model; scope: fixture; projects: sample; model: -; added 2026-07-13)\n' "$mate"
+    printf -- '- rt-harness - fixture domain (home: %s/harness; scope: fixture; projects: sample; harness: muse; added 2026-07-13)\n' "$mate"
+    printf -- '- rt-unterminated - fixture domain (home: %s/unterminated; scope: fixture; projects: sample; effort: high added 2026-07-13)\n' "$mate"
+    printf -- '- rt-repeat - fixture domain (home: %s/repeat; scope: fixture; projects: sample; harness: pi; harness: codex; added 2026-07-13)\n' "$mate"
+  } > "$home/data/secondmates.md"
+  fakebin=$(make_fakebin "$home")
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .secondmate_current.registry.records
+    | (map(select(.registry_error == null)) | length) == 0
+      and (all(.[]; .id | test("^rt-")))
+      and length == 6
+  ' >/dev/null || fail "a refused runtime pin read as a healthy registry record: $canonical"
+  pass "registry records the launcher refuses carry a snapshot registry_error"
+}
+
 test_current_landed_baseline_is_repeatable_and_prior_report_independent() {
   local home fakebin one two
   home=$(make_home standalone-baseline); write_fixture "$home"
@@ -1945,6 +1973,7 @@ test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
 test_registry_unavailability_and_bounds_are_explicit
 test_registry_runtime_records_keep_placement
+test_registry_malformed_runtime_is_not_healthy
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
 test_toon_json_parity
