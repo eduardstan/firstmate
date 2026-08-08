@@ -30,6 +30,19 @@
 #       Refuse records that operational consumers cannot parse, unavailable or
 #       unsafe registry files when present, non-absolute or unresolvable homes,
 #       duplicate ids or homes, and nested or overlapping homes.
+#   fm-home-seed.sh runtime <id> <harness|model|effort>=<value|-> ...
+#       Record or clear this secondmate's OWN durable runtime on its existing
+#       record, so it launches on its own harness, model, and effort instead of
+#       the home-wide config/secondmate-harness pin. This is both the create-time
+#       and the change-time path: seed the home first, then set the axes it needs.
+#       Each axis is independent, a value of "-" clears one, and at least one
+#       assignment is required. Values are validated against the verified
+#       secondmate adapters and the low|medium|high|xhigh|max effort vocabulary
+#       before anything is written; the edit takes the registry lock, validates
+#       the whole rewritten registry, and leaves the record untouched if any of
+#       that refuses. Prints the resulting record. bin/fm-spawn.sh owns how these
+#       fields outrank config/secondmate-harness at launch, and
+#       bin/fm-secondmate-registry-lib.sh owns the record format.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +66,7 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
   echo "       fm-home-seed.sh validate" >&2
+  echo "       fm-home-seed.sh runtime <id> <harness|model|effort>=<value|-> ..." >&2
 }
 
 validate_registry_home_text() {
@@ -199,6 +213,88 @@ validate_registry() {
     printf 'error: %s\n' "$SECONDMATE_REGISTRY_ERROR" >&2
     return 1
   }
+}
+
+registry_line_is_for_id() {
+  case "$1" in "- $2"|"- $2 "*) return 0 ;; esac
+  return 1
+}
+
+# Record or clear this secondmate's own durable runtime fields on its existing
+# record. Every value is validated before anything is written, and the rewritten
+# registry is validated as a whole before it replaces the live file, so a refused
+# edit leaves the record exactly as it was.
+runtime_set_locked() {
+  local id=$1 assignment key value tmp line existing
+  shift
+  if ! secondmate_registry_line_for_id "$REG" "$id"; then
+    [ -z "$SECONDMATE_REGISTRY_ERROR" ] || { printf 'error: %s\n' "$SECONDMATE_REGISTRY_ERROR" >&2; return 1; }
+    echo "error: no secondmate record for $id in $REG" >&2
+    return 1
+  fi
+  for assignment in "$@"; do
+    key=${assignment%%=*}
+    value=${assignment#*=}
+    [ "$key" != "$assignment" ] || { echo "error: expected <harness|model|effort>=<value|->, got: $assignment" >&2; return 1; }
+    [ "$value" != - ] || value=
+    case "$key" in
+      harness)
+        [ -z "$value" ] || secondmate_registry_runtime_harness_ok "$value" || {
+          echo "error: unverified harness for $id: $value (verified secondmate adapters: claude, codex, opencode, pi, pi-signed, grok, kimi)" >&2
+          return 1
+        }
+        SECONDMATE_REGISTRY_HARNESS=$value
+        ;;
+      model)
+        [ -z "$value" ] || secondmate_registry_runtime_model_ok "$value" || {
+          echo "error: unusable model for $id: $value" >&2
+          return 1
+        }
+        SECONDMATE_REGISTRY_MODEL=$value
+        ;;
+      effort)
+        [ -z "$value" ] || secondmate_registry_runtime_effort_ok "$value" || {
+          echo "error: invalid effort for $id: $value (expected low, medium, high, xhigh, or max)" >&2
+          return 1
+        }
+        SECONDMATE_REGISTRY_EFFORT=$value
+        ;;
+      *)
+        echo "error: unknown runtime field '$key'; expected harness, model, or effort" >&2
+        return 1
+        ;;
+    esac
+  done
+  line=$(secondmate_registry_render_line)
+  tmp="$REG.tmp.$$"
+  : > "$tmp"
+  while IFS= read -r existing || [ -n "$existing" ]; do
+    if registry_line_is_for_id "$existing" "$id"; then
+      printf '%s\n' "$line" >> "$tmp"
+    else
+      printf '%s\n' "$existing" >> "$tmp"
+    fi
+  done < "$REG"
+  if ! secondmate_registry_validate_bindings "$tmp" resolved_path; then
+    printf 'error: %s\n' "$SECONDMATE_REGISTRY_ERROR" >&2
+    rm -f -- "$tmp"
+    return 1
+  fi
+  mv -f -- "$tmp" "$REG"
+  printf '%s\n' "$line"
+}
+
+runtime_set() {
+  local id=$1 lock rc=0
+  shift
+  case "$id" in ''|*[!A-Za-z0-9._-]*) echo "error: invalid secondmate id: $id" >&2; return 1 ;; esac
+  [ -f "$REG" ] && [ ! -L "$REG" ] || { echo "error: secondmate registry is unavailable or unsafe: $REG" >&2; return 1; }
+  mkdir -p "$STATE" || return 1
+  lock=$(secondmate_registry_lock_path "$STATE")
+  fm_lock_acquire_wait "$lock" || { echo "error: secondmate registry could not be locked" >&2; return 1; }
+  runtime_set_locked "$id" "$@" || rc=$?
+  fm_lock_release "$lock" || true
+  return "$rc"
 }
 
 join_projects() {
@@ -972,6 +1068,11 @@ case "${1:-}" in
   validate)
     [ $# -eq 1 ] || { usage; exit 1; }
     validate_registry
+    ;;
+  runtime)
+    [ $# -ge 3 ] || { usage; exit 1; }
+    shift
+    runtime_set "$@"
     ;;
   -h|--help|'')
     usage
