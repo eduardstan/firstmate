@@ -409,12 +409,25 @@ SH
   # question: a pane that died mid-turn leaves NO client attached while the
   # worker keeps writing the home, so client count alone would invite a second
   # writer into the same worktree.
-  local idle busy
-  idle='"isSessionActive":false,"isStreaming":false,"isCompacting":false,"isRunningTools":false,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":0'
-  busy='"isSessionActive":true,"isStreaming":true,"isCompacting":false,"isRunningTools":true,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":1'
-  for case_id in abandoned attached attached-behind-subagent mid-turn-detached unknown-activity wedged-daemon; do
+  # The listing carries TWO session shapes under one worker pid, and the cases
+  # below use both as the daemon renders them: a RESIDENT session publishes
+  # every activity flag and an activeSessionId, while a persisted non-resident
+  # RLM child publishes neither the activeSessionId nor the three active-only
+  # flags and is idle by construction.
+  local idle busy passive
+  idle='"activeSessionId":"a1","isSessionActive":false,"isStreaming":false,"isCompacting":false,"isRunningTools":false,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":0'
+  busy='"activeSessionId":"a1","isSessionActive":true,"isStreaming":true,"isCompacting":false,"isRunningTools":true,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":1'
+  passive='"lifecycle":"stopped","activity":"idle","isSessionActive":false,"isStreaming":false,"isCompacting":false,"unfinishedActionCount":0'
+  for case_id in abandoned abandoned-behind-passive-subagent attached attached-behind-subagent \
+    mid-turn-detached unknown-activity no-resident-session wedged-daemon; do
     case "$case_id" in
       abandoned) sessions="{\"id\":\"s1\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle}" ;;
+      abandoned-behind-passive-subagent)
+        # The quit worker still lists the subagent its root session once forked.
+        # That row can never prove anything about the operator's session, so it
+        # must not keep the home read-only forever.
+        sessions="{\"id\":\"sub\",\"rlmDepth\":1,\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$passive},{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle}"
+        ;;
       attached) sessions="{\"id\":\"s1\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":1,$idle}" ;;
       attached-behind-subagent)
         sessions="{\"id\":\"sub\",\"kind\":\"subagent\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle},{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":1,$idle}"
@@ -422,7 +435,12 @@ SH
       mid-turn-detached)
         sessions="{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$busy}"
         ;;
-      unknown-activity) sessions='{"id":"s1","cwd":"/x","workerPid":OLD,"attachedClients":0}' ;;
+      unknown-activity)
+        sessions='{"id":"s1","activeSessionId":"a1","cwd":"/x","workerPid":OLD,"attachedClients":0}'
+        ;;
+      no-resident-session)
+        sessions="{\"id\":\"sub\",\"rlmDepth\":1,\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$passive}"
+        ;;
       wedged-daemon) sessions= ;;
     esac
     cat > "$fakebin/prime-agent" <<SH
@@ -446,10 +464,10 @@ SH
     elapsed=$(( $(date +%s) - start ))
     lock_after=$(tr -d '[:space:]' < "$dir/state/.lock")
     case "$case_id" in
-      abandoned)
-        expect_code 0 "$status" "an in-place restart was refused its own home's lock: $out"
+      abandoned|abandoned-behind-passive-subagent)
+        expect_code 0 "$status" "an in-place restart was refused its own home's lock ($case_id): $out"
         [ "$lock_after" = "$new" ] \
-          || fail "the restarted session did not take the lock: expected $new, got $lock_after"
+          || fail "the restarted session did not take the lock ($case_id): expected $new, got $lock_after"
         ;;
       wedged-daemon)
         [ "$elapsed" -lt 30 ] || fail "a wedged prime-agent daemon stalled lock acquisition for ${elapsed}s"

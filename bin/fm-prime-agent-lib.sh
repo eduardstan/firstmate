@@ -120,6 +120,18 @@ EOF
 # bash, running RLM children, unfinished actions) alongside it. A signal that is
 # missing or not a boolean counts as BUSY, so a listing from a version that
 # stopped publishing one of them refuses the reclaim instead of guessing.
+#
+# That strictness only holds against summaries that describe a RESIDENT session.
+# The listing mixes two shapes under one worker pid: resident sessions, which
+# publish every activity flag, and persisted non-resident RLM children, which
+# publish only some of them and are idle by construction (`isSessionActive`
+# false, no clients, nothing running). `activeSessionId` is the vendor's own
+# discriminator between the two - only the resident shape sets it, and the
+# vendor's own "is this running" helper checks it first - so judging the
+# non-resident rows on missing flags would call every worker that ever spawned
+# a subagent busy forever, which is the read-only wedge this query exists to
+# clear. A worker with no resident session at all proves nothing either way and
+# stays live.
 fm_prime_agent_worker_abandoned() {  # <pid>
   local pid=$1 verdict
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
@@ -130,6 +142,7 @@ fm_prime_agent_worker_abandoned() {  # <pid>
         def busy_flag($v): if ($v | type) == "boolean" then $v else true end;
         .sessions // []
         | map(select(((.workerPid // "") | tostring) == $pid))
+        | map(select(.activeSessionId != null))
         | if length == 0 then "unknown"
           else
             map(

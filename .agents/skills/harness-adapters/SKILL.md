@@ -342,7 +342,11 @@ This was observed twice - a torn-down scout's session was still `live` on that w
 `bin/fm-prime-agent-lib.sh` is the one owner of retiring those sessions, selected by a recorded session `cwd` that is the target directory or a path inside it. Two callers need it:
 
 - `bin/fm-teardown.sh`, before its generic leaked-process reaper, so the worker ends through prime-agent instead of being SIGTERMed out from under its lease and journals.
-- `bin/fm-spawn.sh --secondmate`, before relaunching a prime-agent home. Firstmate's session lock records the harness ancestor pid, which for prime-agent IS that detached worker, so a home whose pane died would otherwise keep a live lock holder and every relaunch would land read-only. This retirement is what makes the `prime-agent` entry in `bin/fm-session-lock-lib.sh` safe.
+- `bin/fm-spawn.sh --secondmate`, before relaunching a prime-agent home. Firstmate's session lock records the harness ancestor pid, which for prime-agent IS that detached worker, so a home whose pane died would otherwise keep a live lock holder and every relaunch would land read-only.
+
+What makes the `prime-agent` entry in `bin/fm-session-lock-lib.sh` safe is not that retirement, which only two callers reach, but `fm_prime_agent_worker_abandoned` in the same lib: a recorded worker counts as a live lock holder only while a client is attached to it or any session it hosts is still working, so a manual in-place restart reclaims a quit worker's lock without any retirement step.
+Read that verdict against RESIDENT sessions only. One worker's listing mixes two shapes under its pid - resident sessions, which publish every activity flag and an `activeSessionId`, and persisted non-resident RLM children, which publish neither and are idle by construction - so judging the second shape on its absent flags would mark every worker that ever spawned a subagent busy forever.
+A worker that is detached but still mid-turn deliberately keeps the lock, and so does any listing that cannot prove it finished; the fail-safe direction here is "still alive".
 
 Never `prime-agent shutdown`: one supervisor serves the whole user, so it would stop the captain's own sessions and every other home's workers.
 
@@ -361,6 +365,8 @@ Extensions can also be evaluated more than once per session, and inline RLM chil
 prime-agent's prompt glyph is a plain `>`, which the fleet-wide composer rule in `bin/fm-composer-lib.sh` treats as a DEAD SHELL on an unstructured row - correctly, and that rule is not relaxed for this adapter.
 The Herdr adapter instead proves the container: it promotes a bottom-most `>` row to a composer only when the pane's live foreground process IS prime-agent (kernel-level) AND Herdr's native reporter identifies it as prime-agent.
 Both signals are required because `/quit` leaves the reporter identity behind while the pane returns to a login shell, so the reporter alone would let a shell with `PS1='> '` inherit the composer shape.
+RECOVERY asks a different question of the same pane and needs a different discriminator: absence from the foreground group is not absence of the agent, because Ctrl+Z stops prime-agent's whole group with SIGTSTP and hands the terminal back to the shell while the agent lives on as a stopped child of it (verified live: process state `T`, Herdr still reporting `agent: prime-agent, agent_status: idle`).
+So the husk verdict in `fm_backend_herdr_pane_agent_state` needs the pane's whole PROCESS SUBTREE to hold no prime-agent process, which is what `/quit` leaves and what a suspend never does; either probe reading unusable keeps the pane alive.
 Without this arm the mid-turn steer path breaks: Herdr confirms an idle-baseline submit from native agent state, but falls back to the composer read whenever the pane is already working, so every steer to a BUSY prime-agent pane returned `unknown` and reported a false failure.
 
 Known gap, deliberately not patched blind: the tmux reader has no equivalent arm, so a prime-agent worker hosted on tmux still reads `unknown` for a mid-turn steer and fails loudly rather than silently.
