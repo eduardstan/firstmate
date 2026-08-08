@@ -50,6 +50,17 @@ test_detection_splits_the_pi_family() {
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed)
   [ "$out" = pi-signed ] || fail "pi-signed selection regressed (got '$out')"
 
+  # A pi/pi-signed worker launched into a multiplexer whose stored environment
+  # kept a prime-agent marker: its own launch boundary is the authority, since
+  # FM_PI_HARNESS never reaches a real prime-agent tool subprocess.
+  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed PRIME_AGENT_CODING_AGENT_DIR=/x)
+  [ "$out" = pi-signed ] \
+    || fail "a stale prime-agent marker outranked the pi-signed launch stamp (got '$out')"
+
+  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi PRIME_AGENT_INTERNAL_DAEMON_WORKER=1)
+  [ "$out" = pi ] \
+    || fail "a stale prime-agent marker outranked the pi launch stamp (got '$out')"
+
   # An empty marker value is not a marker.
   out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=)
   [ "$out" = pi ] || fail "an empty prime-agent marker was treated as present (got '$out')"

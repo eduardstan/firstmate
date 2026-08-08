@@ -52,8 +52,14 @@ detect_own() {
   # Both are required to appear ALONGSIDE the Pi-family marker, so a single
   # stale PRIME_AGENT_* left in a multiplexer's stored environment cannot
   # outrank claude on its own. That stored-environment hazard is the same one
-  # documented above, now running in both directions.
+  # documented above, now running in both directions - and it is also why an
+  # explicit FM_PI_HARNESS naming another Pi-family member WINS over the vendor
+  # markers. FM_PI_HARNESS never reaches a prime-agent tool subprocess, so when
+  # it does say pi or pi-signed it is this worker's own launch boundary
+  # (bin/fm-spawn.sh prepends it) and the PRIME_AGENT_* alongside it is the
+  # stale one.
   if [ "${PI_CODING_AGENT:-}" = "true" ] \
+    && [ "${FM_PI_HARNESS:-}" != pi ] && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
     && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
       || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
       || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
