@@ -390,6 +390,10 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
+# Bump this on ANY change to _fm_decision_fold_line's open/close semantics: a
+# cursor persisted under older semantics carries an open set that folder would
+# no longer produce, and only a version mismatch forces the full re-fold that
+# discards it. Forgetting the bump silently serves a wrong open set forever.
 FM_OPEN_DECISIONS_FOLD_VERSION=3
 
 # Portable device:inode identity for the rotation/recreation check below.
