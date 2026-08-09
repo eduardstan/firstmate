@@ -279,6 +279,33 @@ SH
   pass "prime-agent secondmate relaunch fails closed on retirement failure"
 }
 
+test_secondmate_launch_succeeds_without_daemon() {
+  local case_dir home proj wt fakebin id log out status subhome
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case no-daemon)
+  log="$case_dir/launch.log"
+  : > "$log"
+  subhome="$case_dir/subhome"
+  mkdir -p "$subhome/state" "$subhome/config" "$subhome/projects" "$subhome/bin" "$subhome/data"
+  printf '# scratch secondmate home\n' > "$subhome/AGENTS.md"
+  printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
+  printf 'scratch charter\n' > "$subhome/data/charter.md"
+  cat > "$fakebin/prime-agent" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = list ]; then
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$fakebin/prime-agent"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$subhome" --harness prime-agent --secondmate) && status=0 || status=$?
+  expect_code 0 "$status" "prime-agent secondmate spawn failed without a daemon: $out"
+  assert_grep 'prime-agent' "$log" "prime-agent secondmate was not launched without a daemon"
+
+  pass "prime-agent secondmate launch treats an absent daemon as nothing to retire"
+}
+
 test_duplicate_secondmate_spawn_preserves_live_worker() {
   local case_dir home proj wt fakebin id log out status subhome calls
   IFS='|' read -r case_dir home proj wt fakebin id < <(make_case duplicate-secondmate)
@@ -295,7 +322,7 @@ test_duplicate_secondmate_spawn_preserves_live_worker() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> '$calls'
 if [ "\${1:-}" = list ]; then
-  printf '{"sessions":[{"id":"live1","lifecycle":"live","cwd":"%s"}]}\n' '$subhome'
+  printf '{"sessions":[{"id":"live1","activeSessionId":"live1","lifecycle":"live","cwd":"%s"}]}\n' '$subhome'
 fi
 exit 0
 SH
@@ -507,6 +534,7 @@ test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_secondmate_launch_loads_both_primary_extensions
 test_secondmate_relaunch_refuses_failed_retirement
+test_secondmate_launch_succeeds_without_daemon
 test_duplicate_secondmate_spawn_preserves_live_worker
 test_primary_extensions_ignore_inline_child_sessions
 test_bare_prompt_stays_a_dead_shell

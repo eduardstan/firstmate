@@ -63,12 +63,11 @@ fm_prime_agent_cli() {  # <arg>...
 
 fm_prime_agent_session_ids_under() {  # <resolved-directory> <all|resident>
   local resolved=$1 scope=$2 listing
-  listing=$(fm_prime_agent_cli list --json 2>/dev/null) || return 1
+  listing=$(fm_prime_agent_cli list --json 2>/dev/null) || return 2
   printf '%s\n' "$listing" \
     | jq -r --arg dir "$resolved" --arg scope "$scope" '
         if (.sessions | type) == "array" then .sessions else error("sessions are missing") end
         | map(select((.cwd // "") == $dir or ((.cwd // "") | startswith($dir + "/"))))
-        | map(select((.lifecycle // "") != "stopped"))
         | if $scope == "resident" then map(select(.activeSessionId != null)) else . end
         | .[]
         | if (((.id // null) | type) == "string" and (.id | length) > 0) then .id else error("session id is missing") end' 2>/dev/null
@@ -94,12 +93,16 @@ EOF
 }
 
 fm_prime_agent_stop_sessions_under_strict() {  # <directory>
-  local dir=$1 resolved ids id failed=0
+  local dir=$1 resolved ids id failed=0 status
   [ -n "$dir" ] || return 1
   command -v prime-agent >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
   resolved=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || return 1
-  ids=$(fm_prime_agent_session_ids_under "$resolved" resident) || return 1
+  ids=$(fm_prime_agent_session_ids_under "$resolved" resident) || {
+    status=$?
+    [ "$status" -eq 2 ] && return 0
+    return 1
+  }
   while IFS= read -r id; do
     case "$id" in
       '') continue ;;

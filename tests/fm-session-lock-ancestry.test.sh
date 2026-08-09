@@ -417,7 +417,7 @@ SH
   local idle busy passive
   idle='"activeSessionId":"a1","isSessionActive":false,"isStreaming":false,"isCompacting":false,"isRunningTools":false,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":0'
   busy='"activeSessionId":"a1","isSessionActive":true,"isStreaming":true,"isCompacting":false,"isRunningTools":true,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":1'
-  passive='"lifecycle":"stopped","activity":"idle","isSessionActive":false,"isStreaming":false,"isCompacting":false,"unfinishedActionCount":0'
+  passive='"lifecycle":"archived","activity":"idle","isSessionActive":false,"isStreaming":false,"isCompacting":false,"unfinishedActionCount":0'
   for case_id in abandoned abandoned-behind-passive-subagent attached attached-behind-subagent \
     mid-turn-detached unknown-activity no-resident-session wedged-daemon; do
     case "$case_id" in
