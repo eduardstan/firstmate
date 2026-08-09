@@ -370,7 +370,7 @@ test_no_mistakes_pipeline_handoff_declares_pause() {
   home="$TMP_ROOT/pipeline-handoff-home"
   write_registry "$home"
   id="brief-pipeline-handoff-e1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" no-registry-proj >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" no-registry-proj --mode no-mistakes >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_grep "Handing off to the pipeline is exactly the declared external wait \`paused:\` describes" "$brief" \
     "no-mistakes DOD must declare the pipeline hand-off as the paused external wait"
@@ -383,7 +383,7 @@ test_no_mistakes_pipeline_handoff_declares_pause() {
 
   # The configured pause verb must render in the hand-off text too.
   FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
-    "$ROOT/bin/fm-brief.sh" pipeline-handoff-awaiting no-registry-proj >/dev/null 2>&1
+    "$ROOT/bin/fm-brief.sh" pipeline-handoff-awaiting no-registry-proj --mode no-mistakes >/dev/null 2>&1
   brief="$home/data/pipeline-handoff-awaiting/brief.md"
   assert_grep "declared external wait \`awaiting:\` describes" "$brief" \
     "custom pause verb did not render in the pipeline hand-off declaration"
@@ -393,10 +393,10 @@ test_no_mistakes_pipeline_handoff_declares_pause() {
     "custom pause verb kept the default paused example in the hand-off text"
 
   # Faster paths have no pipeline: the hand-off contract must not leak in.
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-direct direct-proj >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-direct direct-proj --mode direct-PR >/dev/null 2>&1
   assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-direct/brief.md" \
     "direct-PR brief must not instruct a pipeline hand-off pause"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-local local-proj >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-local local-proj --mode local-only >/dev/null 2>&1
   assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-local/brief.md" \
     "local-only brief must not instruct a pipeline hand-off pause"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-scout no-registry-proj --scout >/dev/null 2>&1
