@@ -244,6 +244,7 @@ A marked request requires one correlated answer after the work; it does not requ
 Never append \`working:\` merely to acknowledge receipt or announce that a marked request has started.
 When a routed-work phase has a supervisor-actionable material change worth reporting under the rule above, give that reported phase a stable key.
 When you use a key, put it between the verb and the colon, as in \`blocked [key=<work-slug>]: {why}\`; never put it after the note.
+Replace the placeholder with a real slug of letters, digits, \`.\`, \`_\`, or \`-\` only - no spaces and no angle brackets.
 For a decision on that phase, append \`needs-decision [key=<slug>]: {summary}\`.
 If its first reportable event is \`working [key=<work-slug>]: {material phase}\`, use the same key on its later \`$PAUSED_VERB\`, \`done\`, \`failed\`, \`needs-decision\`, or \`blocked\` event so the earlier working phase is superseded.
 When a keyed phase ends without another reportable state, append \`resolved [key=<work-slug>]: {why it is no longer active}\`.
@@ -332,6 +333,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions), append \`needs-decision [key=<slug>]: {summary of options}\` and stop. Firstmate will reply with the decision.
    When you use a key, put it between the verb and the colon, as in \`blocked [key=<work-slug>]: {why}\`; never put it after the note.
+   Replace the placeholder with a real slug of letters, digits, \`.\`, \`_\`, or \`-\` only - no spaces and no angle brackets.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append the closing line yourself as you resume: \`resolved: {how it cleared}\`, or \`resolved [key=<slug>]: {how it cleared}\` if you opened it with a key.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
@@ -448,6 +450,7 @@ $RULE1
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings), append \`needs-decision [key=<slug>]: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
    When you use a key, put it between the verb and the colon, as in \`blocked [key=<work-slug>]: {why}\`; never put it after the note.
+   Replace the placeholder with a real slug of letters, digits, \`.\`, \`_\`, or \`-\` only - no spaces and no angle brackets.
    A decision or blocker you opened stays open until a \`resolved\` line carrying its exact key lands; a later \`done:\` or \`working:\` line never closes it, even when the answer is what started that work.
    Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append the closing line yourself as you resume: \`resolved: {how it cleared}\`, or \`resolved [key=<slug>]: {how it cleared}\` if you opened it with a key.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving

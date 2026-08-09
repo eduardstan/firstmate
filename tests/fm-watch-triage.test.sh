@@ -210,6 +210,12 @@ test_classifier_primitives() {
     && fail "a key token in note prose changed the decision key"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
+  printf '%s' "$open" | grep -F $'default\tneeds-decision\tmalformed' >/dev/null \
+    || fail "an escalation with a malformed key slug vanished from the open-decision set"
+  printf 'needs-decision [key=<slug>]: pick option A or B\nresolved [key=bad key]: typo\n' > "$state/malformed-keys.status"
+  open=$(status_open_decisions "$state/malformed-keys.status")
+  printf '%s' "$open" | grep -F $'default\tneeds-decision\tpick option A or B' >/dev/null \
+    || fail "a copied key placeholder either voided the escalation or let a malformed resolve close it"
   cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started

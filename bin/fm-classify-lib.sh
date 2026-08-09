@@ -165,6 +165,10 @@ status_is_paused_or_captain_held() {  # <status-line>
 #   resolved       [key=api-shape]: <how it was decided>
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
+# A malformed slug is not a valid key, so it never names a record: an OPENING
+# needs-decision/blocked line falls back to "default" rather than vanishing from
+# the open set, while a CLOSING resolve/held line is ignored outright so a typo
+# can never silently close a decision it does not name.
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word
@@ -257,7 +261,12 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   stripped=${line//[[:space:]]/}
   [ -n "$stripped" ] || { printf '%s' "$open"; return 0; }
   verb=$(status_line_verb "$line")
-  key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
+  if ! key=$(_fm_decision_key "$line"); then
+    case "$verb" in
+      needs-decision|blocked) key=default ;;
+      *) printf '%s' "$open"; return 0 ;;
+    esac
+  fi
   _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
     || { printf '%s' "$open"; return 0; }
   case "$verb" in

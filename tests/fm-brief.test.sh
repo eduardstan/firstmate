@@ -668,6 +668,9 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
     assert_grep 'When you use a key, put it between the verb and the colon, as in `blocked [key=<work-slug>]: {why}`' "$brief" \
       "$kind brief did not pin decision-key placement between the verb and colon"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Replace the placeholder with a real slug of letters, digits, `.`, `_`, or `-` only' "$brief" \
+      "$kind brief did not state the key slug grammar it now routes every escalation through"
     assert_grep 'needs-decision [key=<slug>]:' "$brief" \
       "$kind brief did not show correctly placed decision-key syntax"
     # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
