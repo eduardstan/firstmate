@@ -286,9 +286,9 @@ The full ownership rule - what is project-intrinsic versus fleet-private, and ho
 
 `/stow` sweeps the current session for durable knowledge that only exists in conversation and routes each finding to the most specific disk home.
 Home-domain captain preferences go to `data/captain.md`, cross-domain shared captain preferences go to the primary home's `data/captain-shared.md`, fleet-local operational facts and gotchas go to home-local `data/learnings.md`, project-intrinsic knowledge goes through normal crewmate delivery into that project's committed `AGENTS.md`, and task-scoped notes or undone next steps go to the backlog.
-Memory writes use inspect-then-update: read the current destination first, then rewrite or prune matching bullets or notes in place instead of appending by default.
+Memory writes use inspect-then-update rather than blind append; the internal [`stow` skill](../.agents/skills/stow/SKILL.md) owns tier markers, decay, cold archival, and captain-gated offload.
 Task-scoped notes use `tasks-axi show <id> --full` followed by `tasks-axi update <id> --body-file <path>`, adding `--archive-body` when the prior body should remain recoverable.
-Generalizable firstmate knowledge goes to shared tracked docs through the normal PR pipeline; the firstmate-internal `/stow` deliberately never stores findings in either skill directory.
+The stow pass never writes a skill, but a separately executed, captain-approved migration may move conditional knowledge into a user-owned local skill excluded from the Firstmate clone; changes to Firstmate's tracked skills remain deliberate repository work through the normal PR pipeline.
 Invoked in a primary home, `/stow` then cascades the same sweep to every registered secondmate, enumerated through `bin/fm-stow-cascade.sh`: each home is accounted and curated against its own startup-memory allowance, a live secondmate sweeps its own session, and a slow or unreachable home is reported as an exception rather than blocking the primary.
 
 ## Local clones stay fresh
@@ -296,7 +296,9 @@ Invoked in a primary home, `/stow` then cascades the same sweep to every registe
 The locked session-start deferred network stage, PR-based teardown, and merged-PR wake handling refresh remote-backed project clones when the clone is safe to move.
 Wake-time refreshes can target a single clone by project name, so the primary home also catches up when a secondmate reports a merge from its own home.
 Clean default-branch clones fast-forward to `origin/<default>`, and a clean detached HEAD that holds no unique commits is re-attached to the default branch before the same fast-forward path runs.
-Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
+A default branch that diverged because origin's history was deliberately rewritten converges to the freshly fetched `origin/<default>` only when every proof holds: an exact refspec fetch producing a real remote-tracking branch, equal-length oldest-first local-only and remote-only commit sequences whose trees match one-to-one by position, a clean clone, and linked worktrees that are clean and hold no content absent from the remotes or the rewritten default.
+A failed proof refuses loudly with the failing condition and the offending commit, and nothing is ever forced, stashed, cleaned, or discarded.
+Dirty clones, non-default branches, detached HEADs with unique commits, divergences that fail that proof, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
 The refresh also prunes local branches whose remote is gone and that no worktree still needs.

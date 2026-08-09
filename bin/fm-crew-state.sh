@@ -30,7 +30,14 @@
 #      diverged from it, invalidates attribution.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
+#      passed/checks-passed -> done, failed -> failed. A cancelled run is NOT
+#      terminal: AGENTS.md's supersession sequence has a worker cancel its own
+#      run and then continue (replace the obsolete work, re-validate), so
+#      "cancelled" is a task BETWEEN runs, not a task that failed. It is the one
+#      deliberate exception to "judge by the run-step, not the shell" - a
+#      cancelled run does not answer the current-state question by itself - and
+#      is resolved against the live endpoint: a demonstrably alive worker reads
+#      working, a dead one reads failed so recovery can act. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
@@ -421,6 +428,7 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
+  RUN_CANCELLED=0
   if [ "$RUN_SOURCE" = coarse ]; then
     # No step/gate detail is available from the plain runs list - only ever
     # true/working, done, or failed. A crew genuinely parked at a gate still
@@ -433,7 +441,7 @@ if [ "$HAVE_RUN" = 1 ]; then
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
       failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+      cancelled) RUN_CANCELLED=1; RUN_STATE=""; RUN_DETAIL="run cancelled" ;;
       *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
     esac
   else
@@ -450,7 +458,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
         failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
-        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
+        cancelled)     RUN_CANCELLED=1; RUN_STATE=""; RUN_DETAIL="run cancelled" ;;
         *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
       esac
     elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
@@ -474,7 +482,7 @@ if [ "$HAVE_RUN" = 1 ]; then
         running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
         completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
         failed)         RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+        cancelled)      RUN_CANCELLED=1; RUN_STATE=""; RUN_DETAIL="run cancelled" ;;
         "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
         *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
       esac
@@ -496,7 +504,33 @@ if [ "$HAVE_RUN" = 1 ]; then
     fi
   fi
 
-  if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
+  # A cancelled run is non-terminal: resolve it against the live endpoint
+  # (see the header). A demonstrably alive worker reads working (never
+  # teardown/relaunch material); a dead one reads failed so recovery can act.
+  # The worker's own waiting verbs (needs-decision/blocked/paused) outrank the
+  # generic between-runs reading, so a pending decision is not hidden by a
+  # cancelled run; a decision-closing `resolved:` is not a state and falls
+  # through to working.
+  if [ "$RUN_CANCELLED" = 1 ]; then
+    if [ -n "$BACKEND_TARGET" ] && pane_readable "$BACKEND_TARGET"; then
+      LOG_STATE_C=$(map_log_state "$LOG_LINE")
+      case "$LOG_STATE_C" in
+        parked|blocked|paused)
+          RUN_STATE=$LOG_STATE_C
+          RUN_DETAIL="$(status_line_note "$LOG_LINE")${SEP}run cancelled; worker alive"
+          ;;
+        *)
+          RUN_STATE=working
+          RUN_DETAIL="run cancelled; worker active (between runs)"
+          ;;
+      esac
+    else
+      RUN_STATE=failed
+      RUN_DETAIL="run cancelled; worker gone"
+    fi
+  fi
+
+  if [ "$RUN_STATE" = working ] && [ "$RUN_CANCELLED" = 0 ] && log_reports_ci_ready; then
     if [ "$RUN_SOURCE" = coarse ]; then
       emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
     fi
@@ -518,7 +552,9 @@ if [ "$HAVE_RUN" = 1 ]; then
   # stale: the gate resolved and the run resumed or finished.
   case "$LOG_VERB" in
     needs-decision|blocked)
-      if [ "$RUN_STATE" != parked ]; then
+      # A cancelled run already honored the log's waiting verb (parked/blocked)
+      # in the cancelled-reconcile above, so do not re-flag it superseded.
+      if [ "$RUN_CANCELLED" = 0 ] && [ "$RUN_STATE" != parked ]; then
         if [ "$RUN_STATE" = working ]; then
           RUN_DETAIL="$RUN_DETAIL${SEP}status-log superseded by active run"
         else

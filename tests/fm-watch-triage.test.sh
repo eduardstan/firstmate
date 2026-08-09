@@ -317,18 +317,21 @@ test_signal_crew_provably_working_classifier() {
   export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
   export FM_FAKE_CREW_STATE_a='state: working · source: run-step · running'
   export FM_FAKE_CREW_STATE_b='state: done · source: run-step · run passed'
+  export FM_FAKE_CREW_STATE_p='state: paused · source: status-log · paused: awaiting external release'
   signal_crew_provably_working "$state/a.status" "$state/a.turn-ended" \
     || fail "a single provably-working crew (status+turn-end) was not benign"
   ! signal_crew_provably_working "$state/a.status" "$state/b.turn-ended" \
     || fail "a coalesced batch including a stopped crew was treated as benign"
   ! signal_crew_provably_working "$state/b.turn-ended" \
     || fail "a stopped crew's bare turn-end was treated as benign"
+  signal_crew_provably_working "$state/p.status" \
+    || fail "a declared-paused crew's no-verb signal was not benign (one policy with the away daemon)"
   ! signal_crew_provably_working "$state/a.meta" \
     || fail "a non-signal file resolved to a benign verdict"
   ! signal_crew_provably_working \
     || fail "an empty signal file list was treated as benign"
-  unset FM_FAKE_CREW_STATE_a FM_FAKE_CREW_STATE_b
-  pass "signal_crew_provably_working: benign only when every referenced crew is provably working"
+  unset FM_FAKE_CREW_STATE_a FM_FAKE_CREW_STATE_b FM_FAKE_CREW_STATE_p
+  pass "signal_crew_provably_working: benign only when every referenced crew is provably working or declared-paused"
 }
 
 # --- benign wakes are absorbed ONLY when the crew is provably working ---------
@@ -353,6 +356,27 @@ test_provably_working_signal_absorbed() {
   [ -e "$state/.last-watcher-beat" ] || fail "watcher beacon was not touched while absorbing"
   reap "$pid"
   pass "a no-verb signal whose crew is provably working is absorbed (no exit, no queue, suppressor advanced, beacon present)"
+}
+
+test_declared_paused_signal_absorbed() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case paused-signal); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'paused: awaiting the external release\n' > "$status_file"
+  # The crew declared an external wait: its no-verb turn-end must be absorbed,
+  # one policy with the away daemon which self-handles a paused signal. The pane
+  # re-surfaces through the stale path's bounded long cadence, never a stale turn.
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · paused: awaiting the external release'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited for a declared-paused signal (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "declared-paused signal printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "declared-paused signal enqueued a durable wake record"
+  [ -s "$state/.seen-task_status" ] || fail "declared-paused signal did not advance its .seen-* suppressor"
+  reap "$pid"
+  pass "a no-verb signal whose crew declared a pause is absorbed (one policy with the away daemon)"
 }
 
 test_turn_ended_provably_working_absorbed() {
@@ -741,7 +765,7 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
     || fail "captain-held dead-agent pane surfaced as a stopped crew"
 
-  dir=$(make_case alive-decision-gate); state="$dir/state"; fakebin="$dir/fakebin"
+  dir=$(make_case live-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/gate.status"
   window="test:fm-gate"
   printf 'idle external-decision gate\n' > "$capture_file"
@@ -753,19 +777,27 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
 
-  # First sight must surface promptly so a live external-decision gate is not
-  # hidden behind the pause cadence.
+  # One policy with the away daemon: the DECLARED pause suppresses the plain
+  # stale wake even for a live agent - the status declaration, not a crew-state
+  # probe, decides. A live decision gate idles silently on the long pause
+  # cadence instead of burning a stale turn.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting at an active external-decision gate' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "live external-decision gate did not surface immediately"
+  if ! wait_live "$pid" 30; then
+    reap "$pid"
+    fail "live declared-pause gate surfaced instead of absorbing on the pause cadence: $(cat "$out")"
+  fi
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "live declared-pause gate lost its pause cadence marker"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "live declared-pause gate retained the wedge timer"; }
+  reap "$pid"
 
   # Re-arm with the stale timer already beyond the wedge threshold. This is the
-  # exact unchanged-hash fallback after the immediate surface: it must retain
-  # the pause cadence and discard any residual wedge timer instead of emitting
-  # a second possible-wedge wake.
+  # exact unchanged-hash fallback after the absorb: it must retain the pause
+  # cadence and discard any residual wedge timer instead of emitting a
+  # possible-wedge wake for a declared pause.
   printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting at an active external-decision gate' \
@@ -774,16 +806,19 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   pid=$!
   if ! wait_live "$pid" 30; then
     reap "$pid"
-    fail "live external-decision gate escalated on the wedge timer after its immediate surface: $(cat "$out")"
+    fail "live declared-pause gate escalated on the wedge timer after its absorb: $(cat "$out")"
   fi
-  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "live external-decision gate lost its pause cadence marker"; }
-  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "live external-decision gate retained the wedge timer"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "live declared-pause gate lost its pause cadence marker after the wedge-threshold recheck"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "live declared-pause gate retained the wedge timer after the wedge-threshold recheck"; }
   reap "$pid"
-  wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
-  bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
-  [ "$wakes" -eq 1 ] || fail "live external-decision gate should surface once, got $wakes wakes"
-  [ "$bare" -eq 1 ] || fail "live external-decision gate lost its immediate bare stale surface"
-  pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
+  wakes=0; bare=0
+  if [ -f "$state/.wake-queue" ]; then
+    wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
+    bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
+  fi
+  [ "$wakes" -eq 0 ] || fail "live declared-pause gate surfaced $wakes stale wakes instead of suppressing"
+  [ "$bare" -eq 0 ] || fail "live declared-pause gate surfaced $bare plain bare stale wakes"
+  pass "declared pauses (dead or live agent) suppress plain stale wakes on the bounded pause cadence"
 }
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
@@ -1808,6 +1843,7 @@ test_status_is_paused_classifier
 test_crew_absorb_class_classifier
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
+test_declared_paused_signal_absorbed
 test_turn_ended_provably_working_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced

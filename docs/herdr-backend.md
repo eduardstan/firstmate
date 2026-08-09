@@ -230,12 +230,13 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 Herdr has no direct cursor-row primitive.
 The adapter locates the bottom-most recognized bordered row, Claude `❯` row, Codex `›` row, a Pi separator region admitted only when native identity is exactly Pi and state is idle, done, or blocked, or a prime-agent `>` row.
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
+A lone trailing separator with no matching opening one discards a recognized row above it only on a Pi or unidentifiable target, because other harnesses draw horizontal rules as ordinary chrome: Claude frames its own live composer between a labelled upper rule and a bare lower one.
 The prime-agent row is the one bare shell-style glyph that can be promoted at all, so it needs two independent signals rather than one: the pane's live foreground process must be prime-agent and Herdr's native reporter must identify it as prime-agent.
 Both are required because a quit prime-agent leaves its reporter identity behind on a pane that is already back to a login shell, where a `> ` shell prompt would otherwise inherit the composer shape.
 Neither signal is gated on agent status, because a busy pane is exactly the case this shape serves: mid-turn submit confirmation falls back to the composer read whenever the pre-Enter baseline is not legibly idle.
 
-ANSI capture preserves de-emphasized placeholder style.
-`bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.
+ANSI capture preserves de-emphasized placeholder style, and it is also the only capture that preserves invisible composer padding, which Herdr's plain read normalizes away.
+`bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input, and that normalizes invisible padding such as the U+00A0 Claude pads its idle composer with, so an idle composer reads empty rather than as unsent text.
 If a future Herdr version strips ANSI style, ghost suggestions become pending rather than empty, which safely defers injection and eventually raises the wedge alarm.
 
 A bare shell prompt is never an empty agent composer.
@@ -316,7 +317,8 @@ Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never 
 - Ghost and placeholder recognition depends on ANSI de-emphasis and fails safely to pending when unavailable.
 - Mid-session secondmate liveness is not implemented.
 - OpenCode 1.18.4 can accept Enter while busy without clearing the composer.
-  The tmux backend has a busy-queue fallback, but Herdr still reports this case as submit pending and needs a separate adapter fix.
+  Both tmux and Herdr apply the same busy-queue fallback in their submit core (`fm_tmux_submit_enter_core` and `fm_backend_herdr_send_text_submit`): once the Enter-retry budget is spent, a proven-pending composer on an agent that is still mid-turn reports delivered because the Enter was queued, while an idle target keeps the swallow.
+  Herdr's submit path additionally reads the composer in confirm mode, which honours the structural read of a mid-turn Pi composer that injection-safety mode refuses; without it a busy Pi-hosted worker returned `unknown` for text it had already queued.
 - Only tmux and Herdr can host the away-mode supervisor terminal.
 
 ## Regression entry points

@@ -133,8 +133,57 @@ test_real_text_is_pending() {
   pass "fm_composer_classify_content: real unsubmitted text reads pending (including a popup argument-hint fill)"
 }
 
+# --- Invisible composer padding (the overnight away-mode wedge) -------------
+# claude draws its IDLE composer as the agent glyph plus U+00A0 NO-BREAK SPACE,
+# which no glibc locale counts as [[:space:]], so every trim left it in place and
+# an idle pane classified as `pending`. Injection proceeds only on `empty`.
+
+test_invisible_padding_after_an_agent_glyph_is_empty() {
+  local out
+  out=$(classify 0 $'❯ ')
+  [ "$out" = empty ] || fail "'❯' + U+00A0 (claude's idle composer) must read empty, got '$out'"
+  out=$(classify 0 $'› ')
+  [ "$out" = empty ] || fail "'›' + U+00A0 must read empty, got '$out'"
+  out=$(classify 1 $'❯ ')
+  [ "$out" = empty ] || fail "bordered '❯' + U+00A0 must read empty, got '$out'"
+  pass "fm_composer_classify_content: an agent glyph padded with U+00A0 reads empty, not pending"
+}
+
+test_invisible_padding_alone_is_empty() {
+  local out pad
+  for pad in $' ' $' ' $' ' $'​' $'⁠' $'﻿'; do
+    out=$(classify 1 "$pad")
+    [ "$out" = empty ] \
+      || fail "a row holding only invisible padding must read empty, got '$out'"
+  done
+  pass "fm_composer_classify_content: every normalized invisible pad reads empty on its own"
+}
+
+test_invisible_padding_never_swallows_real_text() {
+  local out
+  out=$(classify 0 $'❯ fix findings 1 and 3')
+  [ "$out" = pending ] || fail "NBSP-padded real text must stay pending, got '$out'"
+  out=$(classify 1 $'deploy staging')
+  [ "$out" = pending ] || fail "NBSP-joined real text must stay pending, got '$out'"
+  pass "fm_composer_classify_content: normalizing invisible padding cannot swallow typed text"
+}
+
+test_invisible_padding_keeps_the_dead_shell_refusal() {
+  local g out
+  for g in '>' '$' '%' '#'; do
+    out=$(classify 0 "$g"$' ')
+    [ "$out" = unknown ] \
+      || fail "a bare shell glyph padded with U+00A0 must stay unknown (dead shell), got '$out'"
+  done
+  pass "fm_composer_classify_content: padding normalization does not weaken the dead-shell refusal"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
+test_invisible_padding_after_an_agent_glyph_is_empty
+test_invisible_padding_alone_is_empty
+test_invisible_padding_never_swallows_real_text
+test_invisible_padding_keeps_the_dead_shell_refusal
 test_bare_shell_prompt_with_command_is_not_empty
 test_bordered_shell_glyph_is_empty
 test_agent_glyphs_are_empty_bordered_and_bare

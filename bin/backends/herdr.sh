@@ -2729,7 +2729,13 @@ fm_backend_herdr_strip_ansi() {  # <text>
 # afk-herdr-false-pending); it superseded a herdr-only faint byte-pattern check
 # that recognized only codex's bold-wrapped bare prompt and missed claude's own
 # dim ghost - the overnight away-mode injection wedge on the primary claude pane.
-FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-20}
+# Rows of the pane tail the structural composer scan looks at. WHY 40: a harness
+# footer plus a multi-line custom statusline can occupy 11-12 rows under the
+# composer, and at 20 the composer row itself falls out of the window, which
+# reads as `unknown` and defers injection just as a false `pending` does. The
+# read is free: the capture already pulls 200 rows and this only bounds the tail
+# it scans.
+FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-40}
 # Known ghost/placeholder composer text. Extend this if another
 # herdr-verified harness needs its own idle placeholder recognized.
 FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
@@ -2913,8 +2919,17 @@ fm_backend_herdr_pane_prime_agent_in_subtree() {  # <session> <pane-id>
   case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac
 }
 
-fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
-  local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
+# <mode> is `inject` (default) or `confirm`. They differ on exactly one case: a
+# native Pi composer whose agent is mid-turn. `inject` asks "may I safely type
+# here?" and a working Pi must answer no. `confirm` asks the different question
+# "did the text I already typed leave the composer?", where a working agent is
+# not a hazard but the very condition being measured, so the structural read is
+# allowed to return its real empty/pending verdict. Every other refusal -
+# unreadable identity, non-Pi, incomplete or over-tall separator pair - is
+# unchanged in both modes.
+fm_backend_herdr_composer_state() {  # <target> [mode] -> empty|pending|unknown
+  local target=$1 mode=${2:-inject}
+  local session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
   local identity agent agent_status row=0 generic_line=0
   local prime_raw="" prime_line=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
@@ -2993,18 +3008,51 @@ EOF
           found=0
         fi
         ;;
-      pi:*|:*)
-        # A working Pi or unreadable identity cannot authorize injection, and
-        # the lower separator pair proves any generic row above is not current.
+      pi:*)
+        # A working Pi cannot authorize injection, and the lower separator pair
+        # proves any generic row above is not current. In confirm mode the
+        # question is delivery, not injection safety, so the same structural
+        # read is honoured (still only from a complete, in-budget pair).
+        if [ "$mode" = confirm ] && [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ]; then
+          shape=separated
+          raw_match=$FM_BACKEND_HERDR_PI_CONTENT
+          found=1
+        else
+          found=0
+        fi
+        ;;
+      :*)
+        # An unreadable identity cannot prove the lower pair is the live Pi
+        # composer, in either mode.
         found=0
         ;;
       *) : ;; # A known non-Pi agent keeps its established generic verdict.
     esac
   elif [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -eq 0 ] \
        && [ "$FM_BACKEND_HERDR_PI_LAST_SEPARATOR_LINE" -gt "$generic_line" ]; then
-    # A lower unmatched separator proves the generic row is stale, but does
-    # not provide the complete Pi composer structure required for injection.
-    found=0
+    # A lower unmatched separator can mean the generic row is stale - a partly
+    # captured Pi composer whose opening separator fell out of the window, with
+    # a decorative box still visible above it - without providing the complete
+    # Pi composer structure injection requires.
+    #
+    # It only means that on a Pi target. A solid `─` rule is ordinary chrome for
+    # other harnesses: claude frames its own live composer between two rules, and
+    # the upper one carries a label ("─── name ──") so it is not a bare
+    # separator, leaving exactly the lone-trailing-rule shape above. Reading that
+    # as staleness discarded a live, idle claude composer and returned `unknown`
+    # on every poll, which deferred every away-mode escalation for a whole night.
+    # Gate on the same native identity the complete-pair branch above already
+    # relies on: only a Pi pane's separator invalidates a generic match. An
+    # unreadable identity cannot rule Pi out, so it still invalidates - doubt
+    # keeps blocking injection, exactly as before.
+    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
+    IFS=$'\t' read -r agent agent_status <<EOF
+$identity
+EOF
+    case "$agent" in
+      ''|pi) found=0 ;;
+      *) : ;;  # A known non-Pi agent keeps its established generic verdict.
+    esac
   fi
   [ "$found" -eq 1 ] || { printf 'unknown'; return 0; }
   # Content: extract the real typed text from the raw row with the shared,
@@ -3044,6 +3092,20 @@ EOF
   # shell-style glyph that CAN reach here is prime-agent's `>`, and only with
   # bordered=1 already set from its native identity.
   fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
+}
+
+# fm_backend_herdr_agent_busy: 0 when <target>'s agent is currently mid-turn
+# (native agent_status genuinely working). The herdr twin of the tmux submit
+# core's fm_pane_is_busy predicate, used by the busy-queued Enter fallback in
+# fm_backend_herdr_send_text_submit below. Uses classify_agent_status (not the
+# submit-active variant) so a blocked agent - stuck waiting on the human, not
+# grinding - is never mistaken for a mid-turn queueing site.
+fm_backend_herdr_agent_busy() {  # <target>
+  local status
+  fm_backend_herdr_parse_target "$1" || return 1
+  status=$(fm_backend_herdr_classify_agent_status \
+    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  [ "$status" = busy ]
 }
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
@@ -3108,7 +3170,7 @@ EOF
 # each backend confirms it is an internal decision, and herdr's is no longer
 # literally "the composer read empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep submit_state=""
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
@@ -3122,16 +3184,38 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
     else
       sleep "$sleep_s"
-      verdict=$(fm_backend_herdr_composer_state "$target")
+      verdict=$(fm_backend_herdr_composer_state "$target" confirm)
     fi
     case "$verdict" in
       busy) printf 'empty'; return 0 ;;
       empty) printf 'empty'; return 0 ;;
       unknown) printf 'unknown'; return 0 ;;
+      pending) submit_state=pending ;;
     esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || { printf 'pending'; return 0; }
+    [ "$i" -lt "$retries" ] || break
   done
+  # Enter-retry budget spent with the submit still unconfirmed. Mirror the tmux
+  # submit core's busy-queued Enter exception (opencode 1.18.4, docs/herdr-backend.md
+  # "OpenCode busy-queue"): while opencode is mid-turn it accepts the Enter and
+  # queues it for after the turn, but keeps the typed text visible, so the
+  # composer-read path alone false-negatives (observed live 2026-08-03 against a
+  # busy Pi-hosted opencode worker: fm-send reported verdict=unknown three times
+  # for text the worker had already queued, and the retries duplicated it). The
+  # confirm-mode read above is the other half of that fix; this is the part that
+  # covers a composer still visibly holding the queued text. Once the budget is
+  # spent, a PROVEN pending composer on an agent that is STILL genuinely working means the Enter
+  # was accepted and queued - report empty (delivered) so the caller does not
+  # re-send. An idle agent keeps pending as a genuine swallow. Only proven
+  # composer-pending earns this conversion: the native agent-state path already
+  # turns a busy mid-turn into "busy" inside wait_for_working, and an unproven or
+  # unreadable composer never drops to delivered silently.
+  if [ "$submit_state" = pending ] && fm_backend_herdr_agent_busy "$target"; then
+    printf 'empty'
+  else
+    printf 'pending'
+  fi
+  return 0
 }
 
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors

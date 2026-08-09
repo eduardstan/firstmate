@@ -27,6 +27,9 @@ That check keeps crewmate and scout linked worktrees inert because their git dir
 It also requires `AGENTS.md`, `bin/`, and the effective state directory.
 
 For an in-scope primary, the guard counts in-flight work from `state/*.meta`.
+It also invokes `bin/fm-turn-quota-writer.sh` to record per-turn quota instrumentation in `state/quota-turns.log`.
+A stop that continues one of this guard's own blocks is skipped so a re-blocked turn still records exactly one row.
+That check reads the consecutive-block ledger `state/.turnend-claude-blocks` for the current `session_id`, never `stop_hook_active`, which Claude Code keeps true for every later stop in the session once any continuation fired.
 Registered `state/procevent/*.source` records also require supervision even though they have no task metadata.
 The default cross-harness mode exits silently with no supervision need.
 Every mode treats `state/x-watch.check.sh` as supervision need, so Relay polling remains guarded without an in-flight task.
@@ -114,6 +117,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 
 `tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five tracked hook-file primary registrations (prime-agent's auto-discovered extension pair is typechecked by `tests/fm-pi-primary-types.test.sh` instead), Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
 `tests/fm-guard-stale-banner.test.sh` covers the pull-guard predicate, including the persistent-model fresh-leftover-beacon negative control, the auto-arm model's healthy fresh-beacon-without-a-watcher case and its stale-beacon alarm, the true-reason banner wording, and the reason-keyed episode dedup surviving a beacon mtime change.
+It also covers the exactly-one quota record per turn across a forced re-block, and `tests/fm-turn-quota.test.sh` owns the writer and reader record contract itself.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.
 `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` is the opt-in isolated Pi path.

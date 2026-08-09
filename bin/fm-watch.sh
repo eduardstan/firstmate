@@ -770,6 +770,12 @@ while :; do
   # This makes any duplicate self-resolve within one poll instead of persisting
   # and doubling every wake.
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" != "$WATCHER_PID" ]; then
+    # Deliberate stand-down for the rightful singleton holder: this cycle ran
+    # its supervision polls (fresh beacon, wakes triaged) and is ending without
+    # an actionable wake. Declare completion so the arm layer reports a clean
+    # cycle end instead of the FAILED false alarm that burns a primary turn for
+    # a cycle that did exactly its job.
+    echo "watcher: cycle-complete - stood down for the singleton holder"
     exit 0
   fi
 
@@ -1010,34 +1016,40 @@ EOF
         else
           # Non-terminal stale: a crew gone quiet without a captain-relevant status.
           # Decided once per distinct stale hash (the costly state reads run only
-          # on first sight, never every poll) via pause_state_class, which returns:
-          #   - working: an actively-running pipeline legitimately sits on a static
-          #     pane (e.g. waiting on CI), so absorb and start the wedge timer so a
-          #     genuinely frozen run still escalates past STALE_ESCALATE_SECS;
-          #   - paused: the crew declared an external wait, or a declared pause or
-          #     captain hold is paired with a confidently dead agent, so absorb on
-          #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
-          #   - none: no running pipeline, no exact busy verdict, no declared pause.
-          #     Surface immediately so firstmate inspects the inconclusive state
-          #     (it may be done via an interactive menu that wrote no done: status,
-          #     waiting on a decision, or wedged) instead of leaving the finish to
-          #     wait out the timer.
+          # on first sight, never every poll):
+          #   - declared pause/captain hold (status_is_paused_or_captain_held): the
+          #     crew told us it is waiting on an external condition or the captain,
+          #     so absorb on the long PAUSE_RESURFACE_SECS cadence regardless of
+          #     agent liveness - one policy with the away daemon, which classifies a
+          #     paused status without probing liveness. The status declaration, not
+          #     a crew-state probe, decides, so a live idling crew never re-surfaces
+          #     as a plain stale wake;
+          #   - crew_absorb_class working: an actively-running pipeline legitimately
+          #     sits on a static pane (e.g. waiting on CI), so absorb and start the
+          #     wedge timer so a genuinely frozen run still escalates past
+          #     STALE_ESCALATE_SECS;
+          #   - otherwise: no running pipeline, no exact busy verdict, no declared
+          #     pause. Surface immediately so firstmate inspects the inconclusive
+          #     state (it may be done via an interactive menu that wrote no done:
+          #     status, waiting on a decision, or wedged) instead of leaving the
+          #     finish to wait out the timer.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             task=$(window_to_task "$w" "$STATE")
-            case "$(pause_state_class "$w" "$task")" in
-              working)
-                clear_pause_tracking "$w"
-                printf '%s' "$h" > "$sf"
-                date +%s > "$ssf"
-                triage_log "absorbed non-terminal stale (provably working): $w"
-                ;;
-              paused)
-                handle_paused_stale "$w" "$task" "$h"
-                ;;
-              *)
-                surface_nonterminal_stale "$w" "$h"
-                ;;
-            esac
+            if status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; then
+              handle_paused_stale "$w" "$task" "$h"
+            else
+              case "$(crew_absorb_class "$task")" in
+                working)
+                  clear_pause_tracking "$w"
+                  printf '%s' "$h" > "$sf"
+                  date +%s > "$ssf"
+                  triage_log "absorbed non-terminal stale (provably working): $w"
+                  ;;
+                *)
+                  surface_nonterminal_stale "$w" "$h"
+                  ;;
+              esac
+            fi
           else
             task=$(window_to_task "$w" "$STATE")
             if [ -e "$pf" ] || status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; then

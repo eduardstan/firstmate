@@ -489,8 +489,9 @@ test_watch_restart_attaches_to_healthy_peer() {
   wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status)"
-  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$out" || fail "restart arm did not surface the attached cycle end"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status): $(cat "$out")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$out" \
+    || fail "restart arm did not surface the attached cycle end: $(cat "$out")"
   pass "watch restart attaches to a verified healthy peer and later surfaces a successor gap"
 }
 
@@ -524,7 +525,7 @@ test_watcher_self_evicts_on_lock_takeover() {
   pass "watcher self-evicts when the lock pid no longer names it"
 }
 
-test_arm_self_eviction_is_loud_without_successor() {
+test_arm_self_eviction_completes_without_successor() {
   local dir state fakebin armout armpid watcher_pid status i
   dir=$(make_case arm-self-evict)
   state="$dir/state"
@@ -543,16 +544,21 @@ test_arm_self_eviction_is_loud_without_successor() {
   grep -qF "watcher: started pid=$watcher_pid" "$armout" || fail "arm did not start before self-eviction check"
 
   # A live but identity-mismatched replacement lock makes the owned watcher
-  # self-evict normally. With no verified successor, the arm must turn that
-  # otherwise clean empty close into the typed nonzero failure.
+  # self-evict after running its supervision. The watcher declares its deliberate
+  # stand-down, so the arm must report a COMPLETED cycle, not the FAILED false
+  # alarm that burns a primary turn for a cycle that did its job.
   printf '%s\n' "$$" > "$state/.watch.lock/pid"
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "self-evicted arm did not fail nonzero (status $status)"
-  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "self-evicted arm omitted the typed cycle-end failure"
-  grep -q "reason=unexpected-clean-exit" "$state/.watch-cycle-exits.log" || fail "self-evicted cycle was not classified in the lifecycle ledger"
-  pass "arm turns clean self-eviction without a successor into a typed failure"
+  [ "$status" -eq 0 ] || fail "self-evicted arm did not complete (status $status)"
+  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$armout" \
+    || fail "self-evicted arm omitted the typed cycle-complete line: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" || fail "self-evicted arm reported FAILED for a completed cycle: $(cat "$armout")"
+  grep -q "reason=cycle-complete" "$state/.watch-cycle-exits.log" || fail "self-evicted cycle was not classified as complete in the lifecycle ledger"
+  pass "arm turns a clean self-eviction without a successor into a completed cycle"
 }
+
+
 
 test_arm_attaches_and_waits_for_live_fresh_watcher() {
   local dir state fakebin out armout i wpid armpid status
@@ -586,13 +592,16 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED for a healthy watcher"
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "arm disturbed the healthy watcher's lock"
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
-  # After the seed dies without a successor, the attached arm must fail loudly.
+  # After the seed dies with no successor and no delivered wake, the attached arm
+  # fails loudly: it holds no handle on the seed's stdout, so the empty delivery
+  # ledger is its only evidence about that cycle.
   kill "$wpid" 2>/dev/null || true
   wait "$wpid" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
-  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "attached arm did not emit the typed cycle-end failure"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "attached arm did not emit the typed cycle-end failure"
   pass "arm attaches to a live fresh watcher and fails loudly when that cycle has no successor"
 }
 
@@ -774,14 +783,58 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   grep -qF "watcher: attached pid=$peer" "$armout" || fail "arm did not wait for and attach to the peer watcher: $(cat "$armout")"
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm falsely reported FAILED during peer startup race"
   is_live_non_zombie "$armpid" || fail "arm exited while the peer was still healthy"
-  # After the peer dies without a successor, the attached arm must fail loudly.
+  # After the peer dies without a successor, the ATTACHED arm has no stand-down
+  # marker to read - it never held that peer's stdout - so the peer's empty
+  # delivery ledger is the only evidence, and a cycle that delivered nothing
+  # fails loudly. The child's own stand-down above is the separate owned-child
+  # path, which still completes (test_arm_self_eviction_completes_without_successor).
   kill "$peer" 2>/dev/null || true
   wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
   [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
-  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" || fail "peer-attached arm did not emit the typed cycle-end failure"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "peer-attached arm did not emit the typed cycle-end failure: $(cat "$armout")"
   pass "arm attaches to a peer watcher after child stands down and surfaces a missing successor"
+}
+
+test_attached_arm_fails_loud_when_peer_wedges_stale() {
+  local dir state fakebin armout peer identity armpid status i
+  dir=$(make_case arm-attach-wedged)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mark_pr_check_migration_complete "$state"
+  sleep 300 &
+  peer=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$peer" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_GUARD_GRACE=1 FM_ARM_CONFIRM_TIMEOUT=1 FM_ARM_ATTACH_POLL=0.1 "$WATCH_ARM" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$peer" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$peer" "$armout" || fail "arm did not attach to the peer watcher"
+  # The peer stays ALIVE but its beacon goes stale: a wedged watcher, not an
+  # ended cycle. Completion is only for a cycle that actually ended; a live
+  # recorded holder behind a stale beacon must stay a typed FAILED.
+  touch -t 200001010000 "$state/.last-watcher-beat"
+  wait_for_exit "$armpid" 80
+  status=$?
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail for a wedged live peer (status $status): $(cat "$armout")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "attached arm did not surface the wedged live peer as FAILED: $(cat "$armout")"
+  kill "$peer" 2>/dev/null || true
+  wait "$peer" 2>/dev/null || true
+  pass "attached arm still fails loudly when the live peer wedges behind a stale beacon"
 }
 
 test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
@@ -1050,13 +1103,14 @@ test_lock_paused_mid_acquire_claim_fails_during_steal
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover
-test_arm_self_eviction_is_loud_without_successor
+test_arm_self_eviction_completes_without_successor
 test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
+test_attached_arm_fails_loud_when_peer_wedges_stale
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified

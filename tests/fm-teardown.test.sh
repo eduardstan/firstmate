@@ -7,7 +7,7 @@
 # and GitHub reports a PR head that contains the current local work, or its content
 # is already in the up-to-date default branch.
 #
-# Covers three fixes:
+# Covers four fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
 #     contribution PRs are teardown-eligible (the pre-fix code false-refused them).
 #   - squash-merge-then-delete-branch: the branch's own commits live nowhere on a
@@ -19,13 +19,17 @@
 #     git index.lock that blocks teardown. The return path retries on the lock
 #     error signature (even if the lock self-clears mid-check), then only removes a
 #     provably stale lock before re-running safety checks.
+#   - no-mistakes fork target: teardown refreshes the task branch from configured
+#     remotes and from no-mistakes' recorded fork push target before deciding that
+#     committed work is unpushed. Credential-masked targets resolve through local
+#     push URLs and remain fail-closed when no unique match exists.
 #
 # Matrix:
 #   (a) local-only + HEAD on a fork remote-tracking branch     -> ALLOW  (fork fix)
 #   (b) local-only + truly unpushed work (no remote, not main) -> REFUSE (safety)
 #   (c) local-only + merged into local main, no remote         -> ALLOW  (no regression)
 #   (d) no-mistakes + HEAD on origin remote-tracking branch    -> ALLOW  (no regression)
-#   (e) no-mistakes + unpushed, no PR, content not in default  -> REFUSE (safety)
+#   (e) no-mistakes + unpushed, no PR, content not in default  -> REFUSE, name origin
 #   (f) local-only + truly unpushed + --force                  -> ALLOW  (escape hatch)
 #   (g) no-mistakes + squash-merged PR, exact PR head          -> ALLOW  (squash fix)
 #   (h) no-mistakes + no PR but content already in default     -> ALLOW  (content fallback)
@@ -38,17 +42,23 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (r) no-mistakes + branch on the no-mistakes fork push target -> ALLOW  (fork fix)
+#   (s) no-mistakes + branch on a configured, never-fetched fork -> ALLOW  (fork fix)
+#   (t) masked fork target + matching authenticated push URL     -> ALLOW  (safe resolution)
+#   (u) masked fork target + rotated authenticated push URL      -> ALLOW  (current push URL)
+#   (v) masked fork target + multiple matching push URLs         -> REFUSE (ambiguous)
+#   (w) masked fork target + no matching configured push URL     -> REFUSE (unavailable)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (s) index.lock with a live holder, any age                -> lock kept, REFUSE
-#   (t) lsof error while checking index.lock                  -> lock kept, REFUSE
-#   (u) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (v) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (w) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (x) transient lock cleared after first failed return      -> retry ALLOW
-#   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   (lock-a) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   (lock-b) index.lock with a live holder, any age                -> lock kept, REFUSE
+#   (lock-c) lsof error while checking index.lock                  -> lock kept, REFUSE
+#   (lock-d) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
+#   (lock-e) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (lock-f) index.lock mtime read failure                         -> lock kept, REFUSE
+#   (lock-g) transient lock cleared after first failed return      -> retry ALLOW
+#   (lock-h) persistent lock (never clears, not provably stale)    -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -109,7 +119,9 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 SH
-  # Default hermetic no-mistakes stub: `axi status` answers FM_FAKE_AXI_STATUS
+  # Default hermetic no-mistakes stub: plain `status` reports an uninitialized
+  # repo, so no fork push target is reported (tests that exercise the fork path
+  # override this file), and `axi status` answers FM_FAKE_AXI_STATUS
   # verbatim (empty by default, i.e. no active run - the pre-teardown run-abort
   # step is then a no-op), and `axi abort` appends one line to
   # FM_FAKE_NM_ABORT_LOG when set. This keeps every case hermetic - without it,
@@ -119,6 +131,9 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
+  status)
+    echo "repo not initialized (run 'no-mistakes init' first)" >&2
+    exit 1 ;;
   axi)
     shift
     case "${1:-}" in
@@ -579,6 +594,188 @@ test_local_only_fork_remote_allows() {
   pass "local-only worktree with HEAD on a fork remote is torn down (fix holds)"
 }
 
+test_no_mistakes_fork_push_remote_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-fork-remote)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "shippable fork work"
+  # Reproduces the real false refusal: the pipeline pushes the branch to a fork
+  # that is NOT a configured remote here and whose branch this clone never
+  # fetched, so the reachability check shows the work as unpushed. no-mistakes
+  # status is the only record of the push target.
+  git init -q --bare "$case_dir/fork.git"
+  git -C "$case_dir/wt" push -q "$case_dir/fork.git" fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "repo:  $case_dir/project"
+printf '%s\n' "remote:  https://github.com/example/upstream.git"
+printf '%s\n' "fork:  $case_dir/fork.git"
+printf '%s\n' "gate:  $case_dir/gate.git"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-fork-remote: teardown should succeed when the branch is on the fork no-mistakes pushes to"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-fork-remote: teardown printed a REFUSED line"
+  pass "no-mistakes worktree with the branch on the no-mistakes fork push target is torn down (fork fix)"
+}
+
+test_no_mistakes_configured_fork_remote_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-configured-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "shippable fork work"
+  # The fork is a configured remote, but this clone never fetched its branch, so
+  # the reachability check still shows the work as unpushed. Teardown must fetch
+  # the task branch from the fork remote before concluding.
+  git init -q --bare "$case_dir/fork.git"
+  git -C "$case_dir/project" remote add fork "$case_dir/fork.git"
+  git -C "$case_dir/wt" push -q "$case_dir/fork.git" fm/task-x1
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-configured-fork: teardown should succeed when the branch is on a configured fork remote"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-configured-fork: teardown printed a REFUSED line"
+  pass "no-mistakes worktree with the branch on a configured but never-fetched fork remote is torn down"
+}
+
+test_no_mistakes_authenticated_fork_pushurl_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-authenticated-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "authenticated fork work"
+  git init -q --bare "$case_dir/fork.git"
+  git init -q --bare "$case_dir/fork-fetch.git"
+  git -C "$case_dir/project" remote add fork-auth "$case_dir/fork-fetch.git"
+  git -C "$case_dir/project" config remote.fork-auth.pushurl 'https://user:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork.git".insteadOf 'https://user:token@fork.invalid/repo.git'
+  git -C "$case_dir/wt" push -q "$case_dir/fork.git" fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-authenticated-fork: teardown should use the configured authenticated fork push URL"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-authenticated-fork: teardown printed a REFUSED line"
+  ! grep -F 'user:token' "$case_dir/stdout" "$case_dir/stderr" >/dev/null \
+    || fail "nm-authenticated-fork: teardown exposed fork credentials"
+  pass "no-mistakes worktree resolves an authenticated fork target from git remote configuration"
+}
+
+test_no_mistakes_rotated_fork_pushurl_allows() {
+  local case_dir rc
+  case_dir=$(make_case nm-rotated-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "rotated fork credential work"
+  git init -q --bare "$case_dir/fork-expired.git"
+  git init -q --bare "$case_dir/fork-current.git"
+  git -C "$case_dir/project" remote add fork-auth 'https://old:expired@fork.invalid/repo.git'
+  git -C "$case_dir/project" config remote.fork-auth.pushurl 'https://new:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-expired.git".insteadOf 'https://old:expired@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-current.git".insteadOf 'https://new:token@fork.invalid/repo.git'
+  git -C "$case_dir/wt" push -q fork-auth fm/task-x1
+  git -C "$case_dir/project" update-ref -d refs/remotes/fork-auth/fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "nm-rotated-fork: teardown should prefer the current push URL over the expired fetch URL"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "nm-rotated-fork: teardown printed a REFUSED line"
+  ! grep -E 'old:expired|new:token' "$case_dir/stdout" "$case_dir/stderr" >/dev/null \
+    || fail "nm-rotated-fork: teardown exposed fork credentials"
+  pass "no-mistakes teardown prefers a rotated authenticated fork push URL"
+}
+
+test_no_mistakes_ambiguous_masked_fork_refuses() {
+  local case_dir rc checked
+  case_dir=$(make_case nm-ambiguous-fork)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt shippable "ambiguous fork work"
+  git init -q --bare "$case_dir/fork-a-fetch.git"
+  git init -q --bare "$case_dir/fork-a-push.git"
+  git init -q --bare "$case_dir/fork-b-fetch.git"
+  git init -q --bare "$case_dir/fork-b-push.git"
+  git -C "$case_dir/project" remote add fork-a "$case_dir/fork-a-fetch.git"
+  git -C "$case_dir/project" remote add fork-b "$case_dir/fork-b-fetch.git"
+  git -C "$case_dir/project" config remote.fork-a.pushurl 'https://one:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config remote.fork-b.pushurl 'https://two:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-a-push.git".insteadOf 'https://one:token@fork.invalid/repo.git'
+  git -C "$case_dir/project" config url."$case_dir/fork-b-push.git".insteadOf 'https://two:token@fork.invalid/repo.git'
+  git -C "$case_dir/wt" push -q fork-a fm/task-x1
+  git -C "$case_dir/project" update-ref -d refs/remotes/fork-a/fm/task-x1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "nm-ambiguous-fork: teardown should fail closed rather than choose a masked target"
+  grep -F 'fork push target could not be checked: multiple configured git push destinations match the credential-masked no-mistakes fork target.' "$case_dir/stderr" >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not explain the ambiguous authenticated targets"
+  checked=$(grep -F 'remotes checked:' "$case_dir/stderr" | head -1)
+  printf '%s\n' "$checked" | grep -F 'fork-a' >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not name fork-a"
+  printf '%s\n' "$checked" | grep -F 'fork-b' >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not name fork-b"
+  printf '%s\n' "$checked" | grep -F 'fork (via no-mistakes)' >/dev/null \
+    || fail "nm-ambiguous-fork: refusal did not name the no-mistakes fork target"
+  pass "ambiguous credential-masked fork targets fail closed with named remotes"
+}
+
+test_no_mistakes_unmatched_masked_fork_refuses_clearly() {
+  local case_dir rc
+  case_dir=$(make_case nm-masked-fork-unmatched)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" fork-work.txt unpushed "unverifiable fork work"
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'fork:  https://redacted@fork.invalid/repo.git'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "nm-masked-fork-unmatched: teardown should fail closed"
+  grep -F 'fork push target could not be checked: no configured git remote matches the credential-masked no-mistakes fork target.' "$case_dir/stderr" >/dev/null \
+    || fail "nm-masked-fork-unmatched: refusal did not explain the unavailable authenticated fork target"
+  grep -F 'remotes checked: origin, fork (via no-mistakes)' "$case_dir/stderr" >/dev/null \
+    || fail "nm-masked-fork-unmatched: refusal did not name the consulted remotes"
+  pass "credential-masked fork target without matching git configuration fails closed clearly"
+}
+
 test_teardown_prompts_tasks_axi_done_when_compatible() {
   local case_dir out
   case_dir=$(make_case tasks-axi-reminder)
@@ -689,6 +886,8 @@ test_no_mistakes_truly_unpushed_refuses() {
 
   expect_code 1 "$rc" "nm-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "nm-unpushed: no REFUSED line in stderr"
+  grep -F 'remotes checked: origin' "$case_dir/stderr" >/dev/null \
+    || fail "nm-unpushed: refusal did not name the remote consulted"
   pass "no-mistakes worktree with genuinely unlanded work is refused (safety preserved)"
 }
 
@@ -1401,6 +1600,9 @@ case "\${1:-} \${2:-}" in
     fi
     ;;
   "pane close")
+    if [ "\${FM_FAKE_HERDR_CLOSE_FAIL:-0}" = 1 ]; then
+      exit 1
+    fi
     : > "\${FM_FAKE_HERDR_CLOSED:?}"
     ;;
   "pane get")
@@ -1496,6 +1698,71 @@ SH
   grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
     || fail "herdr-orphan-refusal: the successful retry did not report completion"
   pass "herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly"
+}
+
+test_herdr_flat_teardown_failed_close_never_returns_worktree_retry_releases_once() {
+  local case_dir log closed rc thlog
+  case_dir=$(make_case herdr-close-retain)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  # The closed marker file stays ABSENT until a close succeeds, so an
+  # unconfirmed close keeps the pane visible to `pane get`.
+  closed="$case_dir/closed"
+  : > "$case_dir/state/task-x1.status"
+  : > "$case_dir/state/task-x1.turn-ended"
+  # Record every treehouse invocation: a teardown whose close is unconfirmed
+  # must not free the isolated copy at all, and the retry that completes must
+  # free it exactly once.
+  thlog="$case_dir/treehouse.log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+printf '%s\n' '🌳 Worktree returned to pool.'
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  rc=0
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_CLOSE_FAIL=1 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "herdr-close-retain: teardown succeeded while the exact pane was never confirmed gone"
+  assert_grep "not confirmed gone" "$case_dir/stderr" \
+    "herdr-close-retain: the unconfirmed close refusal was not explained visibly"
+  # The slot must remain leased to this task: the isolated copy is still here
+  # with its branch intact, and treehouse was never asked to return it.
+  [ -d "$case_dir/wt" ] \
+    || fail "herdr-close-retain: an unconfirmed close freed the isolated copy; a live task could reclaim it"
+  [ "$(git -C "$case_dir/wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "fm/task-x1" ] \
+    || fail "herdr-close-retain: an unconfirmed close dropped the task branch"
+  [ ! -s "$thlog" ] \
+    || fail "herdr-close-retain: the first attempt returned the isolated copy before the close was confirmed: $(cat "$thlog")"
+  [ -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-close-retain: an unconfirmed close erased the durable endpoint metadata"
+  [ -e "$case_dir/state/task-x1.status" ] \
+    || fail "herdr-close-retain: an unconfirmed close erased the task status record"
+  [ -e "$case_dir/state/task-x1.turn-ended" ] \
+    || fail "herdr-close-retain: an unconfirmed close erased the turn-end record"
+
+  # Retry once the close can actually run: the same slot was never freed, so
+  # this teardown is the one that returns the isolated copy - exactly once.
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_CLOSE_FAIL=0 \
+    FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout2" 2> "$case_dir/stderr2" \
+    || fail "herdr-close-retain: the retry after the close became runnable failed: $(cat "$case_dir/stderr2")"
+  [ -e "$closed" ] \
+    || fail "herdr-close-retain: the successful retry never closed the pane under the lock"
+  [ -s "$thlog" ] \
+    || fail "herdr-close-retain: the successful retry never returned the isolated copy"
+  [ "$(wc -l < "$thlog")" -eq 1 ] \
+    || fail "herdr-close-retain: the isolated copy was returned more than once: $(cat "$thlog")"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-close-retain: the successful retry left the metadata behind"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
+    || fail "herdr-close-retain: the successful retry did not report completion"
+  pass "herdr teardown never frees the isolated copy while the close is unconfirmed, and the retry returns it exactly once"
 }
 
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
@@ -2592,6 +2859,12 @@ EOF
 }
 
 test_local_only_fork_remote_allows
+test_no_mistakes_fork_push_remote_allows
+test_no_mistakes_configured_fork_remote_allows
+test_no_mistakes_authenticated_fork_pushurl_allows
+test_no_mistakes_rotated_fork_pushurl_allows
+test_no_mistakes_ambiguous_masked_fork_refuses
+test_no_mistakes_unmatched_masked_fork_refuses_clearly
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
 test_local_only_truly_unpushed_refuses
@@ -2602,6 +2875,7 @@ test_local_only_force_overrides_unpushed
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
+test_herdr_flat_teardown_failed_close_never_returns_worktree_retry_releases_once
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
