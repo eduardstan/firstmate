@@ -489,11 +489,10 @@ test_watch_restart_attaches_to_healthy_peer() {
   wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -eq 0 ] || fail "restart arm did not complete after its attached peer ended (status $status): $(cat "$out")"
-  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$out" \
-    || fail "restart arm did not report a completed cycle after its attached peer ended: $(cat "$out")"
-  ! grep -qF 'watcher: FAILED' "$out" || fail "restart arm reported FAILED for a finished peer cycle: $(cat "$out")"
-  pass "watch restart attaches to a verified healthy peer and completes when that cycle ends without a successor"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status): $(cat "$out")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$out" \
+    || fail "restart arm did not surface the attached cycle end: $(cat "$out")"
+  pass "watch restart attaches to a verified healthy peer and later surfaces a successor gap"
 }
 
 test_watcher_self_evicts_on_lock_takeover() {
@@ -593,17 +592,17 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED for a healthy watcher"
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "arm disturbed the healthy watcher's lock"
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
-  # After the seed dies (a completed cycle with no successor), the attached arm
-  # must report COMPLETION, not the FAILED false alarm for a cycle that ran.
+  # After the seed dies with no successor and no delivered wake, the attached arm
+  # fails loudly: it holds no handle on the seed's stdout, so the empty delivery
+  # ledger is its only evidence about that cycle.
   kill "$wpid" 2>/dev/null || true
   wait "$wpid" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -eq 0 ] || fail "attached arm did not complete after seed died (status $status)"
-  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$armout" \
-    || fail "attached arm did not emit completion after the seed cycle ended"
-  ! grep -qF 'watcher: FAILED' "$armout" || fail "attached arm reported FAILED for a completed cycle"
-  pass "arm attaches to a live fresh watcher and completes when that cycle ends with no successor"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "attached arm did not emit the typed cycle-end failure"
+  pass "arm attaches to a live fresh watcher and fails loudly when that cycle has no successor"
 }
 
 test_attached_arm_signal_is_recorded_in_cycle_ledger() {
@@ -784,17 +783,19 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   grep -qF "watcher: attached pid=$peer" "$armout" || fail "arm did not wait for and attach to the peer watcher: $(cat "$armout")"
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm falsely reported FAILED during peer startup race"
   is_live_non_zombie "$armpid" || fail "arm exited while the peer was still healthy"
-  # After the peer dies without a successor, the attached arm reports the
-  # COMPLETED cycle (the peer ran and ended), never the FAILED false alarm.
+  # After the peer dies without a successor, the ATTACHED arm has no stand-down
+  # marker to read - it never held that peer's stdout - so the peer's empty
+  # delivery ledger is the only evidence, and a cycle that delivered nothing
+  # fails loudly. The child's own stand-down above is the separate owned-child
+  # path, which still completes (test_arm_self_eviction_completes_without_successor).
   kill "$peer" 2>/dev/null || true
   wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -eq 0 ] || fail "attached arm did not complete after peer died (status $status): $(cat "$armout")"
-  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$armout" \
-    || fail "peer-attached arm did not emit completion after the peer cycle ended: $(cat "$armout")"
-  ! grep -qF 'watcher: FAILED' "$armout" || fail "peer-attached arm reported FAILED for a completed cycle"
-  pass "arm attaches to a peer watcher after child stands down and completes when that cycle ends"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "peer-attached arm did not emit the typed cycle-end failure: $(cat "$armout")"
+  pass "arm attaches to a peer watcher after child stands down and surfaces a missing successor"
 }
 
 test_attached_arm_fails_loud_when_peer_wedges_stale() {

@@ -48,9 +48,10 @@ A zero/empty child return rechecks the home lock and beacon, attaches to a verif
 An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
 Before releasing its singleton lock after printing an actionable reason, the watcher records that reason with its PID and process identity in `state/.watch-deliveries.log`.
 A matching PID and identity lets an attached arm report the delivered reason and exit zero even after the durable wake queue was drained, while an unrelated queue producer or a recycled PID cannot satisfy the match.
-A cycle with no matching delivery record is still COMPLETED, not a false failure, when it demonstrably ran its supervision: it reports `watcher: cycle complete - supervision cycle ended without an actionable reason` and exits zero when the child declared a deliberate stand-down for the singleton holder after running its polls, or when an attached peer ended having kept the beacon fresh.
-Neither of those must burn a primary turn.
-Only a genuine failure - a nonzero child exit, a confirmation timeout, a live recorded watcher wedged behind a stale beacon, a clean empty close with no stand-down marker, or a delivery ledger this arm could not read - emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
+With no matching delivery record the two paths differ, because they hold different evidence.
+An OWNED child whose stdout carried a deliberate `watcher: cycle-complete` stand-down for the singleton holder demonstrably ran its supervision, so it is COMPLETED: the arm reports `watcher: cycle complete - supervision cycle ended without an actionable reason` and exits zero rather than burning a primary turn on a fully-absorbed cycle.
+An ATTACHED arm holds no handle on that stdout and has no such marker to read, so for it a cycle that delivered nothing is the typed failure.
+Every other close - a nonzero child exit, a confirmation timeout, an owned clean close with no stand-down marker, or a delivery ledger this arm could not read - also emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
