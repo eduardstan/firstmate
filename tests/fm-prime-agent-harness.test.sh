@@ -157,7 +157,11 @@ test_spawn_crewmate_launch_shape() {
 
   out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
     "$id" "$proj" --scout --harness prime-agent \
-    --model opencode/deepseek-v4-flash-free --effort low) && status=0 || status=$?
+    --provider openai-codex --model gpt-5.6-luna --effort low \
+    --autonomous-gate 'bin/fm-lint.sh' \
+    --autonomous-gate 'tests/fm-prime-agent-harness.test.sh' \
+    --autonomous-max-continuations 30 --autonomous-max-turns 120 \
+    --autonomous-max-tokens 600000 --autonomous-timeout-ms 18000000) && status=0 || status=$?
   expect_code 0 "$status" "prime-agent scout spawn failed: $out"
 
   launch=$(grep -F 'prime-agent' "$log" | tail -1)
@@ -178,10 +182,22 @@ test_spawn_crewmate_launch_shape() {
     "launch does not clear foreign primary harness markers"
   assert_not_contains "$launch" '-u FM_PI_HARNESS' \
     "launch clears the very identity marker it just set"
-  assert_contains "$launch" "--model 'opencode/deepseek-v4-flash-free'" "model flag missing"
+  assert_contains "$launch" "--provider 'openai-codex'" "provider flag missing"
+  assert_contains "$launch" "--model 'gpt-5.6-luna'" "model flag missing"
   assert_contains "$launch" "--thinking 'low'" "effort did not map onto --thinking"
+  assert_contains "$launch" "--autonomous --autonomous-gate 'bin/fm-lint.sh' --autonomous-gate 'tests/fm-prime-agent-harness.test.sh'" \
+    "repeatable gates did not imply autonomous mode in order"
+  assert_contains "$launch" "--autonomous-max-continuations '30' --autonomous-max-turns '120' --autonomous-max-tokens '600000' --autonomous-timeout-ms '18000000'" \
+    "explicit autonomous limits did not reach prime-agent"
 
   assert_grep 'harness=prime-agent' "$home/state/$id.meta" "meta does not record the harness"
+  assert_grep 'provider=openai-codex' "$home/state/$id.meta" "meta does not record the provider"
+  [ "$(grep -c '^autonomous_gate=' "$home/state/$id.meta")" -eq 2 ] \
+    || fail "meta does not record both autonomous gates"
+  assert_grep 'autonomous_max_continuations=30' "$home/state/$id.meta" "meta does not record the continuation limit"
+  assert_grep 'autonomous_max_turns=120' "$home/state/$id.meta" "meta does not record the turn limit"
+  assert_grep 'autonomous_max_tokens=600000' "$home/state/$id.meta" "meta does not record the token limit"
+  assert_grep 'autonomous_timeout_ms=18000000' "$home/state/$id.meta" "meta does not record the wall-clock limit"
   # Deliberately NOT armed: prime-agent's own built-in Herdr reporter already
   # publishes pane state, so there is no firstmate writer that could ever clear
   # a seeded busy record.
@@ -189,6 +205,76 @@ test_spawn_crewmate_launch_shape() {
     "spawn armed a busy record prime-agent has no writer to clear"
 
   pass "prime-agent crewmate spawn loads its own extension and stamps its identity"
+}
+
+test_gated_spawn_supplies_long_horizon_defaults() {
+  local case_dir home proj wt fakebin id log out status launch meta
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case gate-defaults)
+  log="$case_dir/launch.log"
+  : > "$log"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$proj" --scout --harness prime-agent \
+    --autonomous-gate 'bin/fm-lint.sh') && status=0 || status=$?
+  expect_code 0 "$status" "prime-agent gated scout spawn failed: $out"
+
+  launch=$(grep -F 'prime-agent' "$log" | tail -1)
+  assert_contains "$launch" "--autonomous-max-continuations '24'" "gated launch inherited Prime's small continuation default"
+  assert_contains "$launch" "--autonomous-max-turns '96'" "gated launch inherited Prime's small turn default"
+  assert_contains "$launch" "--autonomous-max-tokens '500000'" "gated launch inherited Prime's small token default"
+  assert_contains "$launch" "--autonomous-timeout-ms '14400000'" "gated launch inherited Prime's short timeout default"
+  meta="$home/state/$id.meta"
+  assert_grep 'autonomous_max_continuations=24' "$meta" "meta does not record the resolved continuation default"
+  assert_grep 'autonomous_max_turns=96' "$meta" "meta does not record the resolved turn default"
+  assert_grep 'autonomous_max_tokens=500000' "$meta" "meta does not record the resolved token default"
+  assert_grep 'autonomous_timeout_ms=14400000' "$meta" "meta does not record the resolved timeout default"
+
+  pass "a gated prime-agent spawn receives explicit long-horizon limits"
+}
+
+test_provider_is_recorded_but_omitted_for_an_unsupported_harness() {
+  local case_dir home proj wt fakebin id log out status launch
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case provider-omitted)
+  log="$case_dir/launch.log"
+  : > "$log"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$proj" --scout --harness pi \
+    --provider openai-codex --model openai-codex/gpt-5.6-sol) && status=0 || status=$?
+  expect_code 0 "$status" "Pi spawn with recorded provider axis failed: $out"
+
+  launch=$(grep -F ' pi ' "$log" | tail -1)
+  assert_not_contains "$launch" '--provider' "Pi launch guessed support for prime-agent's provider flag"
+  assert_grep 'provider=openai-codex' "$home/state/$id.meta" "unsupported harness meta dropped the provider axis"
+
+  pass "unsupported harnesses record the provider axis without receiving it"
+}
+
+test_no_mistakes_refuses_duplicate_gate_ownership() {
+  local case_dir home proj wt fakebin id log out status
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case no-mistakes-gate)
+  log="$case_dir/launch.log"
+  : > "$log"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$proj" --harness prime-agent --mode no-mistakes --yolo off \
+    --autonomous-gate 'bin/fm-lint.sh') && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "no-mistakes spawn accepted a harness-level autonomous gate"
+  assert_contains "$out" 'no-mistakes pipeline owns its own gates and branch custody' \
+    "gate refusal did not name duplicate gate ownership and branch custody"
+  assert_absent "$home/state/$id.meta" "refused no-mistakes gate still published task metadata"
+
+  pass "no-mistakes refuses duplicate harness-level gate ownership before spawn"
+}
+
+test_help_lists_prime_launch_axes() {
+  local out
+  out=$("$SPAWN" --help)
+  for flag in --provider --autonomous-gate --autonomous-max-continuations \
+    --autonomous-max-turns --autonomous-max-tokens --autonomous-timeout-ms; do
+    assert_contains "$out" "$flag" "spawn help omitted $flag"
+  done
+  pass "spawn help documents the provider and autonomous gate axes"
 }
 
 test_secondmate_launch_loads_both_primary_extensions() {
@@ -532,6 +618,10 @@ SH
 
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
+test_gated_spawn_supplies_long_horizon_defaults
+test_provider_is_recorded_but_omitted_for_an_unsupported_harness
+test_no_mistakes_refuses_duplicate_gate_ownership
+test_help_lists_prime_launch_axes
 test_secondmate_launch_loads_both_primary_extensions
 test_secondmate_relaunch_refuses_failed_retirement
 test_secondmate_launch_succeeds_without_daemon
