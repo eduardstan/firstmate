@@ -228,9 +228,12 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 ## Composer and injection safety
 
 Herdr has no direct cursor-row primitive.
-The adapter locates the bottom-most recognized bordered row, Claude `❯` row, Codex `›` row, or a Pi separator region admitted only when native identity is exactly Pi and state is idle, done, or blocked.
+The adapter locates the bottom-most recognized bordered row, Claude `❯` row, Codex `›` row, a Pi separator region admitted only when native identity is exactly Pi and state is idle, done, or blocked, or a prime-agent `>` row.
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
 A lone trailing separator with no matching opening one discards a recognized row above it only on a Pi or unidentifiable target, because other harnesses draw horizontal rules as ordinary chrome: Claude frames its own live composer between a labelled upper rule and a bare lower one.
+The prime-agent row is the one bare shell-style glyph that can be promoted at all, so it needs two independent signals rather than one: the pane's live foreground process must be prime-agent and Herdr's native reporter must identify it as prime-agent.
+Both are required because a quit prime-agent leaves its reporter identity behind on a pane that is already back to a login shell, where a `> ` shell prompt would otherwise inherit the composer shape.
+Neither signal is gated on agent status, because a busy pane is exactly the case this shape serves: mid-turn submit confirmation falls back to the composer read whenever the pre-Enter baseline is not legibly idle.
 
 ANSI capture preserves de-emphasized placeholder style, and it is also the only capture that preserves invisible composer padding, which Herdr's plain read normalizes away.
 `bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input, and that normalizes invisible padding such as the U+00A0 Claude pads its idle composer with, so an idle composer reads empty rather than as unsent text.
@@ -256,6 +259,9 @@ This prevents closing the workspace's last tab before a replacement exists.
 The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
+Registration alone is not proof of a live agent for prime-agent, whose reporter identity survives its own `/quit`, so a pane it registers is demoted to `dead` only when the pane's whole process subtree holds no prime-agent process.
+The subtree, not the foreground group, is the discriminator: a Ctrl+Z-suspended prime-agent is stopped but alive under the pane's shell, while a quit one has left nothing behind.
+Either probe reading unusable keeps the registered verdict, so an unanswerable probe never licenses closing a live agent's pane.
 
 The session-start sweep uses this probe.
 Mid-session secondmate liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.

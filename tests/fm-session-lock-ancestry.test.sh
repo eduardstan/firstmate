@@ -229,6 +229,8 @@ install_autoarm_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-prime-agent-lib.sh" "$dir/bin/fm-prime-agent-lib.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/fm-timeout-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
   cp "$ROOT/bin/fm-lock.sh" "$dir/bin/fm-lock.sh"
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
@@ -301,6 +303,11 @@ run_fixture_tree() {  # <dir> <session-bin> [<daemon-bin>]
     i=$((i + 1))
   done
   [ -s "$dir/state/hook.rc" ] || fail "the fixture hook never finished"
+  # A lab checkout carries only the copied dependency set, so a lib that grew a
+  # new sibling must not start writing sourcing errors into the hook output the
+  # session reads.
+  assert_no_grep 'No such file or directory' "$dir/state/hook.out" \
+    "the hook wrote a missing-dependency error into its own output"
 }
 
 hook_rc() {
@@ -354,8 +361,150 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
   pass "session-lock e2e: a version-named session under a harness-named daemon keeps its own lock"
 }
 
+# prime-agent's session runs in a DETACHED daemon worker, so the pid the lock
+# records outlives the pane and an explicit /quit. An in-place restart - what
+# bin/fm-session-start.sh and the supervision protocol both tell the operator
+# to do - therefore meets a live `prime-agent` process holding its own home's
+# lock. Liveness for this harness has to mean "a session someone is still
+# attached to", which is what the vendor's own attachedClients count answers.
+test_abandoned_prime_agent_worker_never_blocks_its_home() {
+  local dir fakebin lockbin old new out status lock_after case_id sessions start elapsed
+  dir="$TMP_ROOT/prime-detached-worker"
+  fakebin=$(fm_fakebin "$dir/bin")
+  lockbin="$dir/worker-bin"
+  mkdir -p "$dir/state" "$lockbin"
+  # Two REAL processes named prime-agent: the abandoned worker the lock still
+  # names, and this restart's worker. `kill -0` must genuinely succeed for both,
+  # so the reclaim can only come from the attachment answer.
+  cp "$(command -v sleep)" "$lockbin/prime-agent"
+  "$lockbin/prime-agent" 120 & old=$!
+  "$lockbin/prime-agent" 120 & new=$!
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -o) field=\$2; shift 2 ;;
+    -p) pid=\$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "\$pid:\$field" in
+  $old:comm=|$new:comm=) printf '%s\n' prime-agent ;;
+  $old:args=|$new:args=) printf '%s\n' 'prime-agent' ;;
+  $old:ppid=|$new:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash bin/fm-lock.sh' ;;
+  *:ppid=) printf '%s\n' $new ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  # One worker hosts every session it forked, all stamped with its own pid, and
+  # a subagent child never has a client. `attached-behind-subagent` puts such a
+  # zero-client child FIRST in the listing, so a verdict read off one arbitrary
+  # entry would hand this home's lock away while its operator is still working.
+  # `mid-turn-detached` and `unknown-activity` are the other half of the same
+  # question: a pane that died mid-turn leaves NO client attached while the
+  # worker keeps writing the home, so client count alone would invite a second
+  # writer into the same worktree.
+  # The listing carries TWO session shapes under one worker pid, and the cases
+  # below use both as the daemon renders them: a RESIDENT session publishes
+  # every activity flag and an activeSessionId, while a persisted non-resident
+  # RLM child publishes neither the activeSessionId nor the three active-only
+  # flags and is idle by construction.
+  local idle busy passive
+  idle='"activeSessionId":"a1","isSessionActive":false,"isStreaming":false,"isCompacting":false,"isRunningTools":false,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":0'
+  busy='"activeSessionId":"a1","isSessionActive":true,"isStreaming":true,"isCompacting":false,"isRunningTools":true,"isBashRunning":false,"hasRunningRlmChildren":false,"unfinishedActionCount":1'
+  passive='"lifecycle":"archived","activity":"idle","isSessionActive":false,"isStreaming":false,"isCompacting":false,"unfinishedActionCount":0'
+  for case_id in abandoned abandoned-behind-passive-subagent attached attached-behind-subagent \
+    mid-turn-detached unknown-activity no-resident-session wedged-daemon; do
+    case "$case_id" in
+      abandoned) sessions="{\"id\":\"s1\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle}" ;;
+      abandoned-behind-passive-subagent)
+        # The quit worker still lists the subagent its root session once forked.
+        # That row can never prove anything about the operator's session, so it
+        # must not keep the home read-only forever.
+        sessions="{\"id\":\"sub\",\"rlmDepth\":1,\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$passive},{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle}"
+        ;;
+      attached) sessions="{\"id\":\"s1\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":1,$idle}" ;;
+      attached-behind-subagent)
+        sessions="{\"id\":\"sub\",\"kind\":\"subagent\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$idle},{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":1,$idle}"
+        ;;
+      mid-turn-detached)
+        sessions="{\"id\":\"root\",\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$busy}"
+        ;;
+      unknown-activity)
+        sessions='{"id":"s1","activeSessionId":"a1","cwd":"/x","workerPid":OLD,"attachedClients":0}'
+        ;;
+      no-resident-session)
+        sessions="{\"id\":\"sub\",\"rlmDepth\":1,\"cwd\":\"/x\",\"workerPid\":OLD,\"attachedClients\":0,$passive}"
+        ;;
+      wedged-daemon) sessions= ;;
+    esac
+    cat > "$fakebin/prime-agent" <<SH
+#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = list ]; then
+  if [ "$case_id" = wedged-daemon ]; then
+    # A daemon socket that never answers: the bound, not the answer, has to end
+    # this call, or every lock acquisition inherits the daemon's wedge.
+    sleep 60
+  fi
+  printf '{"sessions":[%s]}\n' '$(printf '%s' "${sessions//OLD/$old}")'
+fi
+exit 0
+SH
+    chmod +x "$fakebin/prime-agent"
+    printf '%s\n' "$old" > "$dir/state/.lock"
+    start=$(date +%s)
+    out=$(PATH="$fakebin:$PATH" FM_HOME="$dir" FM_PRIME_AGENT_CLI_TIMEOUT=2 \
+      "$ROOT/bin/fm-lock.sh" 2>&1) && status=0 || status=$?
+    elapsed=$(( $(date +%s) - start ))
+    lock_after=$(tr -d '[:space:]' < "$dir/state/.lock")
+    case "$case_id" in
+      abandoned|abandoned-behind-passive-subagent)
+        expect_code 0 "$status" "an in-place restart was refused its own home's lock ($case_id): $out"
+        [ "$lock_after" = "$new" ] \
+          || fail "the restarted session did not take the lock ($case_id): expected $new, got $lock_after"
+        ;;
+      wedged-daemon)
+        [ "$elapsed" -lt 30 ] || fail "a wedged prime-agent daemon stalled lock acquisition for ${elapsed}s"
+        expect_code 1 "$status" "an unanswerable daemon must leave the recorded holder standing"
+        [ "$lock_after" = "$old" ] || fail "an unreadable listing was treated as an abandoned worker"
+        ;;
+      *)
+        expect_code 1 "$status" "a worker that is still live lost its home's lock ($case_id)"
+        [ "$lock_after" = "$old" ] || fail "a live holder's lock was overwritten ($case_id)"
+        assert_contains "$out" "another live firstmate session holds the lock" \
+          "the live-holder refusal changed shape"
+        ;;
+    esac
+  done
+  kill "$old" "$new" 2>/dev/null || true
+  wait "$old" "$new" 2>/dev/null || true
+  pass "session-lock: only an idle unattended prime-agent worker is reclaimable; attached or working ones keep the lock"
+}
+
+# The lock lib is sourced by hooks and other libs, several of which are written
+# without nounset, so sourcing it must hand the caller's shell flags back
+# exactly as it found them.
+test_sourcing_the_lock_lib_leaves_shell_flags_alone() {
+  local before after
+  before=$(bash -c 'echo "$-"')
+  after=$(bash -c '. "$0"; echo "$-"' "$LIB")
+  [ "$before" = "$after" ] \
+    || fail "sourcing the session-lock lib changed the caller's shell flags: '$before' -> '$after'"
+  bash -c 'set -u; . "$0"; case $- in *u*) ;; *) exit 1 ;; esac' "$LIB" \
+    || fail "sourcing the session-lock lib cleared a caller's own nounset"
+  pass "session-lock: sourcing the lib has no side effect on the caller's shell flags"
+}
+
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
+test_abandoned_prime_agent_worker_never_blocks_its_home
+test_sourcing_the_lock_lib_leaves_shell_flags_alone
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home

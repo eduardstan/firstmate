@@ -178,7 +178,9 @@ ok - fm-teardown: dedicated-socket invalid cleanup preserves target/control and 
 The dedicated tmux cell removed ambient tmux variables, required a socket-bound wrapper, kept one target and one independent control window, and proved the wrapper was not called for invalid metadata or a direct empty target.
 Valid cleanup removed only the exact task-bound target and left the control window live.
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
-Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
+Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Muse, and prime-agent share that backend cleanup boundary; their harness-specific hook files, tokens, extensions, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
+prime-agent adds one step before the generic leaked-process reaper rather than a second endpoint parser: its session worker is a detached daemon process that survives both the pane and `/quit`, so teardown asks prime-agent to stop the sessions whose recorded cwd is inside the task worktree (verified 2026-08-08 on prime-agent 0.7.1, where a torn-down task's session was still `lifecycle=live` on that worktree, and an explicit `/quit` left its own session `live` too).
+`bin/fm-spawn.sh --secondmate` performs the same retirement on a prime-agent home before relaunch, because that detached worker is the pid its session lock records.
 
 ## Herdr
 

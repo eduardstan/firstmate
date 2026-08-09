@@ -38,7 +38,7 @@ trap cleanup_all EXIT
 
 # A `tmux` shim on PATH so bin/backends/tmux.sh's bare `tmux` calls reach the
 # private socket and never touch the host's real sessions.
-mkdir -p "$LAB/shim" "$LAB/bin" "$LAB/bin/claude" "$LAB/bin/decoy" "$LAB/wt"
+mkdir -p "$LAB/shim" "$LAB/bin" "$LAB/bin/claude" "$LAB/bin/decoy" "$LAB/bin/prime-agent" "$LAB/wt"
 cat > "$LAB/shim/tmux" <<SH
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" "\$@"
@@ -54,6 +54,7 @@ export PATH
 ln -s "$SLEEP_BIN" "$LAB/bin/claude-link"
 ln -s "$SLEEP_BIN" "$LAB/bin/pi"
 ln -s "$SLEEP_BIN" "$LAB/bin/notaharness"
+ln -s "$SLEEP_BIN" "$LAB/bin/prime-agent/0.7.1"
 # muse's installed binary is muse-bin-<version>: the launcher execs it, so the
 # version is the LIVE process name and it changes on every auto-update. Unlike
 # Claude Code's version-named binary there is no `muse` path component to fall
@@ -80,6 +81,13 @@ chmod +x "$LAB/bin/agent-launcher"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
 fm_backend_source tmux || fail "fm_backend_source tmux failed"
+
+PRIME_PATH="$LAB/bin/prime-agent/0.7.1"
+[ "$(fm_backend_tmux_classify_process_name "$PRIME_PATH" "$PRIME_PATH")" = other ] \
+  || fail "a prime-agent executable path must stay outside tmux agent liveness"
+fm_harness_process_matches "$PRIME_PATH" "$PRIME_PATH" \
+  || fail "the same prime-agent executable path must remain a session-lock harness identity"
+pass "tmux liveness excludes Prime paths while session locking recognizes them"
 
 "$REAL_TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -n idle -c "$LAB/wt" \
   || fail "could not start the private tmux server"

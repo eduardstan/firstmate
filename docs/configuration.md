@@ -206,9 +206,15 @@ The full cmux home label also includes a short hash of the resolved `FM_ROOT` pa
 
 ## Harness support
 
-claude, codex, opencode, pi, pi-signed, grok, and kimi are empirically verified for crewmate and secondmate launches; [README requirements](../README.md#requirements) own the set supported for the primary session.
+claude, codex, opencode, pi, pi-signed, prime-agent, grok, and kimi are empirically verified for crewmate and secondmate launches; [README requirements](../README.md#requirements) own the set supported for the primary session.
 muse is verified for crewmate and scout launches ONLY, and `fm-spawn.sh` refuses it for a secondmate, because muse ships no usable hook surface for a primary session's turn-end supervision; [`docs/verification/muse.md`](verification/muse.md) owns that evidence.
 muse also needs a worker-reachable credential before spawning, and the portable fleet path is the `<config>/muse/auth.json` credential stored by `muse login`, because a caller-only `META_API_KEY` does not cross a long-lived backend daemon.
+prime-agent runs every session in a detached daemon worker that outlives both the pane and an explicit quit, so teardown (task worktree and secondmate home alike) and every secondmate relaunch retire the worker bound to that directory first ([`bin/fm-prime-agent-lib.sh`](../bin/fm-prime-agent-lib.sh)); without that a home would keep a live session-lock holder and land read-only.
+An in-place restart needs no retirement of its own: session-lock liveness asks prime-agent whether the recorded worker still has any client attached AND whether every session it hosts is idle, so a quit worker is reclaimable while an attached or still-working one keeps the lock.
+A worker whose pane died MID-TURN therefore keeps the lock on purpose, and an in-place restart does land read-only until that turn finishes; any answer that cannot prove the worker is finished counts as still alive.
+A quit pane also classifies dead rather than alive - its reporter identity survives the agent - so secondmate recovery relaunches it instead of skipping it as live.
+The discriminator there is the pane's whole process subtree, not which process group holds the terminal: a Ctrl+Z-suspended agent is still a stopped prime-agent process under the pane's shell and stays alive, while a quit pane has no prime-agent process left under it at all.
+Remote secondmates are not verified on prime-agent and stay refused.
 New harnesses get verified through a supervised trial task before joining the set.
 The verified adapter evidence - each harness's busy-state source, interrupt and exit behavior, skill-invocation syntax, and per-harness quirks - lives in [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md).
 The executable interrupt and exit mechanics live in [`bin/fm-control-lib.sh`](../bin/fm-control-lib.sh), and [`docs/agent-control.md`](agent-control.md) owns their lifecycle-control architecture.
@@ -216,7 +222,7 @@ Launch mechanics, including the verified command templates, live in [`bin/fm-spa
 Enabled primary-session turn-end guard integrations are tracked as repo-level hook files and documented in [`docs/turnend-guard.md`](turnend-guard.md).
 Kimi remains outside the primary turn-end guard integrations; [`docs/turnend-guard.md`](turnend-guard.md#compatibility-limits) owns its separate captain-approved crew wake hook.
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
-Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, and OpenCode uses its TUI plugin.
+[`docs/architecture.md`](architecture.md) owns the per-harness summary of those wait shapes.
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.
 When pi-signed is selected, Firstmate launches the executable named `pi-signed` from `PATH` with `FM_PI_HARNESS=pi-signed` and refuses the launch if it is unavailable rather than falling back to pi.
 Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cannot relabel a plain Pi worker.
@@ -240,6 +246,7 @@ Kimi continues to use the captain's normal Kimi home, including the existing con
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+prime-agent secondmate launches do the same with that home's tracked `.prime/agent/extensions/fm-primary-prime-watch.ts` and `.prime/agent/extensions/fm-primary-turnend-guard.ts`, which need no trust grant to load.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
