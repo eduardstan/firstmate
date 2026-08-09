@@ -1228,9 +1228,9 @@ launch_template() {
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
       if [ "$kind" = secondmate ]; then
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s%s' "$harness" ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s%s' "$harness" ' __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # prime-agent (Prime Agent): Pi-family CLI, so the same single-positional
@@ -1479,9 +1479,15 @@ provider_flag_for_harness() {
   local harness=$1 provider=$2
   [ -n "$provider" ] && [ "$provider" != default ] || return 0
   case "$harness" in
-    # prime-agent 0.7.1 exposes an exact --provider <name> model-selection
-    # option. No other installed supported harness exposes that same axis.
-    prime-agent) printf -- '--provider %s ' "$(shell_quote "$provider")" ;;
+    # Verified 2026-08-09 against the installed CLIs' own --help: prime-agent
+    # 0.7.1 and pi 0.83.0 both expose an exact --provider <name> option, while
+    # claude 2.1.221, codex 0.146.0, and opencode 1.18.10 expose no such axis.
+    # pi-signed is the signed wrapper over the same Pi application and exposes
+    # the same CLI (harness-adapters), which is why it pairs with pi here as it
+    # already does for the model and effort axes. grok, kimi, and muse are not
+    # installed here, so their support is unverified and the axis is omitted
+    # rather than guessed.
+    prime-agent|pi|pi-signed) printf -- '--provider %s ' "$(shell_quote "$provider")" ;;
   esac
 }
 

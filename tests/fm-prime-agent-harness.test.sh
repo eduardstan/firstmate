@@ -232,6 +232,24 @@ test_gated_spawn_supplies_long_horizon_defaults() {
   pass "a gated prime-agent spawn receives explicit long-horizon limits"
 }
 
+test_provider_reaches_pi_which_also_exposes_the_axis() {
+  local case_dir home proj wt fakebin id log out status launch
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case provider-pi)
+  log="$case_dir/launch.log"
+  : > "$log"
+
+  out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+    "$id" "$proj" --scout --harness pi \
+    --provider openai-codex --model openai-codex/gpt-5.6-sol) && status=0 || status=$?
+  expect_code 0 "$status" "Pi spawn with a provider failed: $out"
+
+  launch=$(grep -F ' pi ' "$log" | tail -1)
+  assert_contains "$launch" "--provider 'openai-codex'" "Pi launch dropped a provider flag its CLI exposes"
+  assert_grep 'provider=openai-codex' "$home/state/$id.meta" "meta does not record the provider for Pi"
+
+  pass "the provider axis reaches every harness whose CLI exposes it, not just prime-agent"
+}
+
 test_provider_is_recorded_but_omitted_for_an_unsupported_harness() {
   local case_dir home proj wt fakebin id log out status launch
   IFS='|' read -r case_dir home proj wt fakebin id < <(make_case provider-omitted)
@@ -239,12 +257,13 @@ test_provider_is_recorded_but_omitted_for_an_unsupported_harness() {
   : > "$log"
 
   out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
-    "$id" "$proj" --scout --harness pi \
-    --provider openai-codex --model openai-codex/gpt-5.6-sol) && status=0 || status=$?
-  expect_code 0 "$status" "Pi spawn with recorded provider axis failed: $out"
+    "$id" "$proj" --scout --harness claude \
+    --provider openai-codex --model sonnet) && status=0 || status=$?
+  expect_code 0 "$status" "Claude spawn with recorded provider axis failed: $out"
 
-  launch=$(grep -F ' pi ' "$log" | tail -1)
-  assert_not_contains "$launch" '--provider' "Pi launch guessed support for prime-agent's provider flag"
+  launch=$(grep -F 'claude ' "$log" | tail -1)
+  assert_not_contains "$launch" '--provider' "Claude launch guessed a provider flag its CLI does not expose"
+  assert_contains "$launch" "--model 'sonnet'" "the supported model axis stopped reaching Claude"
   assert_grep 'provider=openai-codex' "$home/state/$id.meta" "unsupported harness meta dropped the provider axis"
 
   pass "unsupported harnesses record the provider axis without receiving it"
@@ -619,6 +638,7 @@ SH
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_gated_spawn_supplies_long_horizon_defaults
+test_provider_reaches_pi_which_also_exposes_the_axis
 test_provider_is_recorded_but_omitted_for_an_unsupported_harness
 test_no_mistakes_refuses_duplicate_gate_ownership
 test_help_lists_prime_launch_axes
