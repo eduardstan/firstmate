@@ -60,6 +60,9 @@ Scoping the second source to the foreground process group rather than to the pan
 The same scoping covers multi-process launchers without a special case, so the Pi Launcher path is attributed through its `pi-signed` wrapper and `pi` engine even though its title is the exact foreground command `pi-launcher`.
 Direct executable identities `pi`, `pi-signed`, and `Pi` remain accepted exactly, and similar or prefixed process names are not accepted through those exact Pi-family entries.
 Muse is likewise anchored to the exact `muse` launcher identity or the installed `muse-bin-<version>` prefix, so unrelated names such as `musescore` and `amuse` remain ambiguous.
+prime-agent is the one verified harness deliberately excluded from this classifier, so a `prime-agent` process name or install-path component reads `ambiguous` rather than `alive`.
+Its tmux classification was never proven against a real prime-agent pane under real tmux, and `ambiguous` authorizes no recovery in either direction; the verified path for that harness is Herdr's, owned by [`herdr-backend.md`](herdr-backend.md).
+The exclusion is scoped to this probe: `bin/fm-session-lock-lib.sh` still recognizes the same executable paths as a session-lock harness identity.
 
 The CI-enforced portable regression and opt-in real-harness drift guard follow the split owned by `.agents/skills/firstmate-coding-guidelines/SKILL.md`.
 Run the real-harness guard after any harness upgrade and before trusting refreshed evidence.
