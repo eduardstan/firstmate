@@ -261,22 +261,19 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   stripped=${line//[[:space:]]/}
   [ -n "$stripped" ] || { printf '%s' "$open"; return 0; }
   verb=$(status_line_verb "$line")
-  if ! key=$(_fm_decision_key "$line"); then
-    case "$verb" in
-      needs-decision|blocked) key=default ;;
-      *) printf '%s' "$open"; return 0 ;;
-    esac
-  fi
+  key=$(_fm_decision_key "$line") || key=''
   _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
     || { printf '%s' "$open"; return 0; }
   case "$verb" in
     needs-decision|blocked)
+      key=${key:-default}
       note=$(status_line_note "$line")
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
       ;;
     "$resolve"|"$held")
+      [ -n "$key" ] || { printf '%s' "$open"; return 0; }
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       ;;
