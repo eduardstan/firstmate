@@ -449,6 +449,13 @@ test_primary_extensions_ignore_inline_child_sessions() {
   plugin="$fixture/.prime/agent/extensions/fm-primary-turnend-guard.ts"
   home="$fixture/home"
   mkdir -p "$fixture/.prime/agent/extensions" "$fixture/.pi/extensions/lib" "$fixture/bin" "$home/state"
+  # Copying a source that is not there leaves the fixture half-built, and the
+  # node run then fails as a bare exit 1 that names nothing. Say which tracked
+  # file the checkout is missing instead.
+  for src in .prime/agent/extensions/fm-primary-turnend-guard.ts \
+    .pi/extensions/lib/fm-operational-input.ts bin/fm-operational-input.sh; do
+    [ -f "$ROOT/$src" ] || fail "this checkout is missing the tracked fixture source $src"
+  done
   cp "$ROOT/.prime/agent/extensions/fm-primary-turnend-guard.ts" "$plugin"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/.pi/extensions/lib/fm-operational-input.ts"
   cp "$ROOT/bin/fm-operational-input.sh" "$fixture/bin/fm-operational-input.sh"
