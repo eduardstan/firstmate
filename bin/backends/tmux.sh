@@ -156,7 +156,7 @@ fm_backend_tmux_current_command() {  # <target>
 # else. Keeping one classifier means the two independent name sources can never
 # drift into disagreeing about what a given name means.
 fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
-  local path=$1 argv0=${2:-} base
+  local path=$1 argv0=${2:-} base name
   base=${path##*/}
   base=${base#-}
   case "$base" in
@@ -171,8 +171,11 @@ fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
     *claude*|*codex*|*opencode*|*grok*|*kimi*|pi|pi-signed|pi-launcher|Pi) printf 'agent' ;;
     zsh|bash|sh|dash|ash|ksh|mksh|tcsh|csh|fish) printf 'shell' ;;
     *)
-      if fm_harness_path_name "$path" >/dev/null || fm_harness_path_name "$argv0" >/dev/null; then
-        printf 'agent'
+      if name=$(fm_harness_path_name "$path") || name=$(fm_harness_path_name "$argv0"); then
+        case "$name" in
+          prime-agent) printf 'other' ;;
+          *) printf 'agent' ;;
+        esac
       else
         printf 'other'
       fi

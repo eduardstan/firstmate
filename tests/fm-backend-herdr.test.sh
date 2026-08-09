@@ -3179,25 +3179,27 @@ test_composer_state_prime_agent_real_text_is_pending() {
   pass "fm_backend_herdr_composer_state: a working prime-agent pane still reports pending composer text"
 }
 
-test_composer_state_prime_placeholder_is_scoped_to_prime_shape() {
+test_composer_state_prime_placeholder_requires_ghost_styling() {
   local dir log resp fb out
-  dir="$TMP_ROOT/composer-prime-placeholder-scope"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '  │ ❯ Try "review @<filepath> carefully" │\n' > "$resp/1.out"
+  dir="$TMP_ROOT/composer-prime-placeholder-styling"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '> Try "review @<filepath> carefully"\n' > "$resp/1.out"
+  prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
-  [ "$out" = pending ] || fail "Prime placeholder text in another harness must remain pending, got '$out'"
+  [ "$out" = pending ] || fail "a bright Prime draft matching placeholder text must remain pending, got '$out'"
 
   : > "$log"
   rm -f "$resp/.count"
-  printf '> Try "review @<filepath> carefully"\n' > "$resp/1.out"
+  printf '\x1b[0m\x1b[48;2;44;44;49m >  \x1b[0m\x1b[38;2;113;113;122mTry "review @<filepath> carefully"\x1b[0m\n' > "$resp/1.out"
   prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
   printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
-  [ "$out" = empty ] || fail "Prime placeholder text in a proven Prime composer must read empty, got '$out'"
+  [ "$out" = empty ] || fail "a dark-truecolor Prime placeholder must read empty, got '$out'"
 
-  pass "fm_backend_herdr_composer_state: Prime placeholder fallback is shape-scoped"
+  pass "fm_backend_herdr_composer_state: Prime placeholders require ghost styling"
 }
 
 # The same reporter-survives-the-agent fact decides RECOVERY, not just the
@@ -4485,7 +4487,7 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
 test_composer_state_pi_separator_requires_safe_native_identity
 test_composer_state_prime_agent_bare_prompt_needs_both_signals
 test_composer_state_prime_agent_real_text_is_pending
-test_composer_state_prime_placeholder_is_scoped_to_prime_shape
+test_composer_state_prime_placeholder_requires_ghost_styling
 test_agent_state_prime_agent_quit_pane_is_dead
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
