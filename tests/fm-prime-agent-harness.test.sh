@@ -186,5 +186,77 @@ test_spawn_crewmate_launch_shape() {
   pass "prime-agent crewmate spawn loads its own extension and stamps its identity"
 }
 
+# --- composer ---------------------------------------------------------------
+#
+# prime-agent draws NO composer border: its editor renders a full-width
+# background surface and puts its own `> ` prompt prefix on it. Under the shared
+# bare-glyph safety rule that idle row would read `unknown` (a dead shell), and
+# fm-send accepts only an exact `empty` as proof a steer was submitted, so every
+# steer to a prime-agent crewmate would report delivery unconfirmed. These cases
+# drive the real tmux row classifier - the same entry point fm_tmux_composer_state
+# uses for a borderless pane - over rows built the way prime-agent renders them.
+
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$ROOT/bin/fm-tmux-lib.sh"
+
+ESC=$(printf '\033')
+PRIME_BG="$ESC[48;2;24;24;27m"
+PRIME_BG_OFF="$ESC[49m"
+PRIME_HINT_FG="$ESC[38;2;113;113;122m"
+PRIME_CURSOR="$ESC[7m $ESC[27m"
+
+# row_state <raw-row>: the borderless-pane verdict, with the busy-footer
+# shortcut off so the composer classification is what is under test.
+row_state() { fm_tmux_composer_row_state "$1" 0 0; }
+
+test_prime_agent_composer_proves_empty_and_pending() {
+  local out
+
+  out=$(row_state "$PRIME_BG > $PRIME_HINT_FG"'Try "refactor @<filepath>"'"$PRIME_BG_OFF")
+  [ "$out" = empty ] \
+    || fail "an idle prime-agent composer must prove empty so fm-send can confirm delivery (got '$out')"
+
+  out=$(row_state "$PRIME_BG > $PRIME_CURSOR$PRIME_BG_OFF")
+  [ "$out" = empty ] \
+    || fail "a hintless idle prime-agent composer must prove empty (got '$out')"
+
+  # The placeholder is registered as an idle pattern as well as ghost-stripped,
+  # so a theme that renders it too bright to strip still reads empty rather than
+  # pinning the composer at pending forever.
+  out=$(row_state "$PRIME_BG > $ESC[38;2;200;200;200m"'Try "explain how @<filepath> works"'"$PRIME_BG_OFF")
+  [ "$out" = empty ] \
+    || fail "a bright-themed prime-agent start hint must still read empty (got '$out')"
+
+  out=$(row_state "$PRIME_BG > hello steer$PRIME_CURSOR$PRIME_BG_OFF")
+  [ "$out" = pending ] \
+    || fail "unsubmitted text in a prime-agent composer must read pending (got '$out')"
+
+  pass "prime-agent's borderless composer proves empty when idle and pending when typed"
+}
+
+test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
+  local out
+
+  # The pane prime-agent leaves behind on exit: a plain shell prompt with no
+  # background surface. It must stay unknown - never a safe injection target.
+  out=$(row_state '> ')
+  [ "$out" = unknown ] \
+    || fail "a bare shell prompt with no composer surface must stay unknown (got '$out')"
+
+  out=$(row_state "$ESC[0m> ")
+  [ "$out" = unknown ] \
+    || fail "a styled but unfilled shell prompt row must stay unknown (got '$out')"
+
+  # A dead shell that happens to colour its prompt FOREGROUND is still a dead
+  # shell: only a background surface identifies the composer container.
+  out=$(row_state "$ESC[38;2;148;2;53m> $ESC[39m")
+  [ "$out" = unknown ] \
+    || fail "a foreground-coloured shell prompt must not be read as a composer surface (got '$out')"
+
+  pass "prime-agent's composer surface does not weaken the shared dead-shell rule"
+}
+
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
+test_prime_agent_composer_proves_empty_and_pending
+test_prime_agent_surface_does_not_weaken_the_dead_shell_rule

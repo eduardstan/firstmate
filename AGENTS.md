@@ -183,7 +183,11 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 ## 4. Harness and runtime dispatch
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
+<<<<<<< HEAD
 The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, and `cursor`, plus `muse` for crewmates and scouts only; never dispatch on an unverified adapter.
+=======
+The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `prime-agent`, `grok`, and `kimi`, plus `muse` and `cursor` for crewmates and scouts only; never dispatch on an unverified adapter.
+>>>>>>> 72a9f8b (no-mistakes(review): register prime-agent composer, control plane, and liveness)
 If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.

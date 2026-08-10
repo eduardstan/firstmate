@@ -463,6 +463,37 @@ fm_composer_idle_matches() {
   esac
 }
 
+# prime-agent's composer container (verified 2026-08-08, Prime Agent 0.7.1).
+# It draws no border at all: its editor renders a full-width BACKGROUND SURFACE
+# (theme `userMessageBg`, emitted as a truecolor or 256-colour SGR background
+# introducer `48;2`/`48;5`, colon form included) and puts its own `> ` prompt
+# prefix on the first surface row. Under the bare-glyph safety rule above that
+# idle composer would read `unknown` forever, so `fm-send` could never prove a
+# steer landed. The background surface IS the composer container here, the same
+# role a box border plays for claude and a separator pair plays for Pi under
+# herdr, so recognizing it structurally lets the caller pass bordered=1 without
+# weakening the rule: the dead shell this owner exists to protect against paints
+# no background run, so a bare `>` left behind after the agent exits still reads
+# `unknown`. A basic 40-47 background is deliberately NOT matched - a truecolor
+# component in the 40-47 range would make that indistinguishable from a
+# foreground run, and failing to recognize the surface degrades to `unknown`,
+# which is the safe direction.
+# fm_composer_prime_agent_idle_re: the five rotating start hints prime-agent
+# draws into an otherwise-empty composer (`START_HINTS`, dark truecolor
+# 38;2;113;113;122, luminance ~114). The shared ghost stripper already drops
+# them on an ANSI-capable capture, so this is the theme-independent backstop and
+# the only signal a plain-screen capture has.
+fm_composer_prime_agent_idle_re() {
+  printf '%s' '^Try "(refactor|fix bugs in|add tests for|explain how|improve performance in) @<filepath>( works)?"$'
+}
+
+fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-row>
+  local raw=$1 plain=$2 esc
+  case "$plain" in '>'|'> '*) ;; *) return 1 ;; esac
+  esc=$(printf '\033')
+  printf '%s' "$raw" | LC_ALL=C sed "s/${esc}\\[/&;/g" | LC_ALL=C grep -q ';48[;:]'
+}
+
 # fm_composer_classify_content: the single shared composer-content verdict.
 #   <bordered> 1 when <content> came from a genuine agent-composer container (a
 #              bordered composer box, an identity-proven separated composer, or
