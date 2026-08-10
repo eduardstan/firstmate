@@ -3210,7 +3210,7 @@ test_composer_state_prime_placeholder_requires_ghost_styling() {
 # when the probe is actually readable.
 test_agent_state_prime_agent_quit_pane_is_dead() {
   local dir log resp fb out case_id ps_bin
-  for case_id in quit-shell suspended-agent live-agent unreadable-probe unreadable-table other-harness; do
+  for case_id in quit-shell suspended-agent live-agent unreadable-probe malformed-foreground unreadable-table other-harness; do
     dir="$TMP_ROOT/agent-state-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
     ps_bin="$dir/ps"
     printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
@@ -3237,6 +3237,13 @@ test_agent_state_prime_agent_quit_pane_is_dead() {
       unreadable-probe)
         printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"working"}}}\n' > "$resp/2.out"
         printf '{"error":{"code":"internal"}}\n' > "$resp/3.out"
+        ;;
+      malformed-foreground)
+        # A foreground_processes list whose entries are not objects is a shape
+        # this probe cannot read at all, not evidence that the agent is gone.
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":42,"foreground_processes":["bash"]}}}\n' > "$resp/3.out"
+        printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p2","shell_pid":42,"foreground_processes":["bash"]}}}\n' > "$resp/4.out"
         ;;
       unreadable-table)
         # A process table that does not even hold the pane's own shell answers

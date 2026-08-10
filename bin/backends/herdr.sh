@@ -2668,7 +2668,7 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
 # of the composer set exactly as before. The liveness classifier above demotes
 # only on 1, so an unreadable probe can never make it close a live agent's pane.
 fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
-  local session=$1 pane=$2 info
+  local session=$1 pane=$2 info rc=0
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -2681,8 +2681,8 @@ fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
         ((.name // "") | split("/") | last) == "prime-agent"
         or (((.argv0 // .argv[0]) // "") | ltrimstr("-") | split("/") | last) == "prime-agent"
       )
-  ' >/dev/null 2>&1 || return 1
-  return 0
+  ' >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
 # fm_backend_herdr_pane_prime_agent_in_subtree: does the pane still HOST a

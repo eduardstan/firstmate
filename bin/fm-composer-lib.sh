@@ -1072,7 +1072,7 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_KIND=
     return 1
   fi
-  if [ "$FM_COMPOSER_CAP_PRIME" = 1 ] \
+  if [ "${FM_COMPOSER_CAP_PRIME:-0}" = 1 ] \
      && [ "$FM_COMPOSER_SCAN_SHELL_ROW" -gt "$generic" ]; then
     generic=$FM_COMPOSER_SCAN_SHELL_ROW
     FM_COMPOSER_SELECTED_KIND=prime
