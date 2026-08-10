@@ -474,9 +474,19 @@ fm_composer_idle_matches() {
 # herdr, so recognizing it structurally lets the caller pass bordered=1 without
 # weakening the rule: the dead shell this owner exists to protect against paints
 # no background run, so a bare `>` left behind after the agent exits still reads
-# `unknown`. A basic 40-47 background is deliberately NOT matched - a truecolor
-# component in the 40-47 range would make that indistinguishable from a
-# foreground run, and failing to recognize the surface degrades to `unknown`,
+# `unknown`.
+# The 48 has to be read as a PARAMETER, never as a substring: a foreground run
+# carries arbitrary colour components, so `38;2;48;120;200` and
+# `38;2;200;48;10` both contain a 48 that introduces nothing. The walk below
+# therefore skips an introducer's payload (38/48/58, both the `;` and the ITU
+# `:` form) exactly the way fm_composer_strip_ghost's skip_color_payload does,
+# and only a 48 standing in a real parameter position counts. Without that, a
+# dead shell whose prompt is merely coloured would be promoted to a composer
+# container and read `empty` - the precise verdict fm_pane_input_pending and
+# fm_tmux_submit_enter_core accept as proof a pane is safe to type into.
+# A basic 40-47 background is deliberately NOT matched: prime-agent's theme
+# emits the truecolor or 256-colour form, and keeping the promotion as narrow as
+# the verified evidence means an unrecognized surface degrades to `unknown`,
 # which is the safe direction.
 # fm_composer_prime_agent_idle_re: the five rotating start hints prime-agent
 # draws into an otherwise-empty composer (`START_HINTS`, dark truecolor
@@ -488,10 +498,37 @@ fm_composer_prime_agent_idle_re() {
 }
 
 fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-row>
-  local raw=$1 plain=$2 esc
+  local raw=$1 plain=$2 csi=$'\033[' rest seq params p i n
   case "$plain" in '>'|'> '*) ;; *) return 1 ;; esac
-  esc=$(printf '\033')
-  printf '%s' "$raw" | LC_ALL=C sed "s/${esc}\\[/&;/g" | LC_ALL=C grep -q ';48[;:]'
+  rest=$raw
+  while :; do
+    case "$rest" in *"$csi"*) rest=${rest#*"$csi"} ;; *) return 1 ;; esac
+    case "$rest" in *m*) seq=${rest%%m*} ;; *) return 1 ;; esac
+    case "$seq" in *[!0-9\;:]*) continue ;; esac
+    IFS=';' read -r -a params <<< "$seq" || true
+    i=0
+    n=${#params[@]}
+    while [ "$i" -lt "$n" ]; do
+      p=${params[i]}
+      case "$p" in
+        *:*)
+          case "${p%%:*}" in 48) return 0 ;; esac
+          i=$((i + 1))
+          continue
+          ;;
+        48) return 0 ;;
+        38|58)
+          case "${params[i + 1]-}" in
+            5) i=$((i + 3)) ;;
+            2) i=$((i + 5)) ;;
+            *) i=$((i + 2)) ;;
+          esac
+          continue
+          ;;
+      esac
+      i=$((i + 1))
+    done
+  done
 }
 
 # fm_composer_classify_content: the single shared composer-content verdict.

@@ -253,10 +253,55 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   [ "$out" = unknown ] \
     || fail "a foreground-coloured shell prompt must not be read as a composer surface (got '$out')"
 
+  # A foreground run carries arbitrary colour components, so 48 appears inside
+  # one as an ordinary red/green/blue value. Only a 48 in a real SGR PARAMETER
+  # position introduces a background, and reading it as a substring would
+  # promote any coloured dead-shell prompt to a safe injection target.
+  out=$(row_state "$ESC[38;2;48;120;200m> ")
+  [ "$out" = unknown ] \
+    || fail "a 48 inside a foreground colour payload must not read as a background surface (got '$out')"
+
+  out=$(row_state "$ESC[1;38;2;200;48;10m>")
+  [ "$out" = unknown ] \
+    || fail "a 48 in a later foreground colour component must not read as a background surface (got '$out')"
+
+  out=$(row_state "$ESC[38:2::48:120:200m> ")
+  [ "$out" = unknown ] \
+    || fail "a 48 inside a colon-form foreground colour must not read as a background surface (got '$out')"
+
+  # Basic 40-47 backgrounds stay outside the promotion: prime-agent's theme
+  # emits the truecolor or 256-colour form, so an unrecognized surface degrades
+  # to unknown rather than widening the rule past the verified evidence.
+  out=$(row_state "$ESC[44m> ")
+  [ "$out" = unknown ] \
+    || fail "a basic background colour is not prime-agent's verified surface (got '$out')"
+
   pass "prime-agent's composer surface does not weaken the shared dead-shell rule"
+}
+
+# The surface is identified from the SGR parameter list, not from one hard-coded
+# theme colour, so every form prime-agent's theme can emit for `userMessageBg`
+# has to land on the same verdict.
+test_prime_agent_surface_covers_every_background_form() {
+  local out
+
+  out=$(row_state "$ESC[48;5;235m> $PRIME_CURSOR$PRIME_BG_OFF")
+  [ "$out" = empty ] \
+    || fail "a 256-colour composer surface must prove empty (got '$out')"
+
+  out=$(row_state "$ESC[48:2::24:24:27m> $PRIME_CURSOR$PRIME_BG_OFF")
+  [ "$out" = empty ] \
+    || fail "a colon-form truecolor composer surface must prove empty (got '$out')"
+
+  out=$(row_state "$ESC[38;2;200;200;200;48;2;24;24;27m> $PRIME_CURSOR$PRIME_BG_OFF")
+  [ "$out" = empty ] \
+    || fail "a background introduced after a foreground run must prove empty (got '$out')"
+
+  pass "prime-agent's composer surface is recognized in every background SGR form"
 }
 
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_prime_agent_composer_proves_empty_and_pending
 test_prime_agent_surface_does_not_weaken_the_dead_shell_rule
+test_prime_agent_surface_covers_every_background_form
