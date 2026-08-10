@@ -493,6 +493,24 @@ test_opencode_threads_model_and_ignores_effort_axis() {
   pass "opencode receives --model and omits the unsupported effort axis"
 }
 
+test_pi_threads_provider_model_and_effort() {
+  local rec id out status launch
+  id=profile-pi-provider-z8p
+  rec=$(make_spawn_case profile-pi-provider pi "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --provider openai-codex --model openai-codex/gpt-5.6-sol --effort max)
+  status=$?
+  expect_code 0 "$status" "pi spawn with provider should succeed"
+  assert_contains "$(cat "$HOME_DIR/state/$id.meta")" "provider=openai-codex" \
+    "pi metadata did not record provider"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "pi --provider 'openai-codex' --model 'openai-codex/gpt-5.6-sol' --thinking 'max'" \
+    "pi launch did not thread provider before model and effort"
+  pass "pi receives the provider profile axis alongside model and effort"
+}
+
 test_pi_threads_model_and_max_effort() {
   local rec id out status launch
   id=profile-pi-z8
@@ -758,6 +776,7 @@ test_grok_threads_model_and_reasoning_effort
 test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
 test_opencode_threads_model_and_ignores_effort_axis
+test_pi_threads_provider_model_and_effort
 test_pi_threads_model_and_max_effort
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
