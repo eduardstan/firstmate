@@ -488,6 +488,10 @@ fm_composer_idle_matches() {
 # emits the truecolor or 256-colour form, and keeping the promotion as narrow as
 # the verified evidence means an unrecognized surface degrades to `unknown`,
 # which is the safe direction.
+# The background must also open BEFORE the glyph, because the verified shape is
+# a `> ` prompt drawn ON the surface. Accepting one anywhere on the row would
+# promote the opposite arrangement - a foreground-coloured shell prompt followed
+# by background-filled padding - which is a dead shell, not a composer.
 # fm_composer_prime_agent_idle_re: the five rotating start hints prime-agent
 # draws into an otherwise-empty composer (`START_HINTS`, dark truecolor
 # 38;2;113;113;122, luminance ~114). The shared ghost stripper already drops
@@ -500,7 +504,7 @@ fm_composer_prime_agent_idle_re() {
 fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-row>
   local raw=$1 plain=$2 csi=$'\033[' rest seq params p i n
   case "$plain" in '>'|'> '*) ;; *) return 1 ;; esac
-  rest=$raw
+  rest=${raw%%>*}
   while :; do
     case "$rest" in *"$csi"*) rest=${rest#*"$csi"} ;; *) return 1 ;; esac
     case "$rest" in *m*) seq=${rest%%m*} ;; *) return 1 ;; esac

@@ -276,6 +276,15 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   [ "$out" = unknown ] \
     || fail "a basic background colour is not prime-agent's verified surface (got '$out')"
 
+  # The verified shape is a `> ` prompt drawn ON the surface. The opposite
+  # arrangement - a foreground-coloured shell prompt with background-filled
+  # padding after it - is a dead shell, and promoting it would hand
+  # fm_pane_input_pending the exact proof it accepts before an escalation is
+  # typed into the pane.
+  out=$(row_state "$ESC[1;32m> $ESC[48;2;40;40;40m $ESC[0m")
+  [ "$out" = unknown ] \
+    || fail "a background opening AFTER the prompt glyph must not read as a composer surface (got '$out')"
+
   pass "prime-agent's composer surface does not weaken the shared dead-shell rule"
 }
 
