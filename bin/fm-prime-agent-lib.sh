@@ -50,7 +50,7 @@ fi
 # fails safe on one.
 fm_prime_agent_cli() {  # <arg>...
   local bound=${FM_PRIME_AGENT_CLI_TIMEOUT:-5}
-  case "$bound" in ''|*[!0-9]*|0) bound=5 ;; esac
+  case "$bound" in ''|*[!0-9]*|0*) bound=5 ;; esac
   if declare -F fm_run_timed >/dev/null 2>&1; then
     fm_run_timed "$bound" prime-agent "$@"
   else
