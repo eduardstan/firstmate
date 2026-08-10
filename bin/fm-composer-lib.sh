@@ -505,7 +505,7 @@ fm_composer_prime_agent_idle_re() {
 }
 
 fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-row>
-  local raw=$1 plain=$2 csi=$'\033[' rest seq params p i n open=0
+  local raw=$1 plain=$2 csi=$'\033[' rest seq params p next i n open=0
   case "$plain" in '>'|'> '*) ;; *) return 1 ;; esac
   rest=${raw%%>*}
   while :; do
@@ -520,14 +520,23 @@ fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-ro
       p=${params[i]}
       case "$p" in
         *:*)
-          case "${p%%:*}" in 48) open=1 ;; esac
+          p=${p%%:*}
+          case "$p" in ''|*[!0-9]*) p=-1 ;; *) p=$((10#$p)) ;; esac
+          [ "$p" != 48 ] || open=1
           i=$((i + 1))
           continue
           ;;
-        0|''|49) open=0 ;;
+        *[!0-9]*) i=$((i + 1)); continue ;;
+        '') p=0 ;;
+        *) p=$((10#$p)) ;;
+      esac
+      case "$p" in
+        0|49) open=0 ;;
         38|48|58)
           [ "$p" != 48 ] || open=1
-          case "${params[i + 1]-}" in
+          next=${params[i + 1]-}
+          case "$next" in ''|*[!0-9]*) next=-1 ;; *) next=$((10#$next)) ;; esac
+          case "$next" in
             5) i=$((i + 3)) ;;
             2) i=$((i + 5)) ;;
             *) i=$((i + 2)) ;;

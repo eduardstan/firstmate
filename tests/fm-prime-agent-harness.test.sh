@@ -296,6 +296,28 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   [ "$out" = unknown ] \
     || fail "a background closed by SGR 49 before the glyph must not read as a composer surface (got '$out')"
 
+  # Terminals read SGR parameters numerically, and zero padding is ordinary in
+  # real prompts (Debian's stock .bashrc PS1 emits ESC[00m), so a padded
+  # parameter must carry the same meaning as its bare form.
+  out=$(row_state "$ESC[48;2;40;40;40m $ESC[00m> ")
+  [ "$out" = unknown ] \
+    || fail "a zero-padded SGR 0 must close the background like a bare 0 (got '$out')"
+
+  out=$(row_state "$ESC[48;5;236m $ESC[049m> ")
+  [ "$out" = unknown ] \
+    || fail "a zero-padded SGR 49 must close the background like a bare 49 (got '$out')"
+
+  out=$(row_state "$ESC[48;2;40;40;40m $ESC[039;049m> ")
+  [ "$out" = unknown ] \
+    || fail "a zero-padded 49 after a padded 39 must close the background (got '$out')"
+
+  # A padded foreground introducer must still consume its own payload, or the
+  # 48 inside it is walked as a parameter and opens a background that no
+  # terminal ever painted.
+  out=$(row_state "$ESC[038;2;48;120;200m> ")
+  [ "$out" = unknown ] \
+    || fail "a zero-padded foreground introducer must skip its colour payload (got '$out')"
+
   pass "prime-agent's composer surface does not weaken the shared dead-shell rule"
 }
 
