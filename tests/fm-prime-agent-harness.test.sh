@@ -285,6 +285,17 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   [ "$out" = unknown ] \
     || fail "a background opening AFTER the prompt glyph must not read as a composer surface (got '$out')"
 
+  # A background that is already CLOSED at the glyph is not a surface the glyph
+  # sits on either: a shell prompt that paints a coloured segment, resets, and
+  # then draws `>` is still a dead shell.
+  out=$(row_state "$ESC[48;2;40;40;40m $ESC[0m> ")
+  [ "$out" = unknown ] \
+    || fail "a background closed by SGR 0 before the glyph must not read as a composer surface (got '$out')"
+
+  out=$(row_state "$ESC[48;5;236m $ESC[49m> ")
+  [ "$out" = unknown ] \
+    || fail "a background closed by SGR 49 before the glyph must not read as a composer surface (got '$out')"
+
   pass "prime-agent's composer surface does not weaken the shared dead-shell rule"
 }
 

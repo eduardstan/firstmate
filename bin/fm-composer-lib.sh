@@ -488,10 +488,13 @@ fm_composer_idle_matches() {
 # emits the truecolor or 256-colour form, and keeping the promotion as narrow as
 # the verified evidence means an unrecognized surface degrades to `unknown`,
 # which is the safe direction.
-# The background must also open BEFORE the glyph, because the verified shape is
-# a `> ` prompt drawn ON the surface. Accepting one anywhere on the row would
-# promote the opposite arrangement - a foreground-coloured shell prompt followed
-# by background-filled padding - which is a dead shell, not a composer.
+# The background must also still be OPEN at the glyph, because the verified
+# shape is a `> ` prompt drawn ON the surface. Accepting one anywhere on the row
+# would promote the opposite arrangement - a foreground-coloured shell prompt
+# followed by background-filled padding - and accepting one that a later SGR 0
+# or SGR 49 already closed would promote a shell prompt that merely painted a
+# coloured segment earlier on the line. Both are dead shells, not composers, so
+# the walk carries the background state rather than stopping at the first 48.
 # fm_composer_prime_agent_idle_re: the five rotating start hints prime-agent
 # draws into an otherwise-empty composer (`START_HINTS`, dark truecolor
 # 38;2;113;113;122, luminance ~114). The shared ghost stripper already drops
@@ -502,13 +505,14 @@ fm_composer_prime_agent_idle_re() {
 }
 
 fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-row>
-  local raw=$1 plain=$2 csi=$'\033[' rest seq params p i n
+  local raw=$1 plain=$2 csi=$'\033[' rest seq params p i n open=0
   case "$plain" in '>'|'> '*) ;; *) return 1 ;; esac
   rest=${raw%%>*}
   while :; do
-    case "$rest" in *"$csi"*) rest=${rest#*"$csi"} ;; *) return 1 ;; esac
-    case "$rest" in *m*) seq=${rest%%m*} ;; *) return 1 ;; esac
+    case "$rest" in *"$csi"*) rest=${rest#*"$csi"} ;; *) break ;; esac
+    case "$rest" in *m*) seq=${rest%%m*} ;; *) break ;; esac
     case "$seq" in *[!0-9\;:]*) continue ;; esac
+    [ -n "$seq" ] || { open=0; continue; }
     IFS=';' read -r -a params <<< "$seq" || true
     i=0
     n=${#params[@]}
@@ -516,12 +520,13 @@ fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-ro
       p=${params[i]}
       case "$p" in
         *:*)
-          case "${p%%:*}" in 48) return 0 ;; esac
+          case "${p%%:*}" in 48) open=1 ;; esac
           i=$((i + 1))
           continue
           ;;
-        48) return 0 ;;
-        38|58)
+        0|''|49) open=0 ;;
+        38|48|58)
+          [ "$p" != 48 ] || open=1
           case "${params[i + 1]-}" in
             5) i=$((i + 3)) ;;
             2) i=$((i + 5)) ;;
@@ -533,6 +538,7 @@ fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-ro
       i=$((i + 1))
     done
   done
+  [ "$open" = 1 ]
 }
 
 # fm_composer_classify_content: the single shared composer-content verdict.
