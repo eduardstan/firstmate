@@ -161,7 +161,8 @@ test_spawn_crewmate_launch_shape() {
     --autonomous-gate 'bin/fm-lint.sh' \
     --autonomous-gate 'tests/fm-prime-agent-harness.test.sh' \
     --autonomous-max-continuations 30 --autonomous-max-turns 120 \
-    --autonomous-max-tokens 600000 --autonomous-timeout-ms 18000000) && status=0 || status=$?
+    --autonomous-max-tokens 600000 --autonomous-timeout-ms 18000000 \
+    --autonomous-gate-retries 7 --autonomous-gate-timeout-ms 1200000) && status=0 || status=$?
   expect_code 0 "$status" "prime-agent scout spawn failed: $out"
 
   launch=$(grep -F 'prime-agent' "$log" | tail -1)
@@ -187,7 +188,7 @@ test_spawn_crewmate_launch_shape() {
   assert_contains "$launch" "--thinking 'low'" "effort did not map onto --thinking"
   assert_contains "$launch" "--autonomous --autonomous-gate 'bin/fm-lint.sh' --autonomous-gate 'tests/fm-prime-agent-harness.test.sh'" \
     "repeatable gates did not imply autonomous mode in order"
-  assert_contains "$launch" "--autonomous-max-continuations '30' --autonomous-max-turns '120' --autonomous-max-tokens '600000' --autonomous-timeout-ms '18000000'" \
+  assert_contains "$launch" "--autonomous-max-continuations '30' --autonomous-max-turns '120' --autonomous-max-tokens '600000' --autonomous-timeout-ms '18000000' --autonomous-gate-retries '7' --autonomous-gate-timeout-ms '1200000'" \
     "explicit autonomous limits did not reach prime-agent"
 
   assert_grep 'harness=prime-agent' "$home/state/$id.meta" "meta does not record the harness"
@@ -198,6 +199,8 @@ test_spawn_crewmate_launch_shape() {
   assert_grep 'autonomous_max_turns=120' "$home/state/$id.meta" "meta does not record the turn limit"
   assert_grep 'autonomous_max_tokens=600000' "$home/state/$id.meta" "meta does not record the token limit"
   assert_grep 'autonomous_timeout_ms=18000000' "$home/state/$id.meta" "meta does not record the wall-clock limit"
+  assert_grep 'autonomous_gate_retries=7' "$home/state/$id.meta" "meta does not record gate retries"
+  assert_grep 'autonomous_gate_timeout_ms=1200000' "$home/state/$id.meta" "meta does not record gate timeout"
   # Deliberately NOT armed: prime-agent's own built-in Herdr reporter already
   # publishes pane state, so there is no firstmate writer that could ever clear
   # a seeded busy record.
@@ -223,13 +226,35 @@ test_gated_spawn_supplies_long_horizon_defaults() {
   assert_contains "$launch" "--autonomous-max-turns '96'" "gated launch inherited Prime's small turn default"
   assert_contains "$launch" "--autonomous-max-tokens '500000'" "gated launch inherited Prime's small token default"
   assert_contains "$launch" "--autonomous-timeout-ms '14400000'" "gated launch inherited Prime's short timeout default"
+  assert_contains "$launch" "--autonomous-gate-retries '5'" "gated launch did not receive Firstmate's retry default"
+  assert_contains "$launch" "--autonomous-gate-timeout-ms '900000'" "gated launch did not receive Firstmate's gate timeout default"
   meta="$home/state/$id.meta"
   assert_grep 'autonomous_max_continuations=24' "$meta" "meta does not record the resolved continuation default"
   assert_grep 'autonomous_max_turns=96' "$meta" "meta does not record the resolved turn default"
   assert_grep 'autonomous_max_tokens=500000' "$meta" "meta does not record the resolved token default"
   assert_grep 'autonomous_timeout_ms=14400000' "$meta" "meta does not record the resolved timeout default"
+  assert_grep 'autonomous_gate_retries=5' "$meta" "meta does not record the resolved retry default"
+  assert_grep 'autonomous_gate_timeout_ms=900000' "$meta" "meta does not record the resolved gate timeout default"
 
   pass "a gated prime-agent spawn receives explicit long-horizon limits"
+}
+
+test_gate_limits_require_positive_integers() {
+  local case_dir home proj wt fakebin id log out status bad flag
+  IFS='|' read -r case_dir home proj wt fakebin id < <(make_case invalid-gate-limits)
+  log="$case_dir/launch.log"
+  : > "$log"
+  for flag in --autonomous-gate-retries --autonomous-gate-timeout-ms; do
+    for bad in 0 -1 nope; do
+      out=$(run_spawn "$home" "$proj" "$wt" "$fakebin" "$log" \
+        "$id" "$proj" --scout --harness prime-agent --autonomous-gate 'bin/fm-lint.sh' \
+        "$flag" "$bad") && status=0 || status=$?
+      [ "$status" -ne 0 ] || fail "$flag accepted invalid value '$bad'"
+      assert_contains "$out" "$flag requires a positive integer" \
+        "$flag reported the wrong validation error for '$bad'"
+    done
+  done
+  pass "gate retry and timeout limits require positive integers"
 }
 
 test_provider_reaches_pi_which_also_exposes_the_axis() {
@@ -290,7 +315,8 @@ test_help_lists_prime_launch_axes() {
   local out
   out=$("$SPAWN" --help)
   for flag in --provider --autonomous-gate --autonomous-max-continuations \
-    --autonomous-max-turns --autonomous-max-tokens --autonomous-timeout-ms; do
+    --autonomous-max-turns --autonomous-max-tokens --autonomous-timeout-ms \
+    --autonomous-gate-retries --autonomous-gate-timeout-ms; do
     assert_contains "$out" "$flag" "spawn help omitted $flag"
   done
   pass "spawn help documents the provider and autonomous gate axes"
@@ -645,6 +671,7 @@ SH
 test_detection_splits_the_pi_family
 test_spawn_crewmate_launch_shape
 test_gated_spawn_supplies_long_horizon_defaults
+test_gate_limits_require_positive_integers
 test_provider_reaches_pi_which_also_exposes_the_axis
 test_provider_is_recorded_but_omitted_for_an_unsupported_harness
 test_no_mistakes_refuses_duplicate_gate_ownership

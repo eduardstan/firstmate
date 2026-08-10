@@ -41,10 +41,12 @@
 #   Prime Agent completion gates are configured with repeatable
 #   --autonomous-gate <command> and optional positive integer limits:
 #   --autonomous-max-continuations, --autonomous-max-turns,
-#   --autonomous-max-tokens, and --autonomous-timeout-ms. At least one gate
-#   implies --autonomous. Omitted limits on a gated run resolve to 24
-#   continuations, 96 assistant turns, 500000 tokens, and 14400000 ms (four
-#   hours), respectively. These options are recorded for every harness but
+#   --autonomous-max-tokens, --autonomous-timeout-ms, --autonomous-gate-retries,
+#   and --autonomous-gate-timeout-ms. At least one gate implies --autonomous.
+#   Omitted limits on a gated run resolve to 24 continuations, 96 assistant turns,
+#   500000 tokens, 14400000 ms (four hours), 5 retries, and 900000 ms (15 minutes),
+#   respectively. Firstmate's retry and timeout defaults favor resilient long-horizon
+#   gates over Prime Agent's shorter stock values. These options are recorded for every harness but
 #   emitted only to prime-agent. Gate commands must be non-empty single-line
 #   strings so the line-oriented task metadata can reproduce them exactly.
 #   Autonomous gates are refused for secondmates and for ship tasks whose
@@ -276,6 +278,8 @@ AUTONOMOUS_MAX_CONTINUATIONS=
 AUTONOMOUS_MAX_TURNS=
 AUTONOMOUS_MAX_TOKENS=
 AUTONOMOUS_TIMEOUT_MS=
+AUTONOMOUS_GATE_RETRIES=
+AUTONOMOUS_GATE_TIMEOUT_MS=
 BACKEND_ARG=
 MODE=
 YOLO=
@@ -289,6 +293,8 @@ AUTONOMOUS_MAX_CONTINUATIONS_SET=0
 AUTONOMOUS_MAX_TURNS_SET=0
 AUTONOMOUS_MAX_TOKENS_SET=0
 AUTONOMOUS_TIMEOUT_MS_SET=0
+AUTONOMOUS_GATE_RETRIES_SET=0
+AUTONOMOUS_GATE_TIMEOUT_MS_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
@@ -311,6 +317,8 @@ for a in "$@"; do
       autonomous-max-turns) AUTONOMOUS_MAX_TURNS=$a; AUTONOMOUS_MAX_TURNS_SET=1 ;;
       autonomous-max-tokens) AUTONOMOUS_MAX_TOKENS=$a; AUTONOMOUS_MAX_TOKENS_SET=1 ;;
       autonomous-timeout-ms) AUTONOMOUS_TIMEOUT_MS=$a; AUTONOMOUS_TIMEOUT_MS_SET=1 ;;
+      autonomous-gate-retries) AUTONOMOUS_GATE_RETRIES=$a; AUTONOMOUS_GATE_RETRIES_SET=1 ;;
+      autonomous-gate-timeout-ms) AUTONOMOUS_GATE_TIMEOUT_MS=$a; AUTONOMOUS_GATE_TIMEOUT_MS_SET=1 ;;
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
@@ -342,6 +350,10 @@ for a in "$@"; do
     --autonomous-max-tokens=*) AUTONOMOUS_MAX_TOKENS=${a#--autonomous-max-tokens=}; AUTONOMOUS_MAX_TOKENS_SET=1 ;;
     --autonomous-timeout-ms) want_value=autonomous-timeout-ms ;;
     --autonomous-timeout-ms=*) AUTONOMOUS_TIMEOUT_MS=${a#--autonomous-timeout-ms=}; AUTONOMOUS_TIMEOUT_MS_SET=1 ;;
+    --autonomous-gate-retries) want_value=autonomous-gate-retries ;;
+    --autonomous-gate-retries=*) AUTONOMOUS_GATE_RETRIES=${a#--autonomous-gate-retries=}; AUTONOMOUS_GATE_RETRIES_SET=1 ;;
+    --autonomous-gate-timeout-ms) want_value=autonomous-gate-timeout-ms ;;
+    --autonomous-gate-timeout-ms=*) AUTONOMOUS_GATE_TIMEOUT_MS=${a#--autonomous-gate-timeout-ms=}; AUTONOMOUS_GATE_TIMEOUT_MS_SET=1 ;;
     --backend) want_value=backend ;;
     --backend=*) BACKEND_ARG=${a#--backend=}; BACKEND_SET=1 ;;
     --mode) want_value=mode ;;
@@ -368,12 +380,14 @@ for gate in "${AUTONOMOUS_GATES[@]+"${AUTONOMOUS_GATES[@]}"}"; do
     *$'\n'*|*$'\r'*) echo "error: --autonomous-gate must be a single-line command so task metadata can reproduce it exactly" >&2; exit 1 ;;
   esac
 done
-for limit_axis in autonomous-max-continuations autonomous-max-turns autonomous-max-tokens autonomous-timeout-ms; do
+for limit_axis in autonomous-max-continuations autonomous-max-turns autonomous-max-tokens autonomous-timeout-ms autonomous-gate-retries autonomous-gate-timeout-ms; do
   case "$limit_axis" in
     autonomous-max-continuations) limit_value=$AUTONOMOUS_MAX_CONTINUATIONS ;;
     autonomous-max-turns) limit_value=$AUTONOMOUS_MAX_TURNS ;;
     autonomous-max-tokens) limit_value=$AUTONOMOUS_MAX_TOKENS ;;
     autonomous-timeout-ms) limit_value=$AUTONOMOUS_TIMEOUT_MS ;;
+     autonomous-gate-retries) limit_value=$AUTONOMOUS_GATE_RETRIES ;;
+     autonomous-gate-timeout-ms) limit_value=$AUTONOMOUS_GATE_TIMEOUT_MS ;;
   esac
   case "$limit_value" in
     '') ;;
@@ -457,6 +471,8 @@ if [ "$RELAUNCH" -eq 0 ] && [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
   : "${AUTONOMOUS_MAX_TURNS:=96}"
   : "${AUTONOMOUS_MAX_TOKENS:=500000}"
   : "${AUTONOMOUS_TIMEOUT_MS:=14400000}"
+  : "${AUTONOMOUS_GATE_RETRIES:=5}"
+  : "${AUTONOMOUS_GATE_TIMEOUT_MS:=900000}"
 fi
 
 spawn_remote_secondmate() {
@@ -687,6 +703,8 @@ spawn_remote_secondmate() {
     echo "autonomous_max_turns=${AUTONOMOUS_MAX_TURNS:-default}"
     echo "autonomous_max_tokens=${AUTONOMOUS_MAX_TOKENS:-default}"
     echo "autonomous_timeout_ms=${AUTONOMOUS_TIMEOUT_MS:-default}"
+     echo "autonomous_gate_retries=${AUTONOMOUS_GATE_RETRIES:-default}"
+     echo "autonomous_gate_timeout_ms=${AUTONOMOUS_GATE_TIMEOUT_MS:-default}"
     echo "home=$home"
     echo "projects=$(secondmate_registry_field "$DATA/secondmates.md" "$id" projects)"
     echo "remote_host=$host"
@@ -830,6 +848,8 @@ spawn_abort_cleanup() {
             echo "autonomous_max_turns=${AUTONOMOUS_MAX_TURNS:-default}"
             echo "autonomous_max_tokens=${AUTONOMOUS_MAX_TOKENS:-default}"
             echo "autonomous_timeout_ms=${AUTONOMOUS_TIMEOUT_MS:-default}"
+     echo "autonomous_gate_retries=${AUTONOMOUS_GATE_RETRIES:-default}"
+     echo "autonomous_gate_timeout_ms=${AUTONOMOUS_GATE_TIMEOUT_MS:-default}"
             echo "backend=orca"
             echo "orca_worktree_id=$ORCA_WORKTREE_ID"
             [ -z "${ORCA_TERMINAL:-}" ] || echo "terminal=$ORCA_TERMINAL"
@@ -946,6 +966,8 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ -z "$AUTONOMOUS_MAX_TURNS" ] || shared_args+=(--autonomous-max-turns "$AUTONOMOUS_MAX_TURNS")
   [ -z "$AUTONOMOUS_MAX_TOKENS" ] || shared_args+=(--autonomous-max-tokens "$AUTONOMOUS_MAX_TOKENS")
   [ -z "$AUTONOMOUS_TIMEOUT_MS" ] || shared_args+=(--autonomous-timeout-ms "$AUTONOMOUS_TIMEOUT_MS")
+  [ -z "$AUTONOMOUS_GATE_RETRIES" ] || shared_args+=(--autonomous-gate-retries "$AUTONOMOUS_GATE_RETRIES")
+  [ -z "$AUTONOMOUS_GATE_TIMEOUT_MS" ] || shared_args+=(--autonomous-gate-timeout-ms "$AUTONOMOUS_GATE_TIMEOUT_MS")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
   # One delivery contract applies to every pair in a batch, exactly like the shared
   # harness. Each pair still re-validates it against its own brief, so a batch
@@ -1185,6 +1207,14 @@ if [ "$RELAUNCH" -eq 1 ]; then
     AUTONOMOUS_TIMEOUT_MS=$(fm_meta_get "$RELAUNCH_META" autonomous_timeout_ms)
     [ "$AUTONOMOUS_TIMEOUT_MS" != default ] || AUTONOMOUS_TIMEOUT_MS=
   fi
+  if [ "$AUTONOMOUS_GATE_RETRIES_SET" -eq 0 ]; then
+    AUTONOMOUS_GATE_RETRIES=$(fm_meta_get "$RELAUNCH_META" autonomous_gate_retries)
+    [ "$AUTONOMOUS_GATE_RETRIES" != default ] || AUTONOMOUS_GATE_RETRIES=
+  fi
+  if [ "$AUTONOMOUS_GATE_TIMEOUT_MS_SET" -eq 0 ]; then
+    AUTONOMOUS_GATE_TIMEOUT_MS=$(fm_meta_get "$RELAUNCH_META" autonomous_gate_timeout_ms)
+    [ "$AUTONOMOUS_GATE_TIMEOUT_MS" != default ] || AUTONOMOUS_GATE_TIMEOUT_MS=
+  fi
 fi
 
 if [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
@@ -1200,6 +1230,8 @@ if [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
   : "${AUTONOMOUS_MAX_TURNS:=96}"
   : "${AUTONOMOUS_MAX_TOKENS:=500000}"
   : "${AUTONOMOUS_TIMEOUT_MS:=14400000}"
+  : "${AUTONOMOUS_GATE_RETRIES:=5}"
+  : "${AUTONOMOUS_GATE_TIMEOUT_MS:=900000}"
 fi
 
 # The verified launch command per adapter. The knowledge half of each adapter
@@ -1502,6 +1534,8 @@ autonomous_flags_for_harness() {
   [ -z "$AUTONOMOUS_MAX_TURNS" ] || printf -- '--autonomous-max-turns %s ' "$(shell_quote "$AUTONOMOUS_MAX_TURNS")"
   [ -z "$AUTONOMOUS_MAX_TOKENS" ] || printf -- '--autonomous-max-tokens %s ' "$(shell_quote "$AUTONOMOUS_MAX_TOKENS")"
   [ -z "$AUTONOMOUS_TIMEOUT_MS" ] || printf -- '--autonomous-timeout-ms %s ' "$(shell_quote "$AUTONOMOUS_TIMEOUT_MS")"
+  [ -z "$AUTONOMOUS_GATE_RETRIES" ] || printf -- '--autonomous-gate-retries %s ' "$(shell_quote "$AUTONOMOUS_GATE_RETRIES")"
+  [ -z "$AUTONOMOUS_GATE_TIMEOUT_MS" ] || printf -- '--autonomous-gate-timeout-ms %s ' "$(shell_quote "$AUTONOMOUS_GATE_TIMEOUT_MS")"
 }
 
 effort_flag_for_harness() {
@@ -2734,7 +2768,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp provider model effort autonomous_gate autonomous_max_continuations autonomous_max_turns autonomous_max_tokens autonomous_timeout_ms busy_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp provider model effort autonomous_gate autonomous_max_continuations autonomous_max_turns autonomous_max_tokens autonomous_timeout_ms autonomous_gate_retries autonomous_gate_timeout_ms busy_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2760,6 +2794,8 @@ preserve_relaunch_meta() {
   echo "autonomous_max_turns=${AUTONOMOUS_MAX_TURNS:-default}"
   echo "autonomous_max_tokens=${AUTONOMOUS_MAX_TOKENS:-default}"
   echo "autonomous_timeout_ms=${AUTONOMOUS_TIMEOUT_MS:-default}"
+     echo "autonomous_gate_retries=${AUTONOMOUS_GATE_RETRIES:-default}"
+     echo "autonomous_gate_timeout_ms=${AUTONOMOUS_GATE_TIMEOUT_MS:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
