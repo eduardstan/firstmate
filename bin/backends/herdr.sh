@@ -1875,7 +1875,11 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              agent get -> agent_not_found - docs/herdr-backend.md "ID
 #              stability across a server restart"), and what a future
 #              `resume_agents_on_restore = false` restore would produce too
-#              (a plain shell, never an agent).
+#              (a plain shell, never an agent). Also reported for a pane that
+#              IS registered as prime-agent when both probes below positively
+#              confirm the agent is gone (foreground exit 1 AND subtree exit
+#              1), since that harness's registration outlives its own `/quit`;
+#              either probe reading unusable (exit 2) keeps `live`.
 #   live     - `agent get` succeeds and reports a real agent_status (working,
 #              idle, done, or blocked - any registered value). An idle or
 #              blocked agent is still a genuine, still-registered agent, not
