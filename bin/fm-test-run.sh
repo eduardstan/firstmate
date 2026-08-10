@@ -932,6 +932,15 @@ families_for_changed_path() {
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
+    bin/fm-prime-agent-lib.sh)
+      # Retirement of prime-agent's detached daemon sessions: its own unit
+      # suite (pure-contract-unit), the teardown that sources it and calls it
+      # at every worktree release (pr-forge), and the fake-root fixture that
+      # materializes it for that teardown (session-bootstrap).
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' pr-forge
+      printf '%s\n' session-bootstrap
+      ;;
     bin/fm-nm-run-lib.sh)
       # Shared no-mistakes run-attribution primitives, sourced by both
       # bin/fm-crew-state.sh (pure-contract-unit) and bin/fm-teardown.sh's

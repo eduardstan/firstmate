@@ -16,7 +16,9 @@
 # being SIGTERMed out from under its own lease and journals.
 #
 # Selection is by the session's recorded cwd: the task worktree or secondmate
-# home itself, or a path inside it. Deliberately never `prime-agent shutdown`,
+# home itself, or a path inside it, matched against both the path as given and
+# its physical form because a session under a symlinked prefix records either.
+# Deliberately never `prime-agent shutdown`,
 # which stops the captain's own sessions and every other home's workers too -
 # the daemon is fleet-wide, one supervisor per user.
 #
@@ -58,13 +60,14 @@ fm_prime_agent_cli() {  # <arg>...
   fi
 }
 
-fm_prime_agent_session_ids_under() {  # <resolved-directory>
-  local resolved=$1 listing
+fm_prime_agent_session_ids_under() {  # <directory> [physical-directory]
+  local dir=$1 phys=${2:-$1} listing
   listing=$(fm_prime_agent_cli list --json 2>/dev/null) || return 2
   printf '%s\n' "$listing" \
-    | jq -r --arg dir "$resolved" '
+    | jq -r --arg dir "$dir" --arg phys "$phys" '
+        def under($d): $d != "" and (. == $d or startswith($d + "/"));
         if (.sessions | type) == "array" then .sessions else error("sessions are missing") end
-        | map(select((.cwd // "") == $dir or ((.cwd // "") | startswith($dir + "/"))))
+        | map(select((.cwd // "") | (under($dir) or under($phys))))
         | .[]
         | if (((.id // null) | type) == "string" and (.id | length) > 0) then .id else error("session id is missing") end' 2>/dev/null
 }
@@ -78,9 +81,9 @@ fm_prime_agent_stop_sessions_under() {  # <directory>
   command -v prime-agent >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
   resolved=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || resolved=$dir
-  ids=$(fm_prime_agent_session_ids_under "$resolved") || return 0
+  ids=$(fm_prime_agent_session_ids_under "$dir" "$resolved") || return 0
   while IFS= read -r id; do
-    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    case "$id" in ''|-*|*[!A-Za-z0-9._-]*) continue ;; esac
     echo "prime-agent: stopping detached session $id bound to $resolved" >&2
     fm_prime_agent_cli stop "$id" >/dev/null 2>&1 || true
   done <<EOF
