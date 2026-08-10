@@ -200,10 +200,10 @@ test_spawn_crewmate_launch_shape() {
 . "$ROOT/bin/fm-tmux-lib.sh"
 
 ESC=$(printf '\033')
-PRIME_BG="$ESC[48;2;24;24;27m"
-PRIME_BG_OFF="$ESC[49m"
-PRIME_HINT_FG="$ESC[38;2;113;113;122m"
-PRIME_CURSOR="$ESC[7m $ESC[27m"
+PRIME_BG="${ESC}[48;2;24;24;27m"
+PRIME_BG_OFF="${ESC}[49m"
+PRIME_HINT_FG="${ESC}[38;2;113;113;122m"
+PRIME_CURSOR="${ESC}[7m ${ESC}[27m"
 
 # row_state <raw-row>: the borderless-pane verdict, with the busy-footer
 # shortcut off so the composer classification is what is under test.
@@ -223,7 +223,7 @@ test_prime_agent_composer_proves_empty_and_pending() {
   # The placeholder is registered as an idle pattern as well as ghost-stripped,
   # so a theme that renders it too bright to strip still reads empty rather than
   # pinning the composer at pending forever.
-  out=$(row_state "$PRIME_BG > $ESC[38;2;200;200;200m"'Try "explain how @<filepath> works"'"$PRIME_BG_OFF")
+  out=$(row_state "$PRIME_BG > ${ESC}[38;2;200;200;200m"'Try "explain how @<filepath> works"'"$PRIME_BG_OFF")
   [ "$out" = empty ] \
     || fail "a bright-themed prime-agent start hint must still read empty (got '$out')"
 
@@ -243,13 +243,13 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   [ "$out" = unknown ] \
     || fail "a bare shell prompt with no composer surface must stay unknown (got '$out')"
 
-  out=$(row_state "$ESC[0m> ")
+  out=$(row_state "${ESC}[0m> ")
   [ "$out" = unknown ] \
     || fail "a styled but unfilled shell prompt row must stay unknown (got '$out')"
 
   # A dead shell that happens to colour its prompt FOREGROUND is still a dead
   # shell: only a background surface identifies the composer container.
-  out=$(row_state "$ESC[38;2;148;2;53m> $ESC[39m")
+  out=$(row_state "${ESC}[38;2;148;2;53m> ${ESC}[39m")
   [ "$out" = unknown ] \
     || fail "a foreground-coloured shell prompt must not be read as a composer surface (got '$out')"
 
@@ -257,22 +257,22 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   # one as an ordinary red/green/blue value. Only a 48 in a real SGR PARAMETER
   # position introduces a background, and reading it as a substring would
   # promote any coloured dead-shell prompt to a safe injection target.
-  out=$(row_state "$ESC[38;2;48;120;200m> ")
+  out=$(row_state "${ESC}[38;2;48;120;200m> ")
   [ "$out" = unknown ] \
     || fail "a 48 inside a foreground colour payload must not read as a background surface (got '$out')"
 
-  out=$(row_state "$ESC[1;38;2;200;48;10m>")
+  out=$(row_state "${ESC}[1;38;2;200;48;10m>")
   [ "$out" = unknown ] \
     || fail "a 48 in a later foreground colour component must not read as a background surface (got '$out')"
 
-  out=$(row_state "$ESC[38:2::48:120:200m> ")
+  out=$(row_state "${ESC}[38:2::48:120:200m> ")
   [ "$out" = unknown ] \
     || fail "a 48 inside a colon-form foreground colour must not read as a background surface (got '$out')"
 
   # Basic 40-47 backgrounds stay outside the promotion: prime-agent's theme
   # emits the truecolor or 256-colour form, so an unrecognized surface degrades
   # to unknown rather than widening the rule past the verified evidence.
-  out=$(row_state "$ESC[44m> ")
+  out=$(row_state "${ESC}[44m> ")
   [ "$out" = unknown ] \
     || fail "a basic background colour is not prime-agent's verified surface (got '$out')"
 
@@ -281,40 +281,40 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
   # padding after it - is a dead shell, and promoting it would hand
   # fm_pane_input_pending the exact proof it accepts before an escalation is
   # typed into the pane.
-  out=$(row_state "$ESC[1;32m> $ESC[48;2;40;40;40m $ESC[0m")
+  out=$(row_state "${ESC}[1;32m> ${ESC}[48;2;40;40;40m ${ESC}[0m")
   [ "$out" = unknown ] \
     || fail "a background opening AFTER the prompt glyph must not read as a composer surface (got '$out')"
 
   # A background that is already CLOSED at the glyph is not a surface the glyph
   # sits on either: a shell prompt that paints a coloured segment, resets, and
   # then draws `>` is still a dead shell.
-  out=$(row_state "$ESC[48;2;40;40;40m $ESC[0m> ")
+  out=$(row_state "${ESC}[48;2;40;40;40m ${ESC}[0m> ")
   [ "$out" = unknown ] \
     || fail "a background closed by SGR 0 before the glyph must not read as a composer surface (got '$out')"
 
-  out=$(row_state "$ESC[48;5;236m $ESC[49m> ")
+  out=$(row_state "${ESC}[48;5;236m ${ESC}[49m> ")
   [ "$out" = unknown ] \
     || fail "a background closed by SGR 49 before the glyph must not read as a composer surface (got '$out')"
 
   # Terminals read SGR parameters numerically, and zero padding is ordinary in
   # real prompts (Debian's stock .bashrc PS1 emits ESC[00m), so a padded
   # parameter must carry the same meaning as its bare form.
-  out=$(row_state "$ESC[48;2;40;40;40m $ESC[00m> ")
+  out=$(row_state "${ESC}[48;2;40;40;40m ${ESC}[00m> ")
   [ "$out" = unknown ] \
     || fail "a zero-padded SGR 0 must close the background like a bare 0 (got '$out')"
 
-  out=$(row_state "$ESC[48;5;236m $ESC[049m> ")
+  out=$(row_state "${ESC}[48;5;236m ${ESC}[049m> ")
   [ "$out" = unknown ] \
     || fail "a zero-padded SGR 49 must close the background like a bare 49 (got '$out')"
 
-  out=$(row_state "$ESC[48;2;40;40;40m $ESC[039;049m> ")
+  out=$(row_state "${ESC}[48;2;40;40;40m ${ESC}[039;049m> ")
   [ "$out" = unknown ] \
     || fail "a zero-padded 49 after a padded 39 must close the background (got '$out')"
 
   # A padded foreground introducer must still consume its own payload, or the
   # 48 inside it is walked as a parameter and opens a background that no
   # terminal ever painted.
-  out=$(row_state "$ESC[038;2;48;120;200m> ")
+  out=$(row_state "${ESC}[038;2;48;120;200m> ")
   [ "$out" = unknown ] \
     || fail "a zero-padded foreground introducer must skip its colour payload (got '$out')"
 
@@ -327,15 +327,15 @@ test_prime_agent_surface_does_not_weaken_the_dead_shell_rule() {
 test_prime_agent_surface_covers_every_background_form() {
   local out
 
-  out=$(row_state "$ESC[48;5;235m> $PRIME_CURSOR$PRIME_BG_OFF")
+  out=$(row_state "${ESC}[48;5;235m> $PRIME_CURSOR$PRIME_BG_OFF")
   [ "$out" = empty ] \
     || fail "a 256-colour composer surface must prove empty (got '$out')"
 
-  out=$(row_state "$ESC[48:2::24:24:27m> $PRIME_CURSOR$PRIME_BG_OFF")
+  out=$(row_state "${ESC}[48:2::24:24:27m> $PRIME_CURSOR$PRIME_BG_OFF")
   [ "$out" = empty ] \
     || fail "a colon-form truecolor composer surface must prove empty (got '$out')"
 
-  out=$(row_state "$ESC[38;2;200;200;200;48;2;24;24;27m> $PRIME_CURSOR$PRIME_BG_OFF")
+  out=$(row_state "${ESC}[38;2;200;200;200;48;2;24;24;27m> $PRIME_CURSOR$PRIME_BG_OFF")
   [ "$out" = empty ] \
     || fail "a background introduced after a foreground run must prove empty (got '$out')"
 
