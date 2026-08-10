@@ -123,12 +123,8 @@
 #     roots are unique per task and never
 #     shared, so this can never reach another task's or the primary's
 #     processes. Idempotent: nothing left to find is a silent no-op.
-#     prime-agent workers are retired through prime-agent itself just BEFORE
-#     that reaper (bin/fm-prime-agent-lib.sh): its detached daemon worker
-#     outlives both the pane and an explicit quit, so it must end through the
-#     vendor rather than be SIGTERMed out from under its own session lease and
-#     journals. Every firstmate-home removal retires the same way, so a
-#     returned pool slot can never carry a foreign live agent into a new task.
+#     prime-agent workers are retired just BEFORE that reaper and on every
+#     firstmate-home removal; bin/fm-prime-agent-lib.sh owns why and how.
 #   Fix 3 - sweep abandoned remote job workers. A remote job worker started
 #     from a worktree's own bin/ outlives that worktree's removal without
 #     being reachable by Fix 2, because its working directory is wherever it
@@ -1743,11 +1739,8 @@ remove_firstmate_home() {
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
-  # Every home removal - a secondmate teardown, and every nested home reached
-  # through cleanup_firstmate_home_children - passes here, so this is where a
-  # prime-agent worker still holding this home as its cwd is retired. Without
-  # it a `treehouse return` would hand the worktree to a new task while a
-  # foreign live agent still held it and its transcript lease.
+  # Every home removal passes here, so this retires any prime-agent worker
+  # holding this home as its cwd (see bin/fm-prime-agent-lib.sh).
   fm_prime_agent_stop_sessions_under "$abs_home_path"
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
@@ -2240,7 +2233,6 @@ cleanup_firstmate_home_children() {
     elif [ "$child_backend" = orca ]; then
       if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
         validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
-        fm_prime_agent_stop_sessions_under "$child_wt"
         rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
           "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
       fi
@@ -2400,10 +2392,8 @@ fi
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
-  # Before the generic reaper, so prime-agent ends its own detached workers
-  # cleanly instead of being SIGTERMed out from under its session leases.
-  # Best effort, like the reaper below it: this is a cleanup courtesy, and a
-  # missing or unavailable helper must never fail the whole teardown.
+  # Retires this worktree's prime-agent workers before the generic reaper
+  # below (see bin/fm-prime-agent-lib.sh).
   fm_prime_agent_stop_sessions_under "$WT" || true
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi

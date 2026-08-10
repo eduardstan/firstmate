@@ -76,7 +76,10 @@ stop nested" ] || fail "expected only the target's own and nested sessions to st
 
 test_a_symlinked_target_matches_either_recorded_form() {
   local dir target link fakebin calls
-  dir="$TMP_ROOT/symlinked"; mkdir -p "$dir"
+  # The fixture root itself must be physical, or the recorded "physical" cwd
+  # below would carry a logical prefix that no launch ever produces (macOS
+  # puts TMPDIR under /var, a symlink to /private/var).
+  dir="$(cd "$TMP_ROOT" && pwd -P)/symlinked"; mkdir -p "$dir"
   target="$dir/real"; mkdir -p "$target"
   link="$dir/link"; ln -s "$target" "$link"
   # prime-agent records whichever form the session was launched under, so a
