@@ -74,19 +74,44 @@ stop nested" ] || fail "expected only the target's own and nested sessions to st
   pass "fm_prime_agent_stop_sessions_under: stops the directory's own and nested sessions, never a prefix sibling"
 }
 
+test_a_symlinked_target_matches_either_recorded_form() {
+  local dir target link fakebin calls
+  dir="$TMP_ROOT/symlinked"; mkdir -p "$dir"
+  target="$dir/real"; mkdir -p "$target"
+  link="$dir/link"; ln -s "$target" "$link"
+  # prime-agent records whichever form the session was launched under, so a
+  # worktree reached through a symlinked prefix must retire either way or it
+  # goes back to the pool with a live worker still on it.
+  fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[
+    $(session logical "$link"),
+    $(session physical "$target")
+  ]}")
+  calls=$(stop_under "$dir" "$link" "$fakebin")
+  [ "$calls" = "stop logical
+stop physical" ] || fail "expected both recorded forms of the symlinked target to stop, got: $calls"
+  pass "fm_prime_agent_stop_sessions_under: a symlinked target stops sessions recorded under either form"
+}
+
 test_missing_binary_is_a_silent_no_op() {
-  local dir status
+  local dir status err
   dir="$TMP_ROOT/nobinary"; mkdir -p "$dir/fakebin"
-  # An empty fakebin plus a PATH holding only the base system directories: a
-  # prime-agent installed anywhere else (it ships to a user prefix) is out of
-  # reach, which is exactly the machine this must not fail on.
-  PATH="$dir/fakebin:/usr/bin:/bin" "$BASH" -c '
+  # jq is reachable and nothing else is, so no prime-agent installed to a user
+  # prefix can stand in for the absent one and the jq guard cannot answer for
+  # the binary guard. A machine without prime-agent is exactly the machine
+  # teardown must not fail on, and "silent" is half the contract: reaching the
+  # CLI at all would put a "command not found" on teardown's stderr.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/fakebin/jq"
+  chmod +x "$dir/fakebin/jq"
+  ln -sf "$(command -v dirname)" "$dir/fakebin/dirname"
+  # shellcheck disable=SC2016  # the positional args are the inner shell's.
+  err=$(PATH="$dir/fakebin" "$BASH" -c '
     set -u
     . "$1"
     fm_prime_agent_stop_sessions_under "$2"
-  ' _ "$ROOT/bin/fm-prime-agent-lib.sh" "$dir" >/dev/null 2>&1
+  ' _ "$ROOT/bin/fm-prime-agent-lib.sh" "$dir" 2>&1 >/dev/null)
   status=$?
   [ "$status" -eq 0 ] || fail "a missing prime-agent binary must be a silent no-op, got exit $status"
+  [ -z "$err" ] || fail "a missing prime-agent binary must stay silent, got: $err"
   pass "fm_prime_agent_stop_sessions_under: a missing prime-agent binary is a silent no-op"
 }
 
@@ -108,8 +133,11 @@ test_unusable_listing_stops_nothing() {
 test_unsafe_session_id_is_never_passed_to_the_cli() {
   local dir fakebin calls
   dir="$TMP_ROOT/unsafe"; mkdir -p "$dir"
+  # A leading dash is the second half of the case: prime-agent would read
+  # `--all` as an option rather than as the session it must stop.
   fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[
     $(session 'a b; rm -rf /' "$dir"),
+    $(session '--all' "$dir"),
     $(session good-1 "$dir")
   ]}")
   calls=$(stop_under "$dir" "$dir" "$fakebin")
@@ -118,6 +146,7 @@ test_unsafe_session_id_is_never_passed_to_the_cli() {
 }
 
 test_only_sessions_under_the_directory_are_stopped
+test_a_symlinked_target_matches_either_recorded_form
 test_missing_binary_is_a_silent_no_op
 test_unusable_listing_stops_nothing
 test_unsafe_session_id_is_never_passed_to_the_cli
