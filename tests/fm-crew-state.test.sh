@@ -82,6 +82,15 @@ case "${1:-}" in
 esac
 exit 0
 SH
+  cat > "$fb/gh" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
+  printf '%s\n' "${FM_FAKE_PR_STATE:-MERGED}"
+  exit 0
+fi
+exit 1
+SH
   cat > "$fb/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -125,7 +134,7 @@ case "${1:-}" in
 esac
 exit 0
 SH
-  chmod +x "$fb/no-mistakes" "$fb/tmux" "$fb/herdr"
+  chmod +x "$fb/no-mistakes" "$fb/gh" "$fb/tmux" "$fb/herdr"
   printf '%s\n' "$fb"
 }
 
@@ -173,8 +182,9 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_PR_STATE=MERGED
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
-  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_PR_STATE
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -388,6 +398,33 @@ test_active_run_is_authoritative() {
   assert_contains "$out" "source: run-step" "active run -> run-step source"
   assert_contains "$out" "validating (running)" "active run reports the step"
   pass "active run-step is authoritative"
+}
+
+# A live run can retain the pre-review head after the worker adds commits during
+# the review round. If the current-code check rejects that run, a branch listing
+# must not fall through to an older failed row and authorise cleanup.
+test_active_run_head_lag_does_not_select_stale_failed_row() {
+  reset_fakes
+  local d run_head current_short old_short out
+  d=$(new_case active-head-lag)
+  make_repo_on_branch "$d/wt" fm/feat-head-lag
+  run_head=$FM_FAKE_RUN_HEAD
+  old_short=$(git -C "$d/wt" rev-parse --short=7 "$run_head")
+  git -C "$d/wt" commit -q --allow-empty -m 'review round commit'
+  current_short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-head-lag.meta" "window=fm:fm-feat-head-lag" "worktree=$d/wt" "kind=ship"
+  printf 'needs-decision: review round is still active\n' > "$d/state/feat-head-lag.status"
+  FM_FAKE_RUN_HEAD=$run_head
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-head-lag)"
+  FM_FAKE_RUNS_LIST="running   fm/feat-head-lag $old_short      2026-08-10 12:00
+failed    fm/feat-head-lag $current_short  2026-08-10 11:59"
+  out=$(run_crew_state "$d" feat-head-lag)
+  assert_contains "$out" "state: unknown" "head-lagged live run is unknown, not terminal"
+  assert_contains "$out" "source: none" "head-lagged live run has no established source"
+  assert_not_contains "$out" "state: failed" "head-lagged live run never selects stale failed row"
+  assert_not_contains "$out" "state: done" "head-lagged live run never authorises cleanup"
+  pass "head-lagged active run does not select stale failed row"
 }
 
 # (b) needs-decision log + a resumed (running/fixing) run = SUPERSEDED
@@ -698,9 +735,29 @@ test_terminal_passed() {
   fm_write_meta "$d/state/feat-d.meta" "window=fm:fm-feat-d" "worktree=$d/wt" "kind=ship"
   FM_FAKE_AXI_STATUS="$(run_passed fm/feat-d)"
   local out; out=$(run_crew_state "$d" feat-d)
-  assert_contains "$out" "state: done" "passed run -> done"
-  assert_contains "$out" "source: run-step" "passed -> run-step source"
-  pass "terminal passed run is authoritative"
+  assert_contains "$out" "state: done" "merged passed run -> done"
+  assert_contains "$out" "source: run-step" "merged passed -> run-step source"
+  assert_contains "$out" "PR merged" "passed run reports forge-confirmed merge"
+  pass "terminal passed run is authoritative only after forge confirmation"
+}
+
+# A passed pipeline can be a CI-monitor timeout while its PR remains open. The
+# forge, not the pipeline outcome, answers whether cleanup is safe.
+test_terminal_passed_open_pr_is_unknown() {
+  reset_fakes
+  local d; d=$(new_case passed-open)
+  make_repo_on_branch "$d/wt" fm/feat-open
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-open.meta" "window=fm:fm-feat-open" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_PR_STATE=OPEN
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-open)"
+  local out; out=$(run_crew_state "$d" feat-open)
+  assert_contains "$out" "state: unknown" "open PR after passed run is unknown"
+  assert_contains "$out" "source: run-step" "open PR remains run-step sourced"
+  assert_contains "$out" "merge not established" "open PR explains why cleanup is unsafe"
+  assert_not_contains "$out" "state: done" "open PR is never read as cleanup-ready"
+  assert_not_contains "$out" "merged/closed" "open PR does not infer merge from outcome"
+  pass "passed run with open PR stays unknown"
 }
 
 test_terminal_failed() {
@@ -1435,6 +1492,7 @@ test_missing_run_head_falls_back_to_current_state() {
 }
 
 test_active_run_is_authoritative
+test_active_run_head_lag_does_not_select_stale_failed_row
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_genuine_parked_not_superseded
@@ -1453,6 +1511,7 @@ test_ci_fixing_after_green_stays_working
 test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
+test_terminal_passed_open_pr_is_unknown
 test_terminal_failed
 test_cancelled_run_live_worker_reads_working
 test_cancelled_status_only_live_worker_reads_working
