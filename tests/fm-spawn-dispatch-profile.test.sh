@@ -12,6 +12,8 @@ set -u
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-dispatch-profile)
+DISABLE_PATSUB_REPLACEMENT="$TMP_ROOT/disable-patsub-replacement"
+printf '%s\n' 'if shopt -q patsub_replacement 2>/dev/null; then shopt -u patsub_replacement; fi' > "$DISABLE_PATSUB_REPLACEMENT"
 
 make_spawn_fakebin() {
   local dir=$1 fakebin
@@ -42,7 +44,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse pi-signed
+  fm_fake_exit0 "$fakebin" treehouse pi-signed prime-agent
   printf '%s\n' "$fakebin"
 }
 
@@ -84,6 +86,9 @@ run_spawn() {
   local home=$1 wt=$2 fakebin=$3 launchlog=$4
   shift 4
   : > "$launchlog"
+  if [ -n "${FM_TEST_BASH_ENV:-}" ]; then
+    export BASH_ENV=$FM_TEST_BASH_ENV
+  fi
   # CLAUDE_CONFIG_DIR is forwarded onto claude launches by fm-spawn, so pin it
   # explicitly (empty by default) instead of leaking the invoking shell's value,
   # which would make launch assertions depend on the developer's environment.
@@ -673,6 +678,69 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+test_prime_autonomous_gate_preserves_ampersands() {
+  local rec id out status launch gate
+  id=profile-prime-autonomous-gate-z20
+  gate='ruff check src && python -m pytest -q'
+  rec=$(make_spawn_case prime-autonomous-gate prime-agent "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --harness prime-agent --autonomous-gate "$gate" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "prime-agent spawn with an ampersand gate should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--autonomous-gate 'ruff check src && python -m pytest -q'" \
+    "prime-agent launch changed the autonomous gate"
+  assert_not_contains "$launch" '__AUTONOMOUSFLAGS__' \
+    "prime-agent launch left the autonomous flags placeholder"
+  pass "prime-agent autonomous gate preserves its byte-identical && command"
+}
+
+test_prime_autonomous_gate_preserves_ampersands_without_patsub_replacement() {
+  local rec id out status launch gate
+  id=profile-prime-autonomous-gate-nopatsub-z21
+  gate='ruff check src && python -m pytest -q'
+  rec=$(make_spawn_case prime-autonomous-gate-nopatsub prime-agent "$id")
+  read_case_record "$rec"
+
+  out=$(FM_TEST_BASH_ENV="$DISABLE_PATSUB_REPLACEMENT" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --harness prime-agent --autonomous-gate "$gate" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "prime-agent spawn without patsub_replacement should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--autonomous-gate 'ruff check src && python -m pytest -q'" \
+    "prime-agent launch changed the autonomous gate without patsub_replacement"
+  assert_not_contains "$launch" '\\&' \
+    "prime-agent launch escaped the autonomous gate without patsub_replacement"
+  pass "prime-agent autonomous gate preserves its byte-identical && command without patsub_replacement"
+}
+
+test_prime_autonomous_gate_placeholder_text_is_not_reexpanded() {
+  local rec id out status launch gate
+  id=profile-prime-autonomous-gate-placeholder-z22
+  gate='gate __AUTONOMOUSFLAGS__ here'
+  rec=$(make_spawn_case prime-autonomous-gate-placeholder prime-agent "$id")
+  read_case_record "$rec"
+
+  : > "$LAUNCH_LOG"
+  out=$(timeout 10s env \
+    FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    BASH_ENV="$DISABLE_PATSUB_REPLACEMENT" FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
+    CLAUDE_CONFIG_DIR='' FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" GROK_HOME="$HOME_DIR/grok-home" \
+    PATH="$FAKEBIN_DIR:$PATH" "$SPAWN" "$id" "$PROJ_DIR" \
+    --harness prime-agent --autonomous-gate "$gate" --mode direct-PR --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "prime-agent spawn should finish when a gate contains a launch placeholder"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--autonomous-gate 'gate __AUTONOMOUSFLAGS__ here'" \
+    "prime-agent launch re-expanded placeholder text from the autonomous gate"
+  pass "autonomous gate placeholder text is preserved without rescanning replacements"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
@@ -699,5 +767,8 @@ test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset
 test_non_claude_harness_ignores_config_dir
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_prime_autonomous_gate_preserves_ampersands
+test_prime_autonomous_gate_placeholder_text_is_not_reexpanded
+test_prime_autonomous_gate_preserves_ampersands_without_patsub_replacement
 
 echo "# all fm-spawn-dispatch-profile tests passed"

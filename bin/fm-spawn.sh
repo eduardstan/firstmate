@@ -2859,23 +2859,35 @@ sq_primewatch=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-prime-
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
+# Concatenate around each placeholder so caller-supplied launch values remain literal.
+replace_launch_placeholder() {
+  local placeholder=$1 replacement=$2 prefix rest out
+  out=
+  rest=$LAUNCH
+  while case $rest in *"$placeholder"*) true ;; *) false ;; esac; do
+    prefix=${rest%%"$placeholder"*}
+    out=$out$prefix$replacement
+    rest=${rest#*"$placeholder"}
+  done
+  LAUNCH=$out$rest
+}
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 PROVIDERFLAG=$(provider_flag_for_harness "$HARNESS" "$PROVIDER")
 AUTONOMOUSFLAGS=$(autonomous_flags_for_harness "$HARNESS")
-LAUNCH=${LAUNCH//__PROVIDERFLAG__/$PROVIDERFLAG}
-LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
-LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
-LAUNCH=${LAUNCH//__AUTONOMOUSFLAGS__/$AUTONOMOUSFLAGS}
-LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
-LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
-LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
-LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
-LAUNCH=${LAUNCH//__PRIMETURNEND__/$sq_primeturnend}
-LAUNCH=${LAUNCH//__PRIMEWATCH__/$sq_primewatch}
-LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
-LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
-LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
+replace_launch_placeholder __PROVIDERFLAG__ "$PROVIDERFLAG"
+replace_launch_placeholder __MODELFLAG__ "$MODELFLAG"
+replace_launch_placeholder __EFFORTFLAG__ "$EFFORTFLAG"
+replace_launch_placeholder __AUTONOMOUSFLAGS__ "$AUTONOMOUSFLAGS"
+replace_launch_placeholder __BRIEF__ "$sq_brief"
+replace_launch_placeholder __TURNEND__ "$sq_turnend"
+replace_launch_placeholder __PIEXT__ "$sq_piext"
+replace_launch_placeholder __PRIMEEXT__ "$sq_primeext"
+replace_launch_placeholder __PRIMETURNEND__ "$sq_primeturnend"
+replace_launch_placeholder __PRIMEWATCH__ "$sq_primewatch"
+replace_launch_placeholder __PITURNEND__ "$sq_piturnend"
+replace_launch_placeholder __PIWATCH__ "$sq_piwatch"
+replace_launch_placeholder __OPINPUT__ "$sq_opinput"
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
 # inherit firstmate's current environment, so a bare `claude` in the pane falls
 # back to the default ~/.claude store even when firstmate itself runs under a
