@@ -123,8 +123,9 @@
 #     roots are unique per task and never
 #     shared, so this can never reach another task's or the primary's
 #     processes. Idempotent: nothing left to find is a silent no-op.
-#     prime-agent workers are retired just BEFORE that reaper and on every
-#     firstmate-home removal; bin/fm-prime-agent-lib.sh owns why and how.
+#     prime-agent workers are retired just BEFORE that reaper, on every child
+#     worktree removal, and on every firstmate-home removal;
+#     bin/fm-prime-agent-lib.sh owns why and how.
 #   Fix 3 - sweep abandoned remote job workers. A remote job worker started
 #     from a worktree's own bin/ outlives that worktree's removal without
 #     being reachable by Fix 2, because its working directory is wherever it
