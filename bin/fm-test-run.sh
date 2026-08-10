@@ -268,6 +268,7 @@ family_for_basename() {
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
     fm-prime-agent-harness.test.sh|\
     fm-harness-adapter-references.test.sh|\
+    fm-prime-agent-lib.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
