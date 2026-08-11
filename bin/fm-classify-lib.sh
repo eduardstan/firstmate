@@ -310,17 +310,19 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   stripped=${line//[[:space:]]/}
   [ -n "$stripped" ] || { printf '%s' "$open"; return 0; }
   verb=$(status_line_verb "$line")
-  key=$(_fm_decision_key "$line") || { printf '%s' "$open"; return 0; }
+  key=$(_fm_decision_key "$line") || key=''
   _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" \
     || { printf '%s' "$open"; return 0; }
   case "$verb" in
     needs-decision|blocked)
+      key=${key:-default}
       note=$(status_line_note "$line")
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
       ;;
     "$resolve"|"$held")
+      [ -n "$key" ] || { printf '%s' "$open"; return 0; }
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
       ;;
@@ -437,6 +439,10 @@ _fm_open_decisions_cursor_path() {  # <status-file>
   printf '%s/.%s.open-decisions-cursor' "$dir" "${base%.status}"
 }
 
+# Bump this on ANY change to _fm_decision_fold_line's open/close semantics: a
+# cursor persisted under older semantics carries an open set that folder would
+# no longer produce, and only a version mismatch forces the full re-fold that
+# discards it. Forgetting the bump silently serves a wrong open set forever.
 FM_OPEN_DECISIONS_FOLD_VERSION=4
 
 # Portable device:inode identity for the rotation/recreation check below.
