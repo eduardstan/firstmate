@@ -199,18 +199,26 @@ test_matrix_inline_bordered_composer() {
   pass "matrix: a one-row side-bordered composer remains classified safely"
 }
 
-test_matrix_claude_labelled_rule_does_not_need_native_identity() {
-  # Claude's labelled upper rule plus bare lower rule is not Pi's separated
-  # composer: the live bare agent glyph positively identifies the candidate.
-  # The classifier must not turn this idle pane into unknown merely because an
-  # adapter's native identity probe is unavailable while the pane is idle.
-  local idle typed
+test_matrix_claude_labelled_rule_defers_to_native_identity() {
+  # Claude's labelled upper rule plus bare lower rule looks exactly like a Pi
+  # separated composer whose opening rule scrolled out of the capture window,
+  # so an identity-capable adapter resolves it natively (claude reads empty,
+  # Pi and an unreadable probe stay unknown). Backends with no identity probe
+  # keep the bare agent glyph as the container proof, the same rule the
+  # pi-pair overlap above already applies.
+  local idle typed claude_idle pi_idle
+  claude_idle=$(printf 'claude\tidle'); pi_idle=$(printf 'pi\tidle')
   idle=$'──────────────── fm-lab-supervisor ──\n❯'"$NBSP"$'\n────────────────────────────────────\n  ctx 17%  ·  wk 25% 3d01h Fri'
-  assert_screen "labelled-rule claude idle" empty "$CAPS_STYLED" "$idle"
+  [ "$(fm_composer_classify_screen "$CAPS_STYLED" "$idle")" = need-identity ] \
+    || fail "an identity-capable profile should request the lazy probe for a lone trailing rule"
+  assert_screen "labelled-rule claude idle" empty "$CAPS_STYLED" "$idle" '' "$claude_idle"
+  assert_screen "labelled-rule pi target" unknown "$CAPS_STYLED" "$idle" '' "$pi_idle"
+  assert_screen "labelled-rule unreadable identity" unknown "$CAPS_STYLED" "$idle" '' probe-absent
   assert_screen "labelled-rule claude idle without identity capability" empty "$CAPS_STYLED_NOID" "$idle"
   typed=$'──────────────── fm-lab-supervisor ──\n❯ fix the regression\n────────────────────────────────────'
-  assert_screen "labelled-rule claude draft" pending "$CAPS_STYLED" "$typed"
-  pass "matrix: claude's labelled upper rule and bare lower rule stay identified by the agent glyph"
+  assert_screen "labelled-rule claude draft" pending "$CAPS_STYLED" "$typed" '' "$claude_idle"
+  assert_screen "labelled-rule draft without identity capability" pending "$CAPS_STYLED_NOID" "$typed"
+  pass "matrix: a lone trailing rule under claude's labelled frame defers to native identity"
 }
 
 test_matrix_codex_dim_hint_row() {
@@ -633,7 +641,7 @@ test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
-test_matrix_claude_labelled_rule_does_not_need_native_identity
+test_matrix_claude_labelled_rule_defers_to_native_identity
 test_matrix_inline_bordered_composer
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss

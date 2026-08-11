@@ -1062,6 +1062,7 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_KIND=inline
     FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_INLINE_ROW
     FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_INLINE_ROW
+    FM_COMPOSER_SELECTED_AMBIG=0
   fi
   if [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -gt "$generic" ]; then
     FM_COMPOSER_SELECTED_KIND=
@@ -1076,16 +1077,16 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_PI_CLOSE - 1))
   fi
   if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 0 ] \
-     && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ] \
-     && [ "$FM_COMPOSER_SELECTED_KIND" != bare ]; then
+     && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ]; then
     if [ "${FM_COMPOSER_CAP_IDENTITY:-0}" = 1 ] && [ "$generic" -ge 0 ]; then
-      # Claude frames its positively identified bare agent glyph with a
-      # labelled upper rule and a bare lower rule. Pi uses the lower rule as a
-      # separator, so defer only candidates that lack that agent-glyph proof
-      # to native identity instead of rejecting Claude's idle composer.
-
+      # Claude frames its idle composer with a labelled upper rule and a bare
+      # lower rule. Pi uses that same lower rule as a separator whose opening
+      # rule can sit above the capture window, so defer this one ambiguity to
+      # native identity rather than rejecting Claude outright.
       FM_COMPOSER_NEEDS_LONE_RULE_IDENTITY=1
-    else
+    elif [ "$FM_COMPOSER_SELECTED_KIND" != bare ]; then
+      # With no identity probe available the bare agent glyph is its own
+      # container proof, the same rule the pi-pair overlap already applies.
       FM_COMPOSER_SELECTED_KIND=
       return 1
     fi
@@ -1319,12 +1320,8 @@ EOF
     pi)
       _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity"
       ;;
-    box)
+    box|inline)
       _fm_composer_classify_rows "$screen" "$styled" "$FM_COMPOSER_SELECTED_AMBIG" \
-        "$FM_COMPOSER_SELECTED_FIRST" "$FM_COMPOSER_SELECTED_LAST"
-      ;;
-    inline)
-      _fm_composer_classify_rows "$screen" "$styled" 0 \
         "$FM_COMPOSER_SELECTED_FIRST" "$FM_COMPOSER_SELECTED_LAST"
       ;;
     bare)
