@@ -758,6 +758,7 @@ test_brief_key_examples_parse_through_the_real_fold() {
     assert_present "$brief" "$kind brief was not scaffolded for the key-example check"
     # shellcheck disable=SC2016 # The pattern's backticks are literal brief markup.
     grep -o '`[a-z-]\{1,\} \[key=[^]]*\]:[^`]*`' "$brief" | tr -d '`' > "$state/$kind.examples"
+    found=0
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       found=$((found + 1))
@@ -780,9 +781,9 @@ test_brief_key_examples_parse_through_the_real_fold() {
           ;;
       esac
     done < "$state/$kind.examples"
+    [ "$found" -ge 1 ] \
+      || fail "$kind brief handed out no decision-key example to check"
   done
-  [ "$found" -ge 3 ] \
-    || fail "the generated briefs handed out no decision-key examples to check"
   pass "fm-brief.sh: every decision-key example the scaffolds hand out parses through the real fold"
 }
 
