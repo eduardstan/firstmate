@@ -188,6 +188,17 @@ test_matrix_claude_bare_nbsp_row() {
   pass "matrix: claude's ❯+NBSP row reads empty on every profile in both locales (#1988)"
 }
 
+test_matrix_inline_bordered_composer() {
+  # Herdr's compact supervisor and some bordered panes expose only one row of
+  # side borders, not a complete top/content/bottom box.
+  local idle typed
+  idle=$'│ > │'
+  assert_screen "inline bordered idle" empty "$CAPS_STYLED" "$idle"
+  typed=$'│ > human draft text │'
+  assert_screen "inline bordered draft" pending "$CAPS_STYLED" "$typed"
+  pass "matrix: a one-row side-bordered composer remains classified safely"
+}
+
 test_matrix_claude_labelled_rule_does_not_need_native_identity() {
   # Claude's labelled upper rule plus bare lower rule is not Pi's separated
   # composer: the live bare agent glyph positively identifies the candidate.
@@ -623,6 +634,7 @@ test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
 test_matrix_claude_labelled_rule_does_not_need_native_identity
+test_matrix_inline_bordered_composer
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
