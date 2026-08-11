@@ -18,8 +18,8 @@
 # binary untouched.
 #
 # The "supervisor pane" is a tiny deterministic bash loop (not a real harness
-# binary): it draws a bordered composer row ("│ > <buf> │") that exercises the
-# bordered branch of fm_backend_herdr_composer_state, and logs every submitted
+# binary): it draws the verified bare-agent composer shape (`❯ <buf>`) and
+# logs every submitted
 # line (hex + text + injection/user classification) - the same technique
 # tests/fm-afk-inject-e2e.test.sh uses for its tmux supervisor pane, so this
 # test asserts on submitted CONTENT, not pane appearance. It ALSO registers
@@ -131,12 +131,13 @@ read -r _FAKE_TAB_ID FAKE_CREW_PANE_ID <<EOF
 $FAKE_CREW_IDS
 EOF
 
-# --- deterministic bordered-composer loop, drawn in the scratch pane ---------
-# Mirrors tests/fm-afk-inject-e2e.test.sh's supervisor-loop.sh, but draws a
-# "│ > <buf> │" border so the bordered branch of
-# fm_backend_herdr_composer_state recognizes it, exactly like a bordered-TUI
-# harness composer. ALSO registers itself as a real herdr agent via `herdr
-# pane report-agent` and reports idle/working transitions around each
+# --- deterministic bare-composer loop, drawn in the scratch pane -------------
+# Mirrors tests/fm-afk-inject-e2e.test.sh's supervisor-loop.sh, but draws the
+# shared classifier's positively identified bare-agent shape (`❯ <buf>`). This
+# remains readable under the strict blank-row posture without pretending that
+# one side-bordered row is a complete composer box. ALSO registers itself as a
+# real herdr agent via `herdr pane report-agent` and reports idle/working
+# transitions around each
 # submission: fm_backend_herdr_send_text_submit's confirmation is now native
 # agent-state (agent get), not composer content (docs/herdr-backend.md
 # "Native agent-state submit confirmation"), so a synthetic pane that only
@@ -151,12 +152,12 @@ EOF
 # to report its own agent state, verified empirically against real herdr 0.7.1
 # in an isolated session.
 #
-# The loop takes an optional SHAPE argument. `bordered` (the default) is the
-# box-composer fixture described above. `claude` redraws the shape real claude
+# The loop takes an optional SHAPE argument. `bare` (the default) is the
+# agent-glyph fixture described above. `claude` redraws the shape real claude
 # presents through herdr: a labelled upper rule, a bare `❯` prompt padded with
 # U+00A0, a bare lower rule, and a multi-row statusline under it. That shape is
 # what wedged away-mode delivery overnight, and it exercises two code paths the
-# bordered fixture cannot reach - the invisible-padding normalization in
+# bare fixture cannot reach - the invisible-padding normalization in
 # bin/fm-composer-lib.sh and the identity gate on the lone-trailing-rule
 # staleness rule in bin/backends/herdr.sh.
 LOOP_SCRIPT="$STATE_DIR/supervisor-loop.sh"
@@ -164,7 +165,7 @@ cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
 MARK=$'\xE2\x81\xA3'
 LOG="$1"
-SHAPE="${2:-bordered}"
+SHAPE="${2:-bare}"
 AGENT_SOURCE=fm-test-supervisor
 AGENT_LABEL=fm-test-supervisor
 report_agent_state() {  # <idle|working>
@@ -185,10 +186,9 @@ report_agent_state idle
 
 _buf=
 # redraw: keep the composer visually pinned to ONE terminal row regardless of
-# _buf's length - a realistic bordered single-line composer horizontally
+# _buf's length - a realistic single-line composer horizontally
 # scrolls to show the tail near the cursor rather than letting the terminal
-# hard-wrap a too-long line across multiple rows (which would break the
-# structural border-row classifier's one-row assumption: a batched escalation
+# hard-wrap a too-long line across multiple rows (a batched escalation
 # digest easily exceeds a narrow pane's column width). A hardcoded width
 # (not `tput cols`) is used deliberately: verified empirically against a real
 # herdr pane launched this same way that `tput cols` inside this script's own
@@ -205,7 +205,7 @@ _shown() {
     printf '%s' "$_buf"
   fi
 }
-redraw_bordered() { printf '\r\033[K│ > %s │' "$(_shown)"; }
+redraw_bare() { printf '\r\033[K❯ %s' "$(_shown)"; }
 # The claude shape occupies five rows and is rewritten in place: print the block,
 # then walk the cursor back to its first row. The screen was cleared once before
 # the first redraw, so nothing sits below the statusline that a later capture
@@ -221,7 +221,7 @@ redraw_claude() {
 redraw() {
   case "$SHAPE" in
     claude) redraw_claude ;;
-    *) redraw_bordered ;;
+    *) redraw_bare ;;
   esac
 }
 submit_line() {
@@ -234,7 +234,7 @@ submit_line() {
   _hex=$(printf '%s' "$_line" | od -An -tx1 | tr -d ' \n')
   printf '%s\t%s\t%s\n' "$_hex" "$_line" "$_c" >> "$LOG"
   _buf=
-  # The bordered fixture scrolls a fresh composer row after each submit; the
+  # The bare fixture scrolls a fresh composer row after each submit; the
   # claude block is a fixed five-row region rewritten where it stands, so
   # advancing a row there would walk it down the screen instead.
   case "$SHAPE" in
@@ -578,7 +578,7 @@ restart_supervisor_loop() {  # <shape>
 }
 
 # A shape switch that silently failed would leave the previous fixture on screen
-# and quietly turn the scenario into a duplicate of the bordered ones, so assert
+# and quietly turn the scenario into a duplicate of the bare ones, so assert
 # the bytes under test are really there: the bare glyph plus U+00A0, and a lower
 # rule with no matching upper rule above it.
 assert_claude_shape_on_screen() {
@@ -595,8 +595,8 @@ assert_claude_shape_on_screen() {
   fi
   printf '%s' "$cap" | grep -qE '^────+$' \
     || fail "Scenario E: the pane is not showing claude's bare lower rule; the shape switch did not take"
-  if printf '%s' "$cap" | grep -q '│ > '; then
-    fail "Scenario E: the bordered fixture is still on screen; the shape switch did not take"
+  if printf '%s' "$cap" | grep -q '^❯ '; then
+    fail "Scenario E: the bare fixture is still on screen; the shape switch did not take"
   fi
 }
 
@@ -666,7 +666,7 @@ test_scenario_e_claude_shape() {
   sleep 0.5
 
   stop_daemon
-  restart_supervisor_loop bordered
+  restart_supervisor_loop bare
   pass "real herdr Scenario E: claude's rule-framed NBSP-padded composer accepts an escalation when idle and defers when a human is typing"
 }
 

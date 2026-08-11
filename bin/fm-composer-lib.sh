@@ -601,7 +601,6 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
   FM_COMPOSER_SCAN_UNSAFE=0
   FM_COMPOSER_SCAN_CURSOR_EDGE=0
   FM_COMPOSER_SCAN_BARE_ROW=-1
-  FM_COMPOSER_SCAN_INLINE_ROW=-1
   FM_COMPOSER_SCAN_SHELL_ROW=-1
   FM_COMPOSER_SCAN_LEFTBAR_START=-1
   FM_COMPOSER_SCAN_LEFTBAR_END=-1
@@ -661,13 +660,6 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
         FM_COMPOSER_SCAN_LEFTBAR_END=$row
         ;;
       *) leftbar_start=-1 ;;
-    esac
-    # A one-row side-bordered composer is a valid compact container used by
-    # Herdr's deterministic supervisor fixture and by bordered TUI panes that
-    # have no visible top or bottom rule. Keep it separate from complete-box
-    # geometry so the latter remains the stronger structural proof.
-    case "$trimmed" in
-      '│'*'│'|'┃'*'┃'|'║'*'║'|'|'*'|') FM_COMPOSER_SCAN_INLINE_ROW=$row ;;
     esac
     # Bare agent-glyph rows: the glyph itself is the container proof. Bare
     # shell glyphs are deliberately not candidates (dead-shell rule). Keep
@@ -1057,13 +1049,6 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_LEFTBAR_START
     FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_LEFTBAR_END
   fi
-  if [ "$FM_COMPOSER_SCAN_INLINE_ROW" -gt "$generic" ]; then
-    generic=$FM_COMPOSER_SCAN_INLINE_ROW
-    FM_COMPOSER_SELECTED_KIND=inline
-    FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_INLINE_ROW
-    FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_INLINE_ROW
-    FM_COMPOSER_SELECTED_AMBIG=0
-  fi
   if [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -gt "$generic" ]; then
     FM_COMPOSER_SELECTED_KIND=
     return 1
@@ -1108,8 +1093,7 @@ _fm_composer_select_cursorless() {
     done
   fi
   if [ "$FM_COMPOSER_SELECTED_KIND" = box ] \
-     || [ "$FM_COMPOSER_SELECTED_KIND" = leftbar ] \
-     || [ "$FM_COMPOSER_SELECTED_KIND" = inline ]; then
+     || [ "$FM_COMPOSER_SELECTED_KIND" = leftbar ]; then
     boundary=$FM_COMPOSER_SELECTED_LAST
     if [ "$FM_COMPOSER_SELECTED_KIND" = box ]; then
       boundary=$FM_COMPOSER_SCAN_BOX_BOTTOM
@@ -1170,7 +1154,7 @@ EOF
           leading_blank=0
         fi
         ;;
-      box|inline)
+      box)
         if [ "$prompt_row" -lt 0 ] \
            && fm_composer_leading_prompt_glyph_var glyph "$content"; then
           prompt_row=$row
@@ -1246,12 +1230,6 @@ EOF
         "$FM_COMPOSER_SCAN_LEFTBAR_START" "$FM_COMPOSER_SCAN_LEFTBAR_END"
       return 0
     fi
-    if [ "$FM_COMPOSER_SCAN_INLINE_ROW" -ge 0 ] \
-       && [ "$cy" -eq "$FM_COMPOSER_SCAN_INLINE_ROW" ]; then
-      _fm_composer_classify_rows "$screen" "$styled" 0 \
-        "$FM_COMPOSER_SCAN_INLINE_ROW" "$FM_COMPOSER_SCAN_INLINE_ROW"
-      return 0
-    fi
     if [ "$FM_COMPOSER_SCAN_BARE_ROW" -ge 0 ] && [ "$cy" -eq "$FM_COMPOSER_SCAN_BARE_ROW" ]; then
       if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
          && [ "$cy" -gt "$FM_COMPOSER_SCAN_PI_OPEN" ] \
@@ -1297,7 +1275,7 @@ EOF
     return 0
   fi
   if [ "$FM_COMPOSER_NEEDS_LONE_RULE_IDENTITY" = 1 ]; then
-    local lone_agent
+    local lone_agent lone_status
     if [ "$has_identity" != 1 ]; then
       printf 'unknown'
       return 0
@@ -1306,11 +1284,23 @@ EOF
       printf 'need-identity'
       return 0
     fi
-    if [ "$identity" = probe-absent ]; then
+    case "$identity" in
+      probe-absent|*$'\n'*|*$'\r'*|*$'\t'*$'\t'*)
+        printf 'unknown'
+        return 0
+        ;;
+      *$'\t'*) ;;
+      *)
+        printf 'unknown'
+        return 0
+        ;;
+    esac
+    lone_agent=${identity%%$'\t'*}
+    lone_status=${identity#*$'\t'}
+    if [ -z "$lone_agent" ] || [ -z "$lone_status" ]; then
       printf 'unknown'
       return 0
     fi
-    lone_agent=${identity%%$'\t'*}
     if [ "$lone_agent" = pi ]; then
       printf 'unknown'
       return 0
@@ -1320,7 +1310,7 @@ EOF
     pi)
       _fm_composer_pi_verdict "$screen" "$styled" "$has_identity" "$identity"
       ;;
-    box|inline)
+    box)
       _fm_composer_classify_rows "$screen" "$styled" "$FM_COMPOSER_SELECTED_AMBIG" \
         "$FM_COMPOSER_SELECTED_FIRST" "$FM_COMPOSER_SELECTED_LAST"
       ;;

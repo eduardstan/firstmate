@@ -3177,14 +3177,18 @@ test_composer_state_claude_rule_framed_real_text_is_pending() {
   pass "fm_backend_herdr_composer_state: unsent text in a rule-framed claude composer stays pending"
 }
 
-test_composer_state_lone_rule_still_refuses_pi_and_unreadable() {
+test_composer_state_lone_rule_requires_valid_non_pi_identity() {
   local dir log resp fb out case_id
-  for case_id in pi unreadable; do
+  for case_id in pi unreadable agent-not-found empty-agent missing-status malformed; do
     dir="$TMP_ROOT/composer-lone-rule-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
     herdr_claude_rule_framed_capture > "$resp/1.out"
     case "$case_id" in
       pi) printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/2.out" ;;
       unreadable) printf '1\n' > "$resp/2.exit" ;;
+      agent-not-found) printf '{"error":{"code":"agent_not_found"}}\n' > "$resp/2.out" ;;
+      empty-agent) printf '{"result":{"agent":{"agent":"","agent_status":"idle"}}}\n' > "$resp/2.out" ;;
+      missing-status) printf '{"result":{"agent":{"agent":"claude"}}}\n' > "$resp/2.out" ;;
+      malformed) printf 'not-json\n' > "$resp/2.out" ;;
     esac
     fb=$(make_herdr_fakebin "$dir")
     out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3192,7 +3196,7 @@ test_composer_state_lone_rule_still_refuses_pi_and_unreadable() {
     [ "$out" = unknown ] \
       || fail "a lone trailing rule on a '$case_id' target must stay unknown, got '$out'"
   done
-  pass "fm_backend_herdr_composer_state: a lone trailing rule still refuses a Pi or unreadable target"
+  pass "fm_backend_herdr_composer_state: a lone trailing rule requires a valid non-Pi identity"
 }
 
 # --- composer_state: unbordered (bare) composer rows -------------------------
@@ -4501,7 +4505,7 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown
 test_composer_state_pi_separator_requires_safe_native_identity
 test_composer_state_claude_rule_framed_idle_is_empty
 test_composer_state_claude_rule_framed_real_text_is_pending
-test_composer_state_lone_rule_still_refuses_pi_and_unreadable
+test_composer_state_lone_rule_requires_valid_non_pi_identity
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins

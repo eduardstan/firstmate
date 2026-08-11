@@ -188,15 +188,13 @@ test_matrix_claude_bare_nbsp_row() {
   pass "matrix: claude's ❯+NBSP row reads empty on every profile in both locales (#1988)"
 }
 
-test_matrix_inline_bordered_composer() {
-  # Herdr's compact supervisor and some bordered panes expose only one row of
-  # side borders, not a complete top/content/bottom box.
-  local idle typed
-  idle=$'│ > │'
-  assert_screen "inline bordered idle" empty "$CAPS_STYLED" "$idle"
-  typed=$'│ > human draft text │'
-  assert_screen "inline bordered draft" pending "$CAPS_STYLED" "$typed"
-  pass "matrix: a one-row side-bordered composer remains classified safely"
+test_unverified_inline_rows_are_unknown() {
+  local incomplete
+  assert_screen "standalone side-bordered row" unknown "$CAPS_STYLED" $'| |'
+  incomplete=$'╭──╮\n│ > human draft │\n│ │'
+  assert_screen "incomplete bordered draft" unknown "$CAPS_STYLED" "$incomplete"
+  assert_screen "cursor on unidentified side-bordered row" unknown "$CAPS_TMUX" $'│ │' 0 probe-absent
+  pass "matrix: side borders without a complete box never prove a composer"
 }
 
 test_matrix_claude_labelled_rule_defers_to_native_identity() {
@@ -214,6 +212,9 @@ test_matrix_claude_labelled_rule_defers_to_native_identity() {
   assert_screen "labelled-rule claude idle" empty "$CAPS_STYLED" "$idle" '' "$claude_idle"
   assert_screen "labelled-rule pi target" unknown "$CAPS_STYLED" "$idle" '' "$pi_idle"
   assert_screen "labelled-rule unreadable identity" unknown "$CAPS_STYLED" "$idle" '' probe-absent
+  assert_screen "labelled-rule empty agent identity" unknown "$CAPS_STYLED" "$idle" '' $'\tidle'
+  assert_screen "labelled-rule empty status identity" unknown "$CAPS_STYLED" "$idle" '' $'claude\t'
+  assert_screen "labelled-rule malformed identity" unknown "$CAPS_STYLED" "$idle" '' claude
   assert_screen "labelled-rule claude idle without identity capability" empty "$CAPS_STYLED_NOID" "$idle"
   typed=$'──────────────── fm-lab-supervisor ──\n❯ fix the regression\n────────────────────────────────────'
   assert_screen "labelled-rule claude draft" pending "$CAPS_STYLED" "$typed" '' "$claude_idle"
@@ -641,8 +642,8 @@ test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
+test_unverified_inline_rows_are_unknown
 test_matrix_claude_labelled_rule_defers_to_native_identity
-test_matrix_inline_bordered_composer
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
