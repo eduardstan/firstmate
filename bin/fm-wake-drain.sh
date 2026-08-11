@@ -70,12 +70,7 @@ print_open_decisions_section() {
   while IFS=$(printf '\t') read -r task key verb note; do
     [ -n "$task" ] || continue
     line="$task"
-    case "$key" in
-      default) ;;
-      "$FM_DECISION_MALFORMED_KEY")
-        line="$line [malformed key - not answerable; rewrite as '<verb> [key=<slug>]: <note>']" ;;
-      *) line="$line [key=$key]" ;;
-    esac
+    [ "$key" = default ] || line="$line [key=$key]"
     line="$line $verb: $note"
     # The shared cut counts the item's own characters; the trailing newline this
     # section's global budget also pays for is this caller's, so the per-item

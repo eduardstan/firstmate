@@ -328,12 +328,8 @@ EOF
   status_file="$STATE/$origin.status"
   raw_open=$(status_open_decisions "$status_file")
   open=$(origin_open_decisions "$origin")
-  # An unkeyed malformed-key entry (fm-classify-lib.sh's FM_DECISION_MALFORMED_KEY)
-  # names no decision, so it has no hold identity to inventory: it stays visible in
-  # the drain's open set instead of wedging this gate on a key nothing can hold.
   while IFS=$'\t' read -r key _verb _summary; do
     [ -n "$key" ] || continue
-    [ "$key" != "$FM_DECISION_MALFORMED_KEY" ] || continue
     list_has_key "$keys" "$key" \
       || fail "open structured decision $origin/$key has no captain-held inventory entry"
   done <<EOF
@@ -383,7 +379,6 @@ EOF
   open=$(origin_open_decisions "$origin")
   while IFS=$'\t' read -r key _verb _summary; do
     [ -n "$key" ] || continue
-    [ "$key" != "$FM_DECISION_MALFORMED_KEY" ] || continue
     list_has_key "$keys" "$key" \
       || fail "open structured decision $origin/$key is outside the reviewed inventory"
     verify_hold_durable "$(hold_id "$origin" "$key")"
