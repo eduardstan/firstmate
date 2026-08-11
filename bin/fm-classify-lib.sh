@@ -175,11 +175,17 @@ status_is_paused_or_captain_held() {  # <status-line>
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default"). A stated key whose slug fails the charset below is rejected (the
-# folds skip the line), never rewritten to "default".
-# The parsers are pure reads of a single line. Status metadata may contain any
-# number of "[name=value]" tags before the colon, in any order, so verb parsing
-# ends at the first tag rather than special-casing "[key=...]".
+# "default").
+# A malformed slug is not a valid key, so it never names a record: an OPENING
+# needs-decision/blocked line surfaces under the reserved "invalid-key" slot
+# rather than vanishing from the open set - never under "default", which would
+# let a typo evict a real unkeyed decision - while a CLOSING resolve/held line is
+# ignored outright so a typo can never silently close a decision it does not
+# name. "invalid-key" is itself a valid slug, so the escalation stays loud and
+# answerable by that name until it is closed with it.
+# The parsers are pure reads. Status metadata may contain any number of
+# "[name=value]" tags before the colon, in any order, so verb parsing ends at
+# the first tag rather than special-casing "[key=...]".
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[*}
@@ -315,7 +321,7 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
     || { printf '%s' "$open"; return 0; }
   case "$verb" in
     needs-decision|blocked)
-      key=${key:-default}
+      key=${key:-invalid-key}
       note=$(status_line_note "$line")
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
