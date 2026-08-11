@@ -222,24 +222,32 @@ test_classifier_primitives() {
     && fail "a key token in note prose changed the decision key"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
-  printf '%s' "$open" | grep -F $'invalid-key\tneeds-decision\tmalformed' >/dev/null \
+  printf '%s' "$open" | grep -F "$FM_DECISION_MALFORMED_KEY"$'\tneeds-decision\tmalformed' >/dev/null \
     || fail "an escalation with a malformed key slug vanished from the open-decision set"
   printf 'needs-decision [key=<slug>]: pick option A or B\nresolved [key=bad key]: typo\n' > "$state/malformed-keys.status"
   open=$(status_open_decisions "$state/malformed-keys.status")
-  printf '%s' "$open" | grep -F $'invalid-key\tneeds-decision\tpick option A or B' >/dev/null \
+  printf '%s' "$open" | grep -F "$FM_DECISION_MALFORMED_KEY"$'\tneeds-decision\tpick option A or B' >/dev/null \
     || fail "a copied key placeholder either voided the escalation or let a malformed resolve close it"
   printf 'needs-decision: which DB?\nblocked [key=db pick]: waiting on X\n' > "$state/malformed-open-evict.status"
   open=$(status_open_decisions "$state/malformed-open-evict.status")
   printf '%s' "$open" | grep -F $'default\tneeds-decision\twhich DB?' >/dev/null \
     || fail "a malformed opening key evicted an already-open unkeyed decision"
-  printf '%s' "$open" | grep -F $'invalid-key\tblocked\twaiting on X' >/dev/null \
+  printf '%s' "$open" | grep -F "$FM_DECISION_MALFORMED_KEY"$'\tblocked\twaiting on X' >/dev/null \
     || fail "a malformed opening key was absorbed instead of surfacing in the open-decision set"
-  printf 'needs-decision: which DB?\nblocked [key=db pick]: waiting on X\nresolved [key=invalid-key]: fixed the key\n' > "$state/malformed-open-close.status"
-  open=$(status_open_decisions "$state/malformed-open-close.status")
-  printf '%s' "$open" | grep -F $'invalid-key\t' >/dev/null \
-    && fail "a malformed escalation could not be closed by the key it surfaced under"
-  printf '%s' "$open" | grep -F $'default\tneeds-decision\twhich DB?' >/dev/null \
-    || fail "closing the malformed escalation also cleared the real unkeyed decision"
+  case "$FM_DECISION_MALFORMED_KEY" in
+    ''|*[!A-Za-z0-9._-]*) ;;
+    *) fail "the malformed-key marker is a legal slug, so a later keyed line could address it" ;;
+  esac
+  printf 'needs-decision [key=<slug>]: pick REST or RPC\nblocked [key=my work]: waiting on infra\nresolved [key=invalid-key]: unrelated close\nresolved [key=my work]: typo\n' \
+    > "$state/malformed-open-list.status"
+  open=$(status_open_decisions "$state/malformed-open-list.status")
+  printf '%s' "$open" | grep -F "$FM_DECISION_MALFORMED_KEY"$'\tneeds-decision\tpick REST or RPC' >/dev/null \
+    || fail "a second malformed opening key evicted the first malformed escalation"
+  printf '%s' "$open" | grep -F "$FM_DECISION_MALFORMED_KEY"$'\tblocked\twaiting on infra' >/dev/null \
+    || fail "the later malformed escalation is missing from the open-decision set"
+  printf 'blocked [key=my work]: waiting on infra\nblocked [key=my work]: waiting on infra\n' > "$state/malformed-repeat.status"
+  [ "$(status_open_decisions "$state/malformed-repeat.status" | grep -c .)" = 1 ] \
+    || fail "a repeated identical malformed line grows the open-decision set without bound"
   cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started

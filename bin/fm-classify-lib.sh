@@ -165,13 +165,13 @@ status_is_paused_or_captain_held() {  # <status-line>
 #   resolved       [key=api-shape]: <how it was decided>
 # A line with no token uses the key "default", preserving the historical
 # one-open-decision-per-task behavior (a bare "resolved:" closes "default").
-# A malformed slug is not a valid key, so it never names a record: an OPENING
-# needs-decision/blocked line surfaces under the reserved "invalid-key" slot
-# rather than vanishing from the open set - never under "default", which would
-# let a typo evict a real unkeyed decision - while a CLOSING resolve/held line is
-# ignored outright so a typo can never silently close a decision it does not
-# name. "invalid-key" is itself a valid slug, so the escalation stays loud and
-# answerable by that name until it is closed with it.
+# A malformed slug names nothing, so it can never be a keyed record. An OPENING
+# needs-decision/blocked line with one is kept as an UNKEYED entry (see
+# FM_DECISION_MALFORMED_KEY below): it is appended, never placed in a key's slot,
+# so it stays loudly visible without evicting a real decision or an earlier
+# malformed one, and no later line can close it because there is no key to name.
+# A CLOSING resolve/held line with a malformed slug is ignored outright, so a
+# typo can never silently close a decision it does not name.
 # The three parsers are pure reads of a single line; the verb parser strips any
 # key token before the colon so the leading word is recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word
@@ -259,6 +259,13 @@ _fm_decision_key_transition_allowed() {  # <key> <note>
   return 0
 }
 
+# The open-set column an escalation whose key slug is malformed is filed under.
+# Deliberately NOT a legal slug: every key a status line can name is a legal slug
+# or "default", so _fm_decision_drop can never match this marker, and neither
+# fm-send's --resolve-key nor a resolved/captain-held line can address it. That
+# is what makes these entries a list nothing evicts rather than one more slot.
+FM_DECISION_MALFORMED_KEY='invalid-key!'
+
 _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb>
   local open=$1 line=$2 resolve=$3 held=$4 verb key note stripped
   stripped=${line//[[:space:]]/}
@@ -269,9 +276,15 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
     || { printf '%s' "$open"; return 0; }
   case "$verb" in
     needs-decision|blocked)
-      key=${key:-invalid-key}
       note=$(status_line_note "$line")
-      open=$(_fm_decision_drop "$open" "$key")
+      if [ -n "$key" ]; then
+        open=$(_fm_decision_drop "$open" "$key")
+      else
+        key=$FM_DECISION_MALFORMED_KEY
+        case $'\n'"$open"$'\n' in
+          *$'\n'"$key"$'\t'"$verb"$'\t'"$note"$'\n'*) printf '%s' "$open"; return 0 ;;
+        esac
+      fi
       [ -n "$open" ] && open="${open}"$'\n'
       open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
       ;;
@@ -397,7 +410,7 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # cursor persisted under older semantics carries an open set that folder would
 # no longer produce, and only a version mismatch forces the full re-fold that
 # discards it. Forgetting the bump silently serves a wrong open set forever.
-FM_OPEN_DECISIONS_FOLD_VERSION=4
+FM_OPEN_DECISIONS_FOLD_VERSION=5
 
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure

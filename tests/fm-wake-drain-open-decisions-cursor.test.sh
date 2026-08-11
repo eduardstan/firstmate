@@ -341,6 +341,37 @@ test_fold_version_2_cursor_is_never_trusted() {
   pass "a cursor persisted under fold version 2 is refolded, not trusted"
 }
 
+test_every_malformed_key_escalation_survives_across_drains() {
+  local dir state status out
+  dir=$(make_case cursor-malformed-keys)
+  state="$dir/state"
+  status="$state/task8.status"
+  out="$dir/drain.out"
+
+  printf 'needs-decision: which DB?\nneeds-decision [key=<slug>]: pick REST or RPC\n' > "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "bootstrap drain over a malformed-key escalation failed"
+  grep -F 'pick REST or RPC' "$out" >/dev/null \
+    || fail "a malformed-key escalation did not surface through the drain"
+  grep -F 'which DB?' "$out" >/dev/null \
+    || fail "a malformed opening key evicted the real unkeyed decision"
+  grep -F 'malformed key - not answerable' "$out" >/dev/null \
+    || fail "the drain listed a malformed escalation as if it carried an answerable key"
+
+  printf 'blocked [key=my work]: waiting on infra\nresolved [key=my work]: typo\n' >> "$status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "incremental drain over a second malformed-key escalation failed"
+  grep -F 'pick REST or RPC' "$out" >/dev/null \
+    || fail "a second malformed-key escalation evicted the first across the cursor path"
+  grep -F 'waiting on infra' "$out" >/dev/null \
+    || fail "the second malformed-key escalation is missing from the drain output"
+  grep -F 'which DB?' "$out" >/dev/null \
+    || fail "the real unkeyed decision was lost across incremental drains"
+
+  pass "every malformed-key escalation stays listed across incremental drains"
+}
+
+test_every_malformed_key_escalation_survives_across_drains
 test_fold_version_2_cursor_is_never_trusted
 test_truncated_log_falls_back_to_a_full_refold_not_a_dropped_decision
 test_same_size_rewrite_is_detected_via_inode_identity
