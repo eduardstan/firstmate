@@ -745,6 +745,39 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+test_prime_agent_section_is_explicit_and_root_safe() {
+  local home prime scout charter child_line kernel_line
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded in expected brief prose.
+  child_line='Children created with `rlm(...)` reply to their parent through `agent_message`'
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded in expected brief prose.
+  kernel_line='Python state and `%cd` persist'
+  home="$TMP_ROOT/prime-agent-section-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" prime-ship firstmate --mode local-only --prime-agent >/dev/null 2>&1
+  prime="$home/data/prime-ship/brief.md"
+  assert_grep "# Prime Agent runtime" "$prime"     "Prime Agent ship brief missing its runtime section"
+  assert_grep "root session with no parent" "$prime"     "Prime Agent section must explain that the worker has no parent"
+  assert_grep "$child_line" "$prime" \
+    "Prime Agent section must assign agent_message to child replies"
+  assert_grep "root worker reports through its status file as normal" "$prime"     "Prime Agent section must route root reporting through the status file"
+  assert_grep "$kernel_line" "$prime" \
+    "Prime Agent section must preserve the persistent-kernel guidance"
+  assert_grep "Compaction is not a signal to wrap up" "$prime"     "Prime Agent section must reject compaction as a completion signal"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" prime-scout firstmate --scout --prime-agent >/dev/null 2>&1
+  scout="$home/data/prime-scout/brief.md"
+  assert_grep "# Prime Agent runtime" "$scout"     "Prime Agent scout brief missing its runtime section"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ordinary firstmate --mode local-only >/dev/null 2>&1
+  assert_no_grep "# Prime Agent runtime" "$home/data/ordinary/brief.md"     "ordinary brief unexpectedly carried the Prime Agent section"
+
+  if FM_HOME="$home" "$ROOT/bin/fm-brief.sh" prime-charter --secondmate --no-projects --prime-agent >/dev/null 2>&1; then
+    fail "--prime-agent must not apply to secondmate charters"
+  fi
+  pass "fm-brief.sh: explicit --prime-agent renders root-safe guidance only for crewmate briefs"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -787,4 +820,5 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_prime_agent_section_is_explicit_and_root_safe
 test_scout_and_secondmate_scaffold
