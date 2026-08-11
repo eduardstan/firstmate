@@ -399,9 +399,8 @@ EOF
 # regardless of how much new unrelated log content has since been folded in.
 #
 # The cursor format is `version`, `offset`, `ident`, then the folded open set.
-# FM_OPEN_DECISIONS_FOLD_VERSION must be bumped whenever
-# _fm_decision_fold_line semantics change, so persisted state from an older
-# interpretation is discarded and rebuilt from byte 0.
+# The FM_OPEN_DECISIONS_FOLD_VERSION declaration below owns the bump duty that
+# keeps that recorded version meaningful.
 #
 # Cursor invalidation is deliberately minimal, matching how status files are
 # ACTUALLY used in this repo: every one is created once (`>`) and only ever
@@ -443,7 +442,7 @@ _fm_open_decisions_cursor_path() {  # <status-file>
 # cursor persisted under older semantics carries an open set that folder would
 # no longer produce, and only a version mismatch forces the full re-fold that
 # discards it. Forgetting the bump silently serves a wrong open set forever.
-FM_OPEN_DECISIONS_FOLD_VERSION=2
+FM_OPEN_DECISIONS_FOLD_VERSION=4
 # Portable device:inode identity for the rotation/recreation check below.
 _fm_open_decisions_file_ident() {  # <file> -> "dev:inode", empty on I/O failure
   local f=$1
