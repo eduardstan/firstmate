@@ -188,6 +188,20 @@ test_matrix_claude_bare_nbsp_row() {
   pass "matrix: claude's ❯+NBSP row reads empty on every profile in both locales (#1988)"
 }
 
+test_matrix_claude_labelled_rule_does_not_need_native_identity() {
+  # Claude's labelled upper rule plus bare lower rule is not Pi's separated
+  # composer: the live bare agent glyph positively identifies the candidate.
+  # The classifier must not turn this idle pane into unknown merely because an
+  # adapter's native identity probe is unavailable while the pane is idle.
+  local idle typed
+  idle=$'──────────────── fm-lab-supervisor ──\n❯'"$NBSP"$'\n────────────────────────────────────\n  ctx 17%  ·  wk 25% 3d01h Fri'
+  assert_screen "labelled-rule claude idle" empty "$CAPS_STYLED" "$idle"
+  assert_screen "labelled-rule claude idle without identity capability" empty "$CAPS_STYLED_NOID" "$idle"
+  typed=$'──────────────── fm-lab-supervisor ──\n❯ fix the regression\n────────────────────────────────────'
+  assert_screen "labelled-rule claude draft" pending "$CAPS_STYLED" "$typed"
+  pass "matrix: claude's labelled upper rule and bare lower rule stay identified by the agent glyph"
+}
+
 test_matrix_codex_dim_hint_row() {
   # Real idle codex: bold `›`, reset, then an SGR-2 dim hint. Styled captures
   # strip the ghost and prove empty; plain captures must defer as unknown -
@@ -608,6 +622,7 @@ test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
+test_matrix_claude_labelled_rule_does_not_need_native_identity
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant

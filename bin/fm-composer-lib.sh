@@ -1062,11 +1062,14 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_LAST=$((FM_COMPOSER_SCAN_PI_CLOSE - 1))
   fi
   if [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 0 ] \
-     && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ]; then
+     && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ] \
+     && [ "$FM_COMPOSER_SELECTED_KIND" != bare ]; then
     if [ "${FM_COMPOSER_CAP_IDENTITY:-0}" = 1 ] && [ "$generic" -ge 0 ]; then
-      # Herdr can draw a Claude composer below a labelled upper rule and a
-      # bare lower rule. Pi uses the same lower rule as a separator, so defer
-      # this one ambiguity to native identity rather than rejecting Claude.
+      # Claude frames its positively identified bare agent glyph with a
+      # labelled upper rule and a bare lower rule. Pi uses the lower rule as a
+      # separator, so defer only candidates that lack that agent-glyph proof
+      # to native identity instead of rejecting Claude's idle composer.
+
       FM_COMPOSER_NEEDS_LONE_RULE_IDENTITY=1
     else
       FM_COMPOSER_SELECTED_KIND=
