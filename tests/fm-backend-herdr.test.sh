@@ -3142,10 +3142,11 @@ test_composer_state_pi_separator_requires_safe_native_identity() {
 # every away-mode escalation overnight. The fixture is the recorded shape of that
 # pane, NBSP padding and tall statusline included.
 herdr_claude_rule_framed_capture() {  # -> the recorded claude composer screen
+  local composer_text=${1-}
   printf '  \xe2\x8e\xbf  Tip: Use /theme to change the color theme\n'
   printf '\n'
   printf '\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 expose-demo-system-entry \xe2\x94\x80\xe2\x94\x80\n'
-  printf '\xe2\x9d\xaf\xc2\xa0\n'
+  printf '\xe2\x9d\xaf\xc2\xa0%s\n' "$composer_text"
   printf '\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n'
   printf '  eduard@valhalla:~/p  \xe2\x8e\x87 main  \xe2\x97\x86 Opus 5 \xc2\xb7 high\n'
   printf '  ctx 17%%  \xc2\xb7  5h 93%% 4h37m  \xc2\xb7  wk 25%% 3d01h Fri\n'
@@ -3167,7 +3168,7 @@ test_composer_state_claude_rule_framed_idle_is_empty() {
 test_composer_state_claude_rule_framed_real_text_is_pending() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-claude-rule-framed-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  herdr_claude_rule_framed_capture | sed 's/^\xe2\x9d\xaf\xc2\xa0$/\xe2\x9d\xaf\xc2\xa0half typed answer/' > "$resp/1.out"
+  herdr_claude_rule_framed_capture 'half typed answer' > "$resp/1.out"
   printf '{"result":{"agent":{"agent":"claude","agent_status":"done"}}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
