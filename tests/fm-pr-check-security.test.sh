@@ -3246,6 +3246,9 @@ test_closed_unmerged_poll_wakes_once_and_stays_armed() {
   [ "$(poll_artifact_snapshot "$state" task-a)" = "$armed" ] \
     || fail "the closed wake changed the armed poll"
   [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "the closed wake changed canonical metadata"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "closed-unmerged poll did not queue exactly one terminal notification"
+  ack_watcher_cycle "$state" || fail "first closed notification handling acknowledgement failed"
 
   for cycle in 2 3; do
     rm -f "$state/.last-check"
@@ -3260,9 +3263,8 @@ test_closed_unmerged_poll_wakes_once_and_stays_armed() {
       || fail "the closed-unmerged wake repeated on cycle $cycle"
     [ "$(poll_artifact_snapshot "$state" task-a)" = "$armed" ] \
       || fail "cycle $cycle changed the still-armed poll"
+    ack_watcher_cycle "$state" || fail "cycle $cycle control wake acknowledgement failed"
   done
-  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
-    || fail "closed-unmerged poll did not queue exactly one terminal notification"
 
   rm -f "$state/.last-check"
   set +e
@@ -3276,8 +3278,8 @@ test_closed_unmerged_poll_wakes_once_and_stays_armed() {
   esac
   assert_poll_absent "$state" task-a
   [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "merged retirement changed canonical metadata"
-  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 2 ] \
-    || fail "the merge after a closure did not queue its own separate notification"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "the merge after the acknowledged closure did not queue its own notification"
   pass "a closed-unmerged pull request wakes firstmate once, stays armed, and a later merge still wakes and retires"
 }
 
@@ -3309,6 +3311,9 @@ test_reopened_pull_request_wakes_on_its_second_closure() {
     *) fail "the first closure did not wake: $(cat "$dir/closed-1.out")" ;;
   esac
   [ -e "$marker" ] || fail "the first closure did not record its wake marker"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "the first closure did not queue exactly one notification"
+  ack_watcher_cycle "$state" || fail "first closure handling acknowledgement failed"
 
   rm -f "$state/.last-check"
   set +e
@@ -3321,6 +3326,7 @@ test_reopened_pull_request_wakes_on_its_second_closure() {
   ! grep -F 'task-a.check.sh: open' "$dir/reopened.out" >/dev/null \
     || fail "a reopened pull request queued a wake of its own"
   [ ! -e "$marker" ] || fail "a reopened pull request did not clear the closed-unmerged wake marker"
+  ack_watcher_cycle "$state" || fail "reopened control wake acknowledgement failed"
 
   rm -f "$state/.last-check"
   set +e
@@ -3332,8 +3338,8 @@ test_reopened_pull_request_wakes_on_its_second_closure() {
     check:*task-a.check.sh:*closed) ;;
     *) fail "the second genuine closure never woke anyone: $(cat "$dir/closed-2.out")" ;;
   esac
-  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 2 ] \
-    || fail "a closed, reopened, and re-closed pull request did not queue exactly two notifications"
+  [ "$(grep -c $'\tcheck\t.*task-a.check.sh\t' "$state/.wake-queue" 2>/dev/null || true)" -eq 1 ] \
+    || fail "the second closure did not queue its own notification after the first was acknowledged"
   [ "$(poll_artifact_snapshot "$state" task-a)" = "$armed" ] \
     || fail "the reopen and re-closure changed the still-armed poll"
   pass "a reopened pull request forgets its closure and its second closure wakes firstmate again"
