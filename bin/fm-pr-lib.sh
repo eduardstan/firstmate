@@ -615,7 +615,7 @@ fm_pr_poll_publish_prepared() {
     return 1
   fi
   FM_PR_POLL_CHECK_TMP=
-  if ! fm_pr_poll_artifacts_valid "${FM_PR_POLL_CHECK_DEST%/*}" "$FM_PR_POLL_EXPECT_ID" "$FM_PR_POLL_TEMPLATE"; then
+  if ! fm_pr_poll_artifacts_valid "$FM_PR_POLL_STATE_DIR" "$FM_PR_POLL_EXPECT_ID" "$FM_PR_POLL_TEMPLATE"; then
     fm_pr_poll_revoke_final || true
     return 1
   fi
