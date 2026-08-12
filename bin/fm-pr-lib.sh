@@ -23,7 +23,8 @@
 # watcher's own dedupe family, cleared here whenever a poll is published so a
 # re-armed task watching a new pull request wakes on its own closure, and
 # cleared by the watcher on a positive open reading so a reopened pull request
-# closed a second time wakes again.
+# closed a second time wakes again. Teardown removes it with the rest of the
+# task's poll artifacts, so a later task reusing the id inherits no suppressor.
 
 FM_PR_PROVIDER=
 FM_PR_URL=
