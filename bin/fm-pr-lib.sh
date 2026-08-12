@@ -69,6 +69,7 @@ FM_PR_POLL_EXPECT_TEMPLATE_HASH=
 FM_PR_POLL_EXPECT_DATA_IDENTITY=
 FM_PR_POLL_EXPECT_CHECK_IDENTITY=
 FM_PR_POLL_TEMPLATE=
+FM_PR_POLL_STATE_DIR=
 FM_PR_POLL_STATE_DEVICE=
 FM_PR_POLL_SNAPSHOT_ID=
 FM_PR_POLL_SNAPSHOT_PROVIDER=
@@ -481,6 +482,7 @@ fm_pr_poll_prepare() {
   FM_PR_POLL_EXPECT_PATH=$path
   FM_PR_POLL_EXPECT_NUMBER=$number
   FM_PR_POLL_TEMPLATE=$template
+  FM_PR_POLL_STATE_DIR=$state
   FM_PR_POLL_STATE_DEVICE=$(fm_pr_file_device "$state") || return 1
   [ -n "$FM_PR_POLL_STATE_DEVICE" ] || return 1
   FM_PR_POLL_DATA_TMP=$(mktemp "$state/.fm-pr-poll-data.XXXXXX") || return 1
@@ -562,7 +564,8 @@ fm_pr_poll_publish_prepared() {
   # this task already reported must not suppress this one's own closed wake.
   # Cleared before anything is published, so a failed publish leaves no
   # suppressor claiming a wake that was never surfaced for this poll.
-  fm_pr_poll_closed_marker_clear "${FM_PR_POLL_DATA_DEST%/*}" "$FM_PR_POLL_EXPECT_ID" || return 1
+  [ -n "$FM_PR_POLL_STATE_DIR" ] || return 1
+  fm_pr_poll_closed_marker_clear "$FM_PR_POLL_STATE_DIR" "$FM_PR_POLL_EXPECT_ID" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_PR_POLL_DATA_DEST" "$FM_PR_POLL_STATE_DEVICE" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_PR_POLL_REG_DEST" "$FM_PR_POLL_STATE_DEVICE" || return 1
   fm_pr_regular_destination_on_device_or_absent "$FM_PR_POLL_CHECK_DEST" "$FM_PR_POLL_STATE_DEVICE" || return 1
