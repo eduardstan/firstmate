@@ -44,7 +44,10 @@ detect_own() {
   [ "${CURSOR_INVOKED_AS:-}" = "cursor-agent" ] && { echo cursor; return; }
   # prime-agent's resident worker inherits the daemon supervisor environment,
   # so its own markers must be checked before the CLAUDECODE fast path.
-  if [ "${PI_CODING_AGENT:-}" = "true" ]     && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ]       || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ]       || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
+  if [ "${PI_CODING_AGENT:-}" = "true" ] \
+    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
+      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
+      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
     echo prime-agent
     return
   fi

@@ -101,11 +101,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-<<<<<<< HEAD
-    muse) [ "$kind" != secondmate ] || return 1 ;;
-=======
-    cursor|muse|prime-agent) [ "$kind" != secondmate ] || return 1 ;;
->>>>>>> 72a9f8b (no-mistakes(review): register prime-agent composer, control plane, and liveness)
+    muse|prime-agent) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
