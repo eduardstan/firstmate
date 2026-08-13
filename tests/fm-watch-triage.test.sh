@@ -233,7 +233,8 @@ test_classifier_primitives() {
   printf '%s' "$open" | grep -F $'q2\tneeds-decision\treal choice' >/dev/null \
     || fail "a malformed closing key resolved a keyed decision it does not name"
   printf '%s' "$open" | grep -F $'default\tneeds-decision\twhich DB?' >/dev/null \
-    || fail "a malformed closing key resolved the unkeyed default decision"  cat > "$state/activity.status" <<'EOF'
+    || fail "a malformed closing key resolved the unkeyed default decision"
+  cat > "$state/activity.status" <<'EOF'
 working [key=phase7]: Phase 7 started
 working [key=phase6]: Phase 6 started
 working [key=legal]: reviewing legal dependency

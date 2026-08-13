@@ -181,7 +181,8 @@ status_is_paused_or_captain_held() {  # <status-line>
 # name, and - the part that matters for loss - a malformed CLOSING key can never
 # silently resolve the decision it was meant to name.
 # The three parsers are pure reads of a single line; the verb parser strips any
-# key token before the colon so the leading word is recovered cleanly.status_line_verb() {  # <status-line> -> leading verb word
+# key token before the colon so the leading word is recovered cleanly.
+status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[*}
   v=${v#"${v%%[![:space:]]*}"}
