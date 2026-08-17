@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Strict no-emit contract check for the tracked Firstmate Pi extensions.
+# Strict no-emit contract check for the tracked Firstmate Pi extensions and the
+# prime-agent pair, which types against the same published Pi ExtensionAPI.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -26,6 +27,14 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$TMP_ROOT/lib" "$TMP_ROOT/node_modules/@earendil-works" "$TMP_ROOT/node_modules/@types"
+# The prime-agent pair keeps its real repo-relative layout, because both files
+# import the shared operational-input encoder from the .pi tree with a
+# ../../../ path: flattening them here would typecheck an import that does not
+# exist in the tracked source.
+mkdir -p "$TMP_ROOT/.prime/agent/extensions" "$TMP_ROOT/.pi/extensions/lib"
+cp "$ROOT/.prime/agent/extensions/fm-primary-prime-watch.ts" "$TMP_ROOT/.prime/agent/extensions/fm-primary-prime-watch.ts"
+cp "$ROOT/.prime/agent/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/.prime/agent/extensions/fm-primary-turnend-guard.ts"
+cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$TMP_ROOT/.pi/extensions/lib/fm-operational-input.ts"
 cp "$ROOT/.pi/extensions/fm-calm.ts" "$TMP_ROOT/fm-calm.ts"
 cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$TMP_ROOT/fm-primary-pi-watch.ts"
 cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$TMP_ROOT/fm-primary-turnend-guard.ts"
@@ -54,10 +63,10 @@ cat > "$TMP_ROOT/tsconfig.json" <<'JSON'
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["*.ts", "lib/*.ts"]
+  "include": ["*.ts", "lib/*.ts", ".prime/agent/extensions/*.ts", ".pi/extensions/lib/*.ts"]
 }
 JSON
 
 tsc -p "$TMP_ROOT/tsconfig.json" || exit 1
 version=$(jq -r '.version' "$PI_PACKAGE_DIR/package.json" 2>/dev/null || printf 'unknown')
-printf 'ok - tracked Pi extensions pass strict no-emit typecheck against Pi %s\n' "$version"
+printf 'ok - tracked Pi and prime-agent extensions pass strict no-emit typecheck against Pi %s\n' "$version"

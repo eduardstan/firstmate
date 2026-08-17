@@ -831,7 +831,352 @@ test_create_task_creates_with_no_focus_flag() {
   pass "fm_backend_herdr_create_task: tab create passes --no-focus"
 }
 
-# --- default-off disposable presentation projection ------------------------
+# --- default-on disposable presentation projection --------------------------
+
+# make_release_fakebin: a `herdr` stub whose only job is `status --json`, so the
+# presentation version floor can be exercised against scripted client and
+# selected-session server releases with no herdr installed at all. An empty
+# protocol or version omits that field; the literal client value "unreadable"
+# makes the whole call fail, and a server-running value other than true or false
+# omits that state.
+make_release_fakebin() {  # <dir> <client-protocol> <client-version> [<server-running> <server-protocol> <server-version>] -> echoes fakebin dir
+  local dir=$1 protocol=$2 version=$3 server_running=${4:-false} server_protocol=${5:-} server_version=${6:-}
+  local fb="$1/release-fakebin" fields="" server_fields=""
+  mkdir -p "$fb"
+  if [ -n "$version" ]; then
+    fields="\"version\":\"$version\""
+  fi
+  if [ -n "$protocol" ]; then
+    [ -n "$fields" ] && fields="$fields,"
+    fields="$fields\"protocol\":$protocol"
+  fi
+  case "$server_running" in
+    true|false) server_fields="\"running\":$server_running" ;;
+  esac
+  if [ -n "$server_version" ]; then
+    [ -n "$server_fields" ] && server_fields="$server_fields,"
+    server_fields="$server_fields\"version\":\"$server_version\""
+  fi
+  if [ -n "$server_protocol" ]; then
+    [ -n "$server_fields" ] && server_fields="$server_fields,"
+    server_fields="$server_fields\"protocol\":$server_protocol"
+  fi
+  cat > "$fb/herdr" <<SH
+#!/usr/bin/env bash
+set -u
+[ "\${1:-}" = status ] || exit 3
+SH
+  if [ "$protocol" = unreadable ] || [ "$version" = unreadable ]; then
+    printf 'exit 4\n' >> "$fb/herdr"
+  else
+    printf 'printf %s\n' "'{\"client\":{$fields},\"server\":{$server_fields}}\\n'" >> "$fb/herdr"
+  fi
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
+}
+
+# fm_backend_herdr_presentation_enabled is the one gate bin/fm-spawn.sh consults
+# before projecting a crewmate or scout, so these cases pin the default-on
+# contract, its explicit opt-out, its explicit opt-in, and the version floor
+# that decides the unconfigured default at that interface.
+presentation_enabled_verdict() {  # <config-dir> <fakebin> [state-dir] [session] -> "on"/"off"
+  HERDR_SESSION="${4:-}" PATH="$2:$PATH" bash -c '
+    . "$0/bin/backends/herdr.sh"
+    if fm_backend_herdr_presentation_enabled "$1" "$2"; then printf "on\n"; else printf "off\n"; fi
+  ' "$ROOT" "$1" "${3:-}"
+}
+
+# The exact release identities measured against the real macOS aarch64 release
+# binaries on 2026-08-05 and recorded in docs/verification/runtime-backends.md.
+AT_FLOOR_PROTOCOL=19
+AT_FLOOR_VERSION=0.8.0
+BELOW_FLOOR_PROTOCOL=17
+BELOW_FLOOR_VERSION=0.7.5
+
+test_presentation_defaults_on_at_or_above_the_floor() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-default-on"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/default-on.err"
+  fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "an absent presentation config at the floor must resolve on, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "a supported release must not warn: $(cat "$stderr")"
+  verdict=$(presentation_enabled_verdict "$dir/missing-config-dir" "$fb" 2>/dev/null)
+  [ "$verdict" = on ] || fail "a missing config dir at the floor must resolve on, got '$verdict'"
+  pass "herdr presentation: a home that set nothing gets the projection by default at or above the floor"
+}
+
+test_presentation_default_falls_back_below_the_floor() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-below-floor"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/below-floor.err"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unconfigured home below the floor must fall back flat, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "$BELOW_FLOOR_VERSION" \
+    "the below-floor warning must name the running release"
+  assert_contains "$(cat "$stderr")" "0.8.0" \
+    "the below-floor warning must name the upgrade that fixes it"
+  pass "herdr presentation: an unconfigured home below the floor falls back flat with one naming warning"
+}
+
+test_presentation_unreadable_release_falls_back() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-unreadable"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/unreadable.err"
+  fb=$(make_release_fakebin "$dir" unreadable unreadable)
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unverifiable release must fall back flat, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "could not be read" \
+    "an unverifiable release must say the floor could not be checked"
+  pass "herdr presentation: an unreadable client release falls back flat instead of guessing"
+}
+
+test_presentation_explicit_opt_in_survives_the_floor() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-legacy-opt-in"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/legacy.err"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  # The historical opt-in was a bare `touch` of the file, so an empty file must
+  # keep meaning a deliberate on - and must not warn, or every migrated home
+  # warns on every spawn.
+  : > "$config/herdr-presentation-spaces"
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "a legacy empty opt-in file must resolve on below the floor, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "a legacy empty opt-in file must not warn: $(cat "$stderr")"
+  printf '\n \n' > "$config/herdr-presentation-spaces"
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "a whitespace-only opt-in file must resolve on below the floor, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "a whitespace-only opt-in file must not warn: $(cat "$stderr")"
+  printf 'on\n' > "$config/herdr-presentation-spaces"
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "an explicit on must resolve on below the floor, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "an explicit opt-in must not warn: $(cat "$stderr")"
+  pass "herdr presentation: a deliberate opt-in is never silently downgraded below the floor"
+}
+
+test_presentation_explicit_off_opts_out() {
+  local dir config fb verdict value
+  dir="$TMP_ROOT/presentation-opt-out"; config="$dir/config"; mkdir -p "$config"
+  fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  for value in 'off' 'off
+' '  off  ' 'OFF' 'Off'; do
+    printf '%s' "$value" > "$config/herdr-presentation-spaces"
+    verdict=$(presentation_enabled_verdict "$config" "$fb" 2>/dev/null)
+    [ "$verdict" = off ] || fail "the opt-out value '$value' must resolve off, got '$verdict'"
+  done
+  pass "herdr presentation: an explicit off opts the home out"
+}
+
+test_presentation_unrecognized_value_warns_and_keeps_the_default() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-unrecognized"; config="$dir/config"; mkdir -p "$config"
+  stderr="$dir/unrecognized.err"
+  printf 'disabled\n' > "$config/herdr-presentation-spaces"
+  fb=$(make_release_fakebin "$dir" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = on ] || fail "an unrecognized value at the floor must keep the default on, got '$verdict'"
+  assert_contains "$(cat "$stderr")" 'unrecognized value' \
+    "an unrecognized value must warn so a typo is visible"
+  # A typo is not a deliberate opt-in, so below the floor it takes the default's
+  # flat fallback rather than forcing a focus-unsafe projection.
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" 2>"$stderr")
+  [ "$verdict" = off ] || fail "an unrecognized value below the floor must follow the default, got '$verdict'"
+  pass "herdr presentation: an unrecognized value warns and follows the default instead of failing a spawn"
+}
+
+test_presentation_floor_warning_is_one_per_release() {
+  local dir config state fb first second third
+  dir="$TMP_ROOT/presentation-floor-dedupe"; config="$dir/config"; state="$dir/state"
+  mkdir -p "$config" "$state"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  first=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  second=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  [ -n "$first" ] || fail "the first below-floor spawn must warn"
+  [ -z "$second" ] || fail "a repeat spawn on the same release must not warn again: $second"
+  # A downgrade or an upgrade is a different release, so it is announced again.
+  fb=$(make_release_fakebin "$dir/other" 16 0.7.3)
+  third=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  assert_contains "$third" '0.7.3' "a changed release must re-announce the floor"
+  pass "herdr presentation: the below-floor warning is one per home per release, not one per spawn"
+}
+
+test_presentation_floor_warning_marker_is_atomic_and_symlink_safe() {
+  local dir config state fb i pid warnings marker outside symlink_warning failure_state failure_warning
+  local pids=()
+  dir="$TMP_ROOT/presentation-floor-marker-safety"; config="$dir/config"; state="$dir/state"
+  mkdir -p "$config" "$state"
+  fb=$(make_release_fakebin "$dir" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  for i in {1..20}; do
+    presentation_enabled_verdict "$config" "$fb" "$state" \
+      >"$dir/concurrent-$i.out" 2>"$dir/concurrent-$i.err" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || fail "a concurrent presentation-floor verdict failed"
+  done
+  warnings=$(awk '/^warning:/ { count++ } END { print count + 0 }' "$dir"/concurrent-*.err)
+  [ "$warnings" -eq 1 ] \
+    || fail "concurrent below-floor spawns must publish exactly one warning, got $warnings"
+
+  state="$dir/symlink-state"
+  mkdir -p "$state"
+  marker="$state/.herdr-presentation-floor-version-0-7-5--protocol-17-"
+  outside="$dir/symlink-target"
+  ln -s "$outside" "$marker"
+  symlink_warning=$(presentation_enabled_verdict "$config" "$fb" "$state" 2>&1 >/dev/null)
+  [ -z "$symlink_warning" ] \
+    || fail "an existing dangling marker symlink must be treated as already claimed: $symlink_warning"
+  [ ! -e "$outside" ] \
+    || fail "publishing the floor marker followed a dangling symlink outside the state directory"
+
+  failure_state="$dir/failure-state"
+  mkdir -p "$failure_state"
+  cat > "$fb/ln" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fb/ln"
+  failure_warning=$(presentation_enabled_verdict "$config" "$fb" "$failure_state" 2>&1 >/dev/null)
+  [ -n "$failure_warning" ] \
+    || fail "a non-collision marker publication failure must not suppress the warning"
+  pass "herdr presentation: warning marker publication is atomic, symlink-safe, and fails visible"
+}
+
+test_presentation_running_server_release_is_load_bearing() {
+  local dir config fb verdict stderr
+  dir="$TMP_ROOT/presentation-running-server-floor"; config="$dir/config"
+  mkdir -p "$config"
+  stderr="$dir/server.err"
+
+  fb=$(make_release_fakebin "$dir/old-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+    true "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" stale-session 2>"$stderr")
+  [ "$verdict" = off ] \
+    || fail "an old running server must keep a new client below the presentation floor, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "server version $BELOW_FLOOR_VERSION" \
+    "the floor warning must name the selected running server release"
+
+  fb=$(make_release_fakebin "$dir/new-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+    true "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" current-session 2>"$stderr")
+  [ "$verdict" = on ] \
+    || fail "an at-floor client and running server must project, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "an at-floor client and running server must not warn: $(cat "$stderr")"
+
+  fb=$(make_release_fakebin "$dir/old-client" "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION" \
+    true "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" current-session 2>"$stderr")
+  [ "$verdict" = off ] \
+    || fail "a below-floor client must conservatively block projection despite an at-floor server, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "$BELOW_FLOOR_VERSION" \
+    "the conservative client/server warning must name the below-floor client"
+
+  printf 'on\n' > "$config/herdr-presentation-spaces"
+  fb=$(make_release_fakebin "$dir/opt-in-old-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" \
+    true "$BELOW_FLOOR_PROTOCOL" "$BELOW_FLOOR_VERSION")
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" stale-session 2>"$stderr")
+  [ "$verdict" = on ] \
+    || fail "an explicit opt-in must survive a below-floor running server, got '$verdict'"
+  [ ! -s "$stderr" ] || fail "an explicit opt-in below the server floor must not warn: $(cat "$stderr")"
+  unlink "$config/herdr-presentation-spaces"
+
+  fb=$(make_release_fakebin "$dir/unknown-server" "$AT_FLOOR_PROTOCOL" "$AT_FLOOR_VERSION" unknown)
+  verdict=$(presentation_enabled_verdict "$config" "$fb" "" unknown-session 2>"$stderr")
+  [ "$verdict" = off ] \
+    || fail "an unreadable selected-session server state must fail flat instead of substituting the client, got '$verdict'"
+  assert_contains "$(cat "$stderr")" "could not be read" \
+    "an unreadable selected-session server state must warn"
+  pass "herdr presentation: client and selected server floors compose conservatively without overriding explicit opt-in"
+}
+
+# The floor classifier is pure, so these cases pin it against every release
+# identity measured from the real binaries plus the deliberate signal-loss and
+# signal-divergence shapes that decide which signal carried a verdict.
+release_floor_verdict() {  # <protocol> <version> -> above|below|indeterminate
+  bash -c '
+    . "$0/bin/backends/herdr.sh"
+    status=0
+    fm_backend_herdr_release_floor_verdict "$1" "$2" || status=$?
+    case "$status" in
+      0) printf "above\n" ;;
+      1) printf "below\n" ;;
+      *) printf "indeterminate\n" ;;
+    esac
+  ' "$ROOT" "$1" "$2"
+}
+
+test_release_floor_verdict_matches_the_measured_releases() {
+  local expected protocol version got case_line
+  # protocol<TAB>version<TAB>expected, from the 2026-08-05 measurement.
+  while IFS=$'\t' read -r protocol version expected; do
+    [ -n "$expected" ] || continue
+    got=$(release_floor_verdict "$protocol" "$version")
+    [ "$got" = "$expected" ] \
+      || fail "protocol '$protocol' version '$version' should be $expected, got $got"
+  done <<'CASES'
+16	0.7.3	below
+16	0.7.4	below
+17	0.7.5	below
+17	0.7.5-preview.2026-07-21-0f10e1453a7f	below
+18	0.7.5-preview.2026-07-29-44b3adb12552	below
+19	0.8.0-preview.2026-08-04-d78e3d3b5126	above
+19	0.8.0	above
+20	0.9.0	above
+CASES
+  case_line=$(release_floor_verdict 19 '')
+  [ "$case_line" = above ] || fail "a floor protocol alone must carry an above verdict, got $case_line"
+  case_line=$(release_floor_verdict 17 '')
+  [ "$case_line" = below ] || fail "a below-floor protocol alone must carry a below verdict, got $case_line"
+  case_line=$(release_floor_verdict '' 0.8.0)
+  [ "$case_line" = above ] || fail "a floor version alone must carry an above verdict, got $case_line"
+  case_line=$(release_floor_verdict '' 0.7.5)
+  [ "$case_line" = below ] || fail "a below-floor version alone must carry a below verdict, got $case_line"
+  case_line=$(release_floor_verdict '' '')
+  [ "$case_line" = indeterminate ] || fail "losing both signals must be indeterminate, got $case_line"
+  case_line=$(release_floor_verdict 'not-a-number' 'not-a-version')
+  [ "$case_line" = indeterminate ] || fail "two unparseable signals must be indeterminate, got $case_line"
+  pass "herdr presentation floor: every measured release, and each signal alone, classifies correctly"
+}
+
+test_release_floor_verdict_survives_losing_either_signal() {
+  local got
+  # Divergence, asserted explicitly so neither half can go vacuous: with a
+  # floor protocol and a below-floor version the protocol carries the verdict,
+  # and removing it flips the answer, which proves it was load-bearing there.
+  got=$(release_floor_verdict 19 0.7.5)
+  [ "$got" = above ] || fail "the protocol signal must carry an above verdict on its own, got $got"
+  got=$(release_floor_verdict '' 0.7.5)
+  [ "$got" = below ] || fail "the divergent case must flip once the protocol signal is gone, got $got"
+  # The mirror image: a floor version with a stale protocol, and the same
+  # removal check.
+  got=$(release_floor_verdict 16 0.9.0)
+  [ "$got" = above ] || fail "the version signal must carry an above verdict on its own, got $got"
+  got=$(release_floor_verdict 16 '')
+  [ "$got" = below ] || fail "the divergent case must flip once the version signal is gone, got $got"
+  pass "herdr presentation floor: either signal alone can carry an above verdict, and each divergence is real"
+}
+
+test_presentation_preference_reports_three_distinct_states() {
+  local dir config got
+  dir="$TMP_ROOT/presentation-preference"; config="$dir/config"; mkdir -p "$config"
+  preference() {
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_presentation_preference "$1"' "$ROOT" "$1" 2>/dev/null
+  }
+  got=$(preference "$config")
+  [ "$got" = default ] || fail "an absent file must report the default, got '$got'"
+  printf 'on\n' > "$config/herdr-presentation-spaces"
+  got=$(preference "$config")
+  [ "$got" = on ] || fail "an explicit on must report on, got '$got'"
+  printf 'off\n' > "$config/herdr-presentation-spaces"
+  got=$(preference "$config")
+  [ "$got" = off ] || fail "an explicit off must report off, got '$got'"
+  printf 'disabled\n' > "$config/herdr-presentation-spaces"
+  got=$(preference "$config")
+  [ "$got" = default ] || fail "an unrecognized value must report the default, got '$got'"
+  pass "herdr presentation: config parsing separates a deliberate choice from an unconfigured default"
+}
 
 test_projection_journal_is_atomic_and_uses_128_bit_token() {
   local dir state out token parsed status
@@ -2762,6 +3107,167 @@ test_composer_state_pi_incomplete_separator_below_stale_generic_is_unknown() {
   pass "fm_backend_herdr_composer_state: an incomplete lower Pi separator cannot inherit a stale empty row"
 }
 
+# prime-agent 0.7.1 renders a bare `>` prompt with no border, which the shared
+# safety rule reads as a dead shell. Promotion requires BOTH the live
+# foreground process and the native reporter to say prime-agent, because
+# `/quit` leaves the reporter identity behind on a pane that has already
+# returned to a login shell (verified live, 2026-08-08) - so identity alone
+# would hand a shell with `PS1='> '` an injection target.
+prime_agent_process_info() {  # <pane> <foreground-name>
+  printf '{"result":{"type":"pane_process_info","process_info":{"pane_id":"%s","shell_pid":42,"foreground_process_group_id":42,"foreground_processes":[{"name":"/home/x/.local/bin/%s","argv":["%s"],"pid":42}]}}}\n' \
+    "$1" "$2" "$2"
+}
+
+# A process table for the pane's own subtree, in the exact `pid ppid comm`
+# shape the subtree probe reads from ps.
+prime_agent_fake_ps() {  # <path> <row>...
+  local path=$1
+  shift
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'cat <<ROWS\n'
+    printf '%s\n' "$@"
+    printf 'ROWS\n'
+  } > "$path"
+  chmod +x "$path"
+}
+
+test_composer_state_prime_agent_bare_prompt_needs_both_signals() {
+  local dir log resp fb out case_id
+  for case_id in both-live identity-only-dead-shell process-only; do
+    dir="$TMP_ROOT/composer-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    # The row prime-agent actually draws: the `>` glyph at normal intensity and
+    # its rotating placeholder in dark truecolor, which the ghost stripper drops.
+    printf '\x1b[0m\x1b[48;2;44;44;49m >  \x1b[0m\x1b[38;2;113;113;122mTry "explain how @<filepath> works"\x1b[0m\n' > "$resp/1.out"
+    case "$case_id" in
+      both-live)
+        prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
+      identity-only-dead-shell)
+        prime_agent_process_info w1:p2 bash > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
+      process-only)
+        prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"","agent_status":""}}}\n' > "$resp/3.out"
+        ;;
+    esac
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+    case "$case_id" in
+      both-live) [ "$out" = empty ] || fail "a live prime-agent composer should read empty, got '$out'" ;;
+      *) [ "$out" = unknown ] || fail "prime-agent case '$case_id' must remain unknown, got '$out'" ;;
+    esac
+  done
+  pass "fm_backend_herdr_composer_state: a bare '>' needs BOTH the live prime-agent process and its native identity"
+}
+
+test_composer_state_prime_agent_real_text_is_pending() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-prime-pending"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '\x1b[0m\x1b[48;2;44;44;49m >  half-typed steer\x1b[0m\n' > "$resp/1.out"
+  prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"working"}}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  # A WORKING pane must still classify, unlike Pi's arm: mid-turn submit
+  # confirmation is exactly what falls back to this read.
+  [ "$out" = pending ] || fail "unsubmitted text in a working prime-agent composer should read pending, got '$out'"
+  pass "fm_backend_herdr_composer_state: a working prime-agent pane still reports pending composer text"
+}
+
+test_composer_state_prime_placeholder_requires_ghost_styling() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-prime-placeholder-styling"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '> Try "review @<filepath> carefully"\n' > "$resp/1.out"
+  prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = pending ] || fail "a bright Prime draft matching placeholder text must remain pending, got '$out'"
+
+  : > "$log"
+  rm -f "$resp/.count"
+  printf '\x1b[0m\x1b[48;2;44;44;49m >  \x1b[0m\x1b[38;2;113;113;122mTry "review @<filepath> carefully"\x1b[0m\n' > "$resp/1.out"
+  prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+  printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] || fail "a dark-truecolor Prime placeholder must read empty, got '$out'"
+
+  pass "fm_backend_herdr_composer_state: Prime placeholders require ghost styling"
+}
+
+# The same reporter-survives-the-agent fact decides RECOVERY, not just the
+# composer: after `/quit` the pane is a login shell while `agent get` still
+# answers `agent: prime-agent, agent_status: idle`. Reporting that pane `alive`
+# would leave a quit secondmate never relaunched and its detached daemon worker
+# never retired, so the live foreground process is what settles it - and only
+# when the probe is actually readable.
+test_agent_state_prime_agent_quit_pane_is_dead() {
+  local dir log resp fb out case_id ps_bin
+  for case_id in quit-shell suspended-agent live-agent unreadable-probe unreadable-table other-harness; do
+    dir="$TMP_ROOT/agent-state-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+    ps_bin="$dir/ps"
+    printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
+    # Only the pane's own shell survives a quit; nothing else is left running.
+    prime_agent_fake_ps "$ps_bin" '  1     0 systemd' ' 42     1 bash'
+    case "$case_id" in
+      quit-shell)
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        prime_agent_process_info w1:p2 bash > "$resp/4.out"
+        ;;
+      suspended-agent)
+        # Ctrl+Z: the shell is back in the foreground, but prime-agent is still
+        # there as its stopped child.
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        prime_agent_process_info w1:p2 bash > "$resp/4.out"
+        prime_agent_fake_ps "$ps_bin" '  1     0 systemd' ' 42     1 bash' ' 43    42 prime-agent'
+        ;;
+      live-agent)
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 prime-agent > "$resp/3.out"
+        ;;
+      unreadable-probe)
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"working"}}}\n' > "$resp/2.out"
+        printf '{"error":{"code":"internal"}}\n' > "$resp/3.out"
+        ;;
+      unreadable-table)
+        # A process table that does not even hold the pane's own shell answers
+        # nothing about it - a pane hosted on another machine looks like this.
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/2.out"
+        prime_agent_process_info w1:p2 bash > "$resp/3.out"
+        prime_agent_process_info w1:p2 bash > "$resp/4.out"
+        prime_agent_fake_ps "$ps_bin" '  1     0 systemd'
+        ;;
+      other-harness)
+        printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/2.out"
+        ;;
+    esac
+    fb=$(make_herdr_fakebin "$dir")
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_PS_BIN="$ps_bin" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state default:w1:p2' "$ROOT" )
+    case "$case_id" in
+      quit-shell)
+        [ "$out" = dead ] || fail "a quit prime-agent pane must classify dead so recovery relaunches it, got '$out'"
+        ;;
+      *)
+        [ "$out" = alive ] || fail "prime-agent case '$case_id' must stay alive, got '$out'"
+        ;;
+    esac
+  done
+  # A harness that is not prime-agent never pays for the extra probe.
+  assert_no_grep 'process-info' "$TMP_ROOT/agent-state-prime-other-harness/log" \
+    "a non-prime-agent pane was charged a foreground-process probe"
+  pass "fm_backend_herdr_agent_state: only a quit prime-agent pane is dead; suspended, live and unreadable stay alive"
+}
+
 test_composer_state_pi_separator_requires_safe_native_identity() {
   local dir log resp fb out status case_id idx=0
   for case_id in working non-pi unreadable over-tall; do
@@ -4136,6 +4642,18 @@ test_create_task_refuses_when_agent_state_ambiguous
 test_create_task_husk_replacement_creates_before_closing
 test_create_task_creates_and_parses_ids
 test_create_task_creates_with_no_focus_flag
+test_presentation_defaults_on_at_or_above_the_floor
+test_presentation_default_falls_back_below_the_floor
+test_presentation_unreadable_release_falls_back
+test_presentation_explicit_opt_in_survives_the_floor
+test_presentation_explicit_off_opts_out
+test_presentation_unrecognized_value_warns_and_keeps_the_default
+test_presentation_floor_warning_is_one_per_release
+test_presentation_floor_warning_marker_is_atomic_and_symlink_safe
+test_presentation_running_server_release_is_load_bearing
+test_release_floor_verdict_matches_the_measured_releases
+test_release_floor_verdict_survives_losing_either_signal
+test_presentation_preference_reports_three_distinct_states
 test_projection_journal_is_atomic_and_uses_128_bit_token
 test_projection_journal_v2_binds_and_advances_exact_endpoint
 test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane
@@ -4208,6 +4726,10 @@ test_composer_state_pi_separator_requires_safe_native_identity
 test_composer_state_claude_rule_framed_idle_is_empty
 test_composer_state_claude_rule_framed_real_text_is_pending
 test_composer_state_lone_rule_still_refuses_pi_and_unreadable
+test_composer_state_prime_agent_bare_prompt_needs_both_signals
+test_composer_state_prime_agent_real_text_is_pending
+test_composer_state_prime_placeholder_requires_ghost_styling
+test_agent_state_prime_agent_quit_pane_is_dead
 test_composer_state_claude_unbordered_prompt_is_empty
 test_composer_state_claude_unbordered_prompt_is_pending
 test_composer_state_bare_prompt_below_stale_bordered_banner_wins

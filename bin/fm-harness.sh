@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|muse|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -31,19 +31,60 @@ detect_own() {
   # Layer 1: environment markers for verified harnesses.
   # Keep marker detection before ancestry detection as an explicit precedence rule.
   # Only claude, pi, and grok set verified markers of their own; codex, opencode,
-  # and kimi are markerless, so a foreign marker retained in a terminal
+  # kimi, and muse are markerless, so a foreign marker retained in a terminal
   # multiplexer's stored environment can silently misidentify one of them before
   # ancestry is consulted. This is a precedence hazard, not evidence that
   # CLAUDECODE inheritance into a kimi child was observed; it was not observed.
+  # prime-agent is checked BEFORE the CLAUDECODE fast path, and it has to be.
+  # Its resident session worker inherits the DAEMON SUPERVISOR's environment
+  # rather than the launching client's, and that supervisor is long-lived and
+  # per-user: one started from a Claude session hands CLAUDECODE=1 to every
+  # later prime-agent worker, and no launch-side `env -u` can reach it
+  # (reproduced live on prime-agent 0.7.1 - a firstmate crewmate reported
+  # itself as claude). The same inheritance is why FM_PI_HARNESS, which works
+  # as the launch boundary for pi-signed, never reaches a prime-agent tool
+  # subprocess at all.
+  # What DOES reach it are prime-agent's own markers, injected per tool call by
+  # the agent session itself: PRIME_AGENT_CODING_AGENT_DIR
+  # (dist/core/agent-session.js _addWebsearchKeyEnv) and, from the worker,
+  # PRIME_AGENT_INTERNAL_DAEMON_WORKER=1. Neither name exists in pi 0.83.0,
+  # whose equivalent config variable is PI_CODING_AGENT_DIR.
+  # Both are required to appear ALONGSIDE the Pi-family marker, so a single
+  # stale PRIME_AGENT_* left in a multiplexer's stored environment cannot
+  # outrank claude on its own. That stored-environment hazard is the same one
+  # documented above, now running in both directions.
+  if [ "${PI_CODING_AGENT:-}" = "true" ] \
+    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
+      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
+      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
+    echo prime-agent
+    return
+  fi
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
+  # The rest of the Pi family. pi and pi-signed share PI_CODING_AGENT=true with
+  # prime-agent, so only the launch-boundary marker splits signed from plain;
+  # anything unmarked stays pi, exactly as before this adapter landed.
   if [ "${PI_CODING_AGENT:-}" = "true" ]; then
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
     return
   fi
-  # grok sets GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
-  # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this marker
-  # is unambiguous when firstmate runs natively on grok.
+  # grok set GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
+  # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so the marker
+  # is unambiguous WHEN PRESENT - but it is not guaranteed present. A grok 1.0.0
+  # hook process carries GROK_HOOK_EVENT, GROK_HOOK_NAME, GROK_SESSION_ID, and
+  # GROK_WORKSPACE_ROOT with no GROK_AGENT at all (verified from the live process
+  # environment of a wedged grok 1.0.0 Stop hook, 2026-08-07). Treat this marker as
+  # a fast path only; the ancestry walk below is what actually guarantees grok is
+  # identified, and any rule that must be RELIABLE under grok has to test the hook
+  # markers too (see .claude/settings.json Stop entries, docs/turnend-guard.md).
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
+  # muse (Muse Code) publishes no harness-identity marker of its own. The only
+  # MUSE_* variable it is documented to hand a child is MUSE_CURRENT_SESSION_LOG,
+  # a per-session log PATH rather than an identity, and its export to tool
+  # subprocesses is unverified (verified: muse 0.1.0-R708.1), so muse is detected
+  # by ancestry alone below. Do NOT promote MUSE_CURRENT_SESSION_LOG to a marker
+  # without verifying it reaches children AND that it cannot survive in a
+  # multiplexer's stored environment, which is the precedence hazard above.
   # Layer 2: walk the parent chain and match the command name.
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
@@ -54,6 +95,18 @@ detect_own() {
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
       kimi) echo kimi; return ;;
+      # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
+      # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
+      # name carries the version and CHANGES on every auto-update. Match the stable
+      # prefix rather than any exact name. Deliberately anchored, never *muse*, so
+      # unrelated commands (musescore, amuse) cannot be misread as this harness.
+      muse|muse-bin-*) echo muse; return ;;
+      # prime-agent's installed launcher keeps the exact binary name for the
+      # client TUI, the daemon supervisor, and every session worker (verified,
+      # prime-agent 0.7.1), so one anchored name covers all three. Anchored
+      # rather than globbed for the same reason as muse: no unrelated command
+      # should be read as this harness.
+      prime-agent) echo prime-agent; return ;;
       pi-signed) echo pi; return ;;
       pi) echo pi; return ;;
       node*|python*)
@@ -64,6 +117,7 @@ detect_own() {
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
+          *prime-agent*) echo prime-agent; return ;;
           *" pi "*|*/pi) echo pi; return ;;
         esac ;;
     esac

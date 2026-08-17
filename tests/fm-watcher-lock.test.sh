@@ -115,7 +115,7 @@ test_guard_warnings() {
   #       warning follows it, and the guidance is repair-after-drain (never the
   #       old conflicting "restart NOW first").
   #   (2) a fresh watcher and an empty queue: total silence.
-  local dir state err first banner_line queue_line
+  local dir state err first banner_line queue_line pid identity
   dir=$(make_case guard)
   state="$dir/state"
   err="$dir/guard.err"
@@ -138,9 +138,9 @@ test_guard_warnings() {
   grep -F 'last beat: never' "$err" >/dev/null || fail "guard banner missing the beacon age"
   grep -F 'guarded operation WILL still run' "$err" >/dev/null || fail "guard banner missing generic continuation wording"
   ! grep -F 'requested message WILL still be sent' "$err" >/dev/null || fail "shared guard used send-specific continuation wording"
-  grep -F 'repair missing watcher supervision' "$err" >/dev/null || fail "guard banner missing the harness-aware fix command"
+  grep -F 'watcher supervision needs Stop-owned automatic recovery' "$err" >/dev/null || fail "guard banner missing neutral automatic-recovery guidance"
   grep -F 'queued wakes pending - drain them' "$err" >/dev/null || fail "guard did not warn about pending queue"
-  grep -F 'After draining queued wakes, repair missing watcher supervision' "$err" >/dev/null || fail "guard did not order supervision repair after drain"
+  grep -F 'After draining queued wakes, watcher supervision needs Stop-owned automatic recovery' "$err" >/dev/null || fail "guard did not order neutral automatic recovery after drain"
   ! grep -F 'Restart it NOW, before anything else' "$err" >/dev/null || fail "guard still gave conflicting restart-first instruction"
   ! grep -F 'as the harness-tracked background task' "$err" >/dev/null || fail "guard still printed the old universal background-task repair text"
   banner_line=$(grep -n 'WATCHER DOWN' "$err" | head -1 | cut -d: -f1)
@@ -156,17 +156,27 @@ test_guard_warnings() {
   CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
   grep -F "source '$dir/config/x-mode.env' first" "$err" >/dev/null || fail "guard repair line did not source the X-mode cadence config"
 
-  # (2) fresh watcher, empty queue -> silence.
+  # (2) live watcher plus fresh beacon, empty queue -> silence.
   dir=$(make_case guard-fresh)
   state="$dir/state"
   err="$dir/guard.err"
   printf 'project=x\n' > "$state/task.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid") || fail "could not identify fresh guard watcher"
+  mkdir -p "$state/.watch.lock"
+  printf '%s\n' "$pid" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "$identity" > "$state/.watch.lock/pid-identity"
   touch "$state/.last-watcher-beat"
   # Non-git FM_ROOT keeps the worktree-tangle check inert so "fresh watcher ->
   # total silence" stays a pure assertion about watcher state.
   FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=300 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
-  [ ! -s "$err" ] || fail "guard warned with a fresh watcher and no queued wakes: $(cat "$err")"
-  pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when fresh"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  [ ! -s "$err" ] || fail "guard warned with a live watcher and fresh beacon: $(cat "$err")"
+  pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
 
 test_lock_single_winner_under_concurrency() {
@@ -438,14 +448,25 @@ test_watch_restart_rejects_reused_pid() {
 }
 
 test_watch_restart_attaches_to_healthy_peer() {
-  local dir state fakebin out peer identity armpid status i
+  local dir state fakebin out peer_ready peer identity armpid status i
   dir=$(make_case restart-healthy-peer)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/restart.out"
+  peer_ready="$dir/peer.ready"
   mark_pr_check_migration_complete "$state"
-  node -e 'process.on("SIGTERM", () => {}); setTimeout(() => {}, 300000)' &
+  node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); fs.writeFileSync(process.argv[1], "ready\n"); setTimeout(() => {}, 300000)' "$peer_ready" &
   peer=$!
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -s "$peer_ready" ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$peer_ready" ]; then
+    kill -KILL "$peer" 2>/dev/null || true
+    wait "$peer" 2>/dev/null || true
+    fail "TERM-resistant peer did not become ready"
+  fi
   identity=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$peer") || fail "could not identify peer pid"
   mkdir "$state/.watch.lock"
   printf '%s\n' "$peer" > "$state/.watch.lock/pid"
@@ -468,11 +489,10 @@ test_watch_restart_attaches_to_healthy_peer() {
   wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -eq 0 ] || fail "restart arm did not complete after its attached peer ended (status $status): $(cat "$out")"
-  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$out" \
-    || fail "restart arm did not report a completed cycle after its attached peer ended: $(cat "$out")"
-  ! grep -qF 'watcher: FAILED' "$out" || fail "restart arm reported FAILED for a finished peer cycle: $(cat "$out")"
-  pass "watch restart attaches to a verified healthy peer and completes when that cycle ends without a successor"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "restart arm did not fail after its attached peer ended without a successor (status $status): $(cat "$out")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$out" \
+    || fail "restart arm did not surface the attached cycle end: $(cat "$out")"
+  pass "watch restart attaches to a verified healthy peer and later surfaces a successor gap"
 }
 
 test_watcher_self_evicts_on_lock_takeover() {
@@ -572,17 +592,17 @@ test_arm_attaches_and_waits_for_live_fresh_watcher() {
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm reported FAILED for a healthy watcher"
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$wpid" ] || fail "arm disturbed the healthy watcher's lock"
   is_live_non_zombie "$armpid" || fail "arm exited while the seed watcher was still healthy"
-  # After the seed dies (a completed cycle with no successor), the attached arm
-  # must report COMPLETION, not the FAILED false alarm for a cycle that ran.
+  # After the seed dies with no successor and no delivered wake, the attached arm
+  # fails loudly: it holds no handle on the seed's stdout, so the empty delivery
+  # ledger is its only evidence about that cycle.
   kill "$wpid" 2>/dev/null || true
   wait "$wpid" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -eq 0 ] || fail "attached arm did not complete after seed died (status $status)"
-  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$armout" \
-    || fail "attached arm did not emit completion after the seed cycle ended"
-  ! grep -qF 'watcher: FAILED' "$armout" || fail "attached arm reported FAILED for a completed cycle"
-  pass "arm attaches to a live fresh watcher and completes when that cycle ends with no successor"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after seed died (status $status)"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "attached arm did not emit the typed cycle-end failure"
+  pass "arm attaches to a live fresh watcher and fails loudly when that cycle has no successor"
 }
 
 test_attached_arm_signal_is_recorded_in_cycle_ledger() {
@@ -763,17 +783,19 @@ test_arm_waits_for_peer_beacon_after_child_stands_down() {
   grep -qF "watcher: attached pid=$peer" "$armout" || fail "arm did not wait for and attach to the peer watcher: $(cat "$armout")"
   ! grep -qF 'watcher: FAILED' "$armout" || fail "arm falsely reported FAILED during peer startup race"
   is_live_non_zombie "$armpid" || fail "arm exited while the peer was still healthy"
-  # After the peer dies without a successor, the attached arm reports the
-  # COMPLETED cycle (the peer ran and ended), never the FAILED false alarm.
+  # After the peer dies without a successor, the ATTACHED arm has no stand-down
+  # marker to read - it never held that peer's stdout - so the peer's empty
+  # delivery ledger is the only evidence, and a cycle that delivered nothing
+  # fails loudly. The child's own stand-down above is the separate owned-child
+  # path, which still completes (test_arm_self_eviction_completes_without_successor).
   kill "$peer" 2>/dev/null || true
   wait "$peer" 2>/dev/null || true
   wait_for_exit "$armpid" 80
   status=$?
-  [ "$status" -eq 0 ] || fail "attached arm did not complete after peer died (status $status): $(cat "$armout")"
-  grep -qF 'watcher: cycle complete - supervision cycle ended without an actionable reason' "$armout" \
-    || fail "peer-attached arm did not emit completion after the peer cycle ended: $(cat "$armout")"
-  ! grep -qF 'watcher: FAILED' "$armout" || fail "peer-attached arm reported FAILED for a completed cycle"
-  pass "arm attaches to a peer watcher after child stands down and completes when that cycle ends"
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] || fail "attached arm did not fail after peer died (status $status): $(cat "$armout")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
+    || fail "peer-attached arm did not emit the typed cycle-end failure: $(cat "$armout")"
+  pass "arm attaches to a peer watcher after child stands down and surfaces a missing successor"
 }
 
 test_attached_arm_fails_loud_when_peer_wedges_stale() {

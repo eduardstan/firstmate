@@ -15,8 +15,9 @@
 # herdr-verification-p2.md "Task container shape", refined by
 # docs/herdr-backend.md "Default task container shape"): ONE herdr workspace PER
 # FIRSTMATE HOME (the primary, and each secondmate, gets its own), ONE herdr TAB
-# per task inside its home's workspace. An optional, default-off presentation
-# flag creates a disposable workspace for a clean fresh task instead. That
+# per task inside its home's workspace. The default-on presentation projection
+# creates a disposable workspace for a clean fresh task instead unless the home
+# opts out. That
 # workspace is a non-authoritative visual projection containing only the normal
 # task pane. Its random token and mutable label never authorize lookup,
 # adoption, reuse, closure, deletion, task ownership, or endpoint selection.
@@ -32,7 +33,8 @@
 # (upstream discussion #1328, fixed by PR #1877), while a pane-death removal
 # preserves focus exactly when the dying workspace sits behind the focused
 # one or the focused one is last (upstream issue #1621, fixed by PR #1912);
-# both fixes are merged upstream but in no release. Projected cleanup
+# both fixes first shipped in Herdr 0.8.0, which is the version floor for
+# default-on projection (FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION). Projected cleanup
 # therefore serializes under the session lock, repositions a doomed workspace
 # behind the focused one when needed, and ends its verified lone idle shell
 # so Herdr removes the emptied workspace through the focus-preserving
@@ -98,6 +100,28 @@ FM_BACKEND_HERDR_MIN_EVENTS_PROTOCOL=16
 # presentation path uses one narrowly whitelisted raw-socket request after
 # verifying the exact method and parameter schema.
 FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL=16
+# The version floor for DEFAULT-ON presentation projection. Projection turns
+# every crewmate teardown into a workspace-emptying removal, and the focus-safe
+# removal plan can only avoid Herdr's focus-stealing explicit close while the
+# doomed pane holds a provably lone idle childless shell; a persistent child of
+# that shell (gitstatusd, a zsh-async worker, direnv) makes the plan fall back
+# to the plain explicit close, which steals focus on every release without the
+# two upstream focus fixes (PR #1877 commit 165dca45, PR #1912 commit a979916).
+# Herdr 0.8.0 is the first release carrying both, so a home that configured
+# nothing is projected only at or above it. An explicit "on" is still honored
+# below the floor.
+# Protocol 19 is the structural signal for that floor, measured against the real
+# macOS aarch64 release binaries (docs/verification/runtime-backends.md
+# "Presentation version floor"): 0.7.3 and 0.7.4 report 16, 0.7.5 reports 17,
+# the first post-fix preview reports 18, and 0.8.0 reports 19. No build lacking
+# both fixes reaches 19, and the pre-fix builds top out at 17.
+FM_BACKEND_HERDR_MIN_PRESENTATION_PROTOCOL=19
+FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION=0.8.0
+# One-warning-per-release dedupe marker prefix, under the state dir. The
+# projection decision is remade on every spawn, so an undeduplicated
+# below-floor warning would repeat on every crewmate; the key is the detected
+# release, so an upgrade or a downgrade is announced again.
+FM_BACKEND_HERDR_PRESENTATION_FLOOR_MARKER_PREFIX=".herdr-presentation-floor-"
 # Per-pane escalation dedupe marker prefix, under the state dir. One marker per
 # window (keyed like the watcher's own .stale-<key>): set when a ->blocked edge
 # is enqueued, cleared on any working edge, so exactly one wake fires per
@@ -108,8 +132,8 @@ FM_BACKEND_HERDR_ESCALATED_PREFIX=".herdr-escalated-"
 # at a seeded secondmate home's root, containing exactly that secondmate's id.
 # The primary firstmate home never carries this marker.
 FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
-# The default-off presentation projection is intentionally separate from the
-# authoritative task endpoint record.
+# The presentation projection is intentionally separate from the authoritative
+# task endpoint record.
 # A per-task journal lives under state/ as <id>.herdr-presentation.
 # Version 1 records only the attempted projection's random correlator.
 # Version 2 additionally binds the successful projection's exact home,
@@ -117,6 +141,201 @@ FM_BACKEND_HERDR_SECONDMATE_MARKER=".fm-secondmate-home"
 # spawn can replace one verified agent-free husk under the session lock.
 # No send, capture, Treehouse, or general task-ownership path reads it.
 FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX=".herdr-presentation"
+
+# The config item a home writes to opt out of, or explicitly in to, the
+# projection.
+FM_BACKEND_HERDR_PRESENTATION_CONFIG="herdr-presentation-spaces"
+
+# fm_backend_herdr_presentation_preference <config-dir>: the single owner of
+# config/herdr-presentation-spaces parsing. Echoes exactly one of "off", "on"
+# (a deliberate opt-in, honored even below the version floor), or "default"
+# (this home configured nothing, so the floor decides).
+# Values are read with the whole-file whitespace-stripped convention the other
+# scalar config items already use (config/backlog-backend, config/crew-harness),
+# plus case folding. An empty file is the historical presence-based opt-in form
+# and still means an explicit "on", so no home that deliberately enabled the
+# projection can lose it. An unrecognized value warns and falls back to the
+# default rather than failing a spawn over a purely visual setting, so a typo is
+# visible instead of silently deciding anything.
+fm_backend_herdr_presentation_preference() {  # <config-dir>
+  local config_dir=${1:-} file value
+  [ -n "$config_dir" ] || { printf 'default\n'; return 0; }
+  file="$config_dir/$FM_BACKEND_HERDR_PRESENTATION_CONFIG"
+  [ -f "$file" ] || { printf 'default\n'; return 0; }
+  value=$(tr -d '[:space:]' < "$file" 2>/dev/null | tr '[:upper:]' '[:lower:]') || value=""
+  case "$value" in
+    off) printf 'off\n' ;;
+    ''|on) printf 'on\n' ;;
+    *)
+      echo "warning: $file: unrecognized value \"$value\"; herdr presentation spaces fall back to the default (write \"off\" to opt out, \"on\" to force the projection on)" >&2
+      printf 'default\n'
+      ;;
+  esac
+}
+
+# fm_backend_herdr_version_at_least <candidate> <floor>: numeric dotted-release
+# comparison. Return codes: 0 candidate >= floor, 1 candidate < floor, 2 the
+# candidate is unparseable. Any prerelease or build suffix is stripped first, so
+# a 0.8.0-preview build compares as 0.8.0 (it is built from the 0.8.0 line and
+# carries its fixes) while a 0.7.5-preview build compares as 0.7.5.
+fm_backend_herdr_version_at_least() {  # <candidate> <floor>
+  local candidate=${1:-} floor=${2:-} c f
+  candidate=${candidate%%[-+]*}
+  case "$candidate" in ''|*[!0-9.]*) return 2 ;; esac
+  while [ -n "$floor" ]; do
+    c=${candidate%%.*}
+    f=${floor%%.*}
+    [ -n "$c" ] || c=0
+    [ "$c" -gt "$f" ] 2>/dev/null && return 0
+    [ "$c" -lt "$f" ] 2>/dev/null && return 1
+    case "$candidate" in *.*) candidate=${candidate#*.} ;; *) candidate= ;; esac
+    case "$floor" in *.*) floor=${floor#*.} ;; *) floor= ;; esac
+  done
+  return 0
+}
+
+# fm_backend_herdr_release_floor_verdict <protocol> <version>: the pure
+# classifier for the presentation version floor. Return codes: 0 at or above the
+# floor, 1 provably below it, 2 indeterminate.
+# Two independent signals are read so no single field is load-bearing, and
+# either one can carry a positive verdict: the protocol number, which is the
+# structural signal this adapter already uses for every other capability gate,
+# and the release core of the version string. A signal that is unreadable or
+# unparseable simply cannot carry a verdict; a readable protocol below the floor
+# is decisive on its own, and only losing BOTH signals reports indeterminate.
+fm_backend_herdr_release_floor_verdict() {  # <protocol> <version>
+  local protocol=${1:-} version=${2:-} protocol_known=0 version_status=0
+  case "$protocol" in
+    ''|*[!0-9]*) ;;
+    *)
+      protocol_known=1
+      [ "$protocol" -ge "$FM_BACKEND_HERDR_MIN_PRESENTATION_PROTOCOL" ] && return 0
+      ;;
+  esac
+  fm_backend_herdr_version_at_least "$version" "$FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION" \
+    || version_status=$?
+  [ "$version_status" -eq 0 ] && return 0
+  { [ "$protocol_known" -eq 1 ] || [ "$version_status" -eq 1 ]; } && return 1
+  return 2
+}
+
+# fm_backend_herdr_presentation_release_supported: run the floor classifier
+# against the installed client and, when one exists, the selected session's
+# running server. A running server and client compose conservatively: both must
+# be supported. When status positively reports no running server, only the
+# client that will start it is applicable. Same return codes as
+# fm_backend_herdr_release_floor_verdict, and sets
+# FM_BACKEND_HERDR_PRESENTATION_RELEASE to the identifier a caller's warning
+# names. An unreadable server-running state is indeterminate rather than
+# permission to substitute the client release.
+fm_backend_herdr_presentation_release_supported() {  # [<session>]
+  local session=${1:-} status running client_protocol client_version client_verdict=0
+  local server_protocol server_version server_verdict=0
+  FM_BACKEND_HERDR_PRESENTATION_RELEASE="an unreadable release"
+  command -v herdr >/dev/null 2>&1 || return 2
+  command -v jq >/dev/null 2>&1 || return 2
+  [ -n "$session" ] || session=$(fm_backend_herdr_session)
+  status=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null) || return 2
+  client_protocol=$(printf '%s' "$status" | jq -r '.client.protocol // empty' 2>/dev/null) || return 2
+  client_version=$(printf '%s' "$status" | jq -r '.client.version // empty' 2>/dev/null) || return 2
+  fm_backend_herdr_release_floor_verdict "$client_protocol" "$client_version" || client_verdict=$?
+  running=$(printf '%s' "$status" | jq -r '
+    if .server.running == true then "true"
+    elif .server.running == false then "false"
+    else "unknown"
+    end
+  ' 2>/dev/null) || return 2
+  case "$running" in
+    true)
+      server_protocol=$(printf '%s' "$status" | jq -r '.server.protocol // empty' 2>/dev/null) || return 2
+      server_version=$(printf '%s' "$status" | jq -r '.server.version // empty' 2>/dev/null) || return 2
+      fm_backend_herdr_release_floor_verdict "$server_protocol" "$server_version" || server_verdict=$?
+      if [ "$server_verdict" -eq 1 ]; then
+        FM_BACKEND_HERDR_PRESENTATION_RELEASE="server version ${server_version:-unknown} (protocol ${server_protocol:-unknown})"
+        return 1
+      fi
+      if [ "$client_verdict" -eq 1 ]; then
+        FM_BACKEND_HERDR_PRESENTATION_RELEASE="version ${client_version:-unknown} (protocol ${client_protocol:-unknown})"
+        return 1
+      fi
+      if [ "$server_verdict" -ne 0 ]; then
+        FM_BACKEND_HERDR_PRESENTATION_RELEASE="server version ${server_version:-unknown} (protocol ${server_protocol:-unknown})"
+        return 2
+      fi
+      if [ "$client_verdict" -ne 0 ]; then
+        FM_BACKEND_HERDR_PRESENTATION_RELEASE="version ${client_version:-unknown} (protocol ${client_protocol:-unknown})"
+        return 2
+      fi
+      return 0
+      ;;
+    false)
+      FM_BACKEND_HERDR_PRESENTATION_RELEASE="version ${client_version:-unknown} (protocol ${client_protocol:-unknown})"
+      return "$client_verdict"
+      ;;
+    *) return 2 ;;
+  esac
+}
+
+# fm_backend_herdr_presentation_floor_warn <state-dir> <verdict>: emit the one
+# clear below-floor warning, deduplicated per home per detected release when a
+# usable state dir is given. Without one the warning is emitted every call,
+# which is what a one-shot caller wants.
+fm_backend_herdr_presentation_floor_warn() {  # <state-dir> <verdict>
+  local state_dir=${1:-} verdict=${2:-2} release=${FM_BACKEND_HERDR_PRESENTATION_RELEASE:-an unreadable release} key marker reason tmp=""
+  if [ "$verdict" -eq 1 ]; then
+    reason="herdr $release is older than the $FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION floor for presentation spaces, where projected cleanup can steal the active workspace"
+  else
+    reason="the selected herdr release could not be read, so the $FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION floor for presentation spaces cannot be verified"
+  fi
+  if [ -n "$state_dir" ] && [ -d "$state_dir" ] && [ ! -L "$state_dir" ]; then
+    key=${release//[^a-zA-Z0-9]/-}
+    marker="$state_dir/$FM_BACKEND_HERDR_PRESENTATION_FLOOR_MARKER_PREFIX$key"
+    { [ -e "$marker" ] || [ -L "$marker" ]; } && return 0
+    tmp=$(umask 077; mktemp "$state_dir/.herdr-presentation-floor.XXXXXX" 2>/dev/null) || tmp=""
+    if [ -n "$tmp" ]; then
+      if ln "$tmp" "$marker" 2>/dev/null; then
+        rm -f -- "$tmp"
+      else
+        rm -f -- "$tmp"
+        { [ -e "$marker" ] || [ -L "$marker" ]; } && return 0
+      fi
+    fi
+  fi
+  echo "warning: $reason; using the ordinary flat layout instead. Upgrade herdr to $FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION or newer (herdr update) to restore the projection, or write \"on\" into config/$FM_BACKEND_HERDR_PRESENTATION_CONFIG to force it on this release." >&2
+  return 0
+}
+
+# fm_backend_herdr_presentation_default_supported <state-dir> [<session>]:
+# compose the applicable release verdict and the shared warning contract for
+# one unconfigured home.
+fm_backend_herdr_presentation_default_supported() {  # <state-dir> [<session>]
+  local state_dir=${1:-} session=${2:-} verdict=0
+  fm_backend_herdr_presentation_release_supported "$session" || verdict=$?
+  [ "$verdict" -eq 0 ] && return 0
+  fm_backend_herdr_presentation_floor_warn "$state_dir" "$verdict"
+  return 1
+}
+
+# fm_backend_herdr_presentation_enabled <config-dir> [<state-dir>]: the one gate
+# bin/fm-spawn.sh consults before projecting this home's children into
+# disposable one-task workspaces (docs/herdr-backend.md "Presentation spaces"
+# owns the full contract). An explicit "off" or "on" is obeyed as written; a
+# home that configured nothing is projected only at or above the version floor,
+# and otherwise falls back to the flat layout with one warning. Sets
+# FM_BACKEND_HERDR_PRESENTATION_PREFERENCE for the new-projection boundary to
+# distinguish an unconfigured default from an explicit opt-in.
+fm_backend_herdr_presentation_enabled() {  # <config-dir> [<state-dir>]
+  local config_dir=${1:-} state_dir=${2:-} preference
+  preference=$(fm_backend_herdr_presentation_preference "$config_dir")
+  # bin/fm-spawn.sh reads this out-parameter after sourcing this adapter.
+  # shellcheck disable=SC2034
+  FM_BACKEND_HERDR_PRESENTATION_PREFERENCE=$preference
+  case "$preference" in
+    off) return 1 ;;
+    on) return 0 ;;
+  esac
+  fm_backend_herdr_presentation_default_supported "$state_dir"
+}
 
 # fm_backend_herdr_workspace_label: the per-firstmate-HOME herdr workspace
 # label (docs/herdr-backend.md "Default task container shape"). The PRIMARY home (no
@@ -709,13 +928,32 @@ fm_backend_herdr_projection_close_pane_focus_preserving() {  # <session> <pane-i
 #   sat behind it (or the focused workspace was last), and moves focus to the
 #   focused workspace's right neighbor otherwise (upstream issue #1621, fixed
 #   by PR #1912, commit a979916).
-# Both fixes are merged upstream but in no release as of 2026-07-28.
+# Both fixes first shipped in Herdr 0.8.0 (protocol 19), verified 2026-08-05.
 # Firstmate therefore removes a doomed non-focused workspace by ending its
 # verified lone idle shell (the pane-death path), repositioning it behind the
 # focused workspace first when needed. Moving it to the end preserves every
 # other workspace's relative order, so no presentation ordering change
-# persists. A release carrying both fixes preserves focus on both paths, so
-# this stays safe without any version gate.
+# persists.
+# That reasoning covers the pane-death route only. The plan's plain-close
+# FALLBACK is reachable exactly when the doomed pane's shell cannot be proved
+# lone, childless, and idle - a persistent gitstatusd, zsh-async worker, or
+# direnv fails that proof permanently - and on a release without both fixes the
+# fallback is the focus-stealing close itself, so the mitigation is conditional
+# rather than unconditional and a version gate IS required. Default-on
+# projection is therefore floored at FM_BACKEND_HERDR_MIN_PRESENTATION_VERSION,
+# where every removal primitive preserves focus and the proof stops being
+# load-bearing. That floor has ONE owner, the spawn-time gate
+# fm_backend_herdr_presentation_enabled, so every new projection is either on a
+# supported release or is a home's deliberate below-floor opt-in. Session-start
+# cleanup deliberately retires a leftover projection husk on every release,
+# including below the floor. The accepted exposure is limited to the rare
+# downgrade path where a home projected on Herdr 0.8.0 or newer and then moved
+# to a 0.7.x release, and occurs once per leftover workspace at session start
+# rather than once per task teardown; the exact prior-tab restore bounds it.
+# Refusing that close below the floor would leak workspaces that nothing else
+# removes and block teardown because fm-teardown treats an unconfirmed close as
+# a hard stop. That cleanup is therefore authorized containment rather than a
+# second gate, and the spawn-time gate remains the floor's sole owner.
 
 # fm_backend_herdr_workspace_move_capable: verify that one guarded raw
 # workspace.move request is possible in <session>: python3 for the transport,
@@ -741,9 +979,10 @@ fm_backend_herdr_workspace_move_capable() {  # <session>
 
 # fm_backend_herdr_emptying_close_plan: choose the focus-safe removal for one
 # exact pane. The LAST echoed line is the plan: "plain" (use the ordinary
-# explicit close; the exact-tab restore backstop masks 0.7.5's focus move)
-# or "death <shell-pid>" (end the proved lone idle shell so Herdr removes
-# the emptied workspace through its focus-preserving pane-death path).
+# explicit close; below the presentation version floor the exact-tab restore
+# backstop masks the focus move it causes when it empties a non-focused
+# workspace) or "death <shell-pid>" (end the proved lone idle shell so Herdr
+# removes the emptied workspace through its focus-preserving pane-death path).
 # Whenever the repositioning mover was invoked, a preceding
 # "moved<TAB><ws><TAB><original-index><TAB><socket><TAB><focused><TAB><pre-move-order-json>"
 # record line is echoed first so the caller can hand it to
@@ -1648,7 +1887,7 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence status
+  local session=$1 pane_id=$2 out code presence status agent fg_rc live_rc
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -1664,8 +1903,37 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     return 0
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
+  agent=$(printf '%s' "$out" | jq -r '.result.agent.agent // empty' 2>/dev/null)
   case "$status" in
-    working|idle|done|blocked) printf 'live' ;;
+    working|idle|done|blocked)
+      # prime-agent's reporter identity SURVIVES the agent it describes: after
+      # `/quit` the pane is a login shell while `agent get` still answers
+      # `agent: prime-agent, agent_status: idle` (verified 2026-08-08 on
+      # prime-agent 0.7.1). Registration is therefore not proof of a live agent
+      # for this harness, and reporting `live` here would leave a quit
+      # secondmate pane classified `alive` forever - never relaunched, and its
+      # detached worker never retired.
+      #
+      # Absence from the FOREGROUND alone is not that proof, because
+      # prime-agent takes itself out of the foreground on purpose: Ctrl+Z stops
+      # its whole process group with SIGTSTP and hands the terminal back to the
+      # login shell while the agent - a stopped child of that shell - is still
+      # very much alive. Only a pane whose process subtree holds no prime-agent
+      # process AT ALL has genuinely returned to a bare shell, which is what
+      # `/quit` leaves behind. Both probes must positively confirm (exit 1);
+      # an unreadable one (exit 2) keeps the registered verdict, so a probe this
+      # backend cannot answer never licenses closing a live agent's pane.
+      if [ "$agent" = prime-agent ]; then
+        fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane_id"
+        fg_rc=$?
+        if [ "$fg_rc" -eq 1 ]; then
+          fm_backend_herdr_pane_prime_agent_in_subtree "$session" "$pane_id"
+          live_rc=$?
+          if [ "$live_rc" -eq 1 ]; then printf 'no-agent'; return 0; fi
+        fi
+      fi
+      printf 'live'
+      ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -2319,6 +2587,9 @@ fm_backend_herdr_normalize_key() {  # <key>
     Enter|enter) printf 'enter' ;;
     Escape|escape|Esc|esc) printf 'escape' ;;
     C-c|c-c|ctrl+c|Ctrl+C) printf 'ctrl+c' ;;
+    # C-u clears a composer line. fm-send.sh's muse interrupt path needs it to
+    # drop the prompt muse restores into the composer after Escape.
+    C-u|c-u|ctrl+u|Ctrl+U) printf 'ctrl+u' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -2405,6 +2676,24 @@ fm_backend_herdr_strip_ansi() {  # <text>
 #              deliberately narrower than the bordered content classifier so a
 #              no-agent shell fallback prompt (`>`, `$`, `%`, or `#`) falls
 #              through to `unknown` instead of being misread as delivered.
+#   prime    - prime-agent's composer is a bare row whose only prompt glyph is
+#              a plain `>` - the very glyph the shared safety rule treats as a
+#              dead shell on an unstructured row - followed by a rotating
+#              de-emphasised placeholder (`Try "explain how @<filepath>
+#              works"`, one of five). Like Pi's shape above, it is accepted
+#              only on an identity conjunction the rendered row cannot carry,
+#              but it needs TWO signals rather than Pi's one: the pane's live
+#              foreground process must BE prime-agent
+#              (fm_backend_herdr_pane_prime_agent_foreground, kernel-level) AND
+#              Herdr's native `agent get` must identify it as prime-agent. The
+#              reporter alone is not enough here, because a quit prime-agent
+#              leaves its identity behind while the pane returns to a login
+#              shell (verified 2026-08-08), and a shell prompt of `> ` would
+#              then inherit this shape. Unlike Pi's arm neither signal is gated
+#              on agent STATUS, because the busy pane is exactly the case this
+#              shape has to serve: mid-turn submit confirmation falls back to
+#              the composer read whenever the pre-Enter baseline is not legibly
+#              idle.
 #   separated - Pi's composer is one or more content rows between two solid
 #              horizontal `─` separator rows, with no prompt glyph or side
 #              borders. This shape is accepted ONLY when Herdr's native
@@ -2462,6 +2751,13 @@ FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
 # An alternation's branches are matched as whole literal byte sequences and
 # stay correct regardless of locale.
 FM_BACKEND_HERDR_BARE_PROMPT_RE=${FM_BACKEND_HERDR_BARE_PROMPT_RE:-'^(❯|›)'}
+# prime-agent's composer prompt. Deliberately NOT added to the bare shape
+# above: `>` is also a dead-shell prompt, so this candidate is only ever
+# promoted to a composer once native agent identity says the pane is running
+# prime-agent (see the `prime` shape in the header). Requiring a space or an
+# end of row after the glyph keeps a redirection-looking transcript row
+# (`>>foo`) out of the candidate set.
+FM_BACKEND_HERDR_PRIME_PROMPT_RE=${FM_BACKEND_HERDR_PRIME_PROMPT_RE:-'^>( |$)'}
 # Pi allows a multi-line composer between its horizontal separators. Bound the
 # structural candidate so two unrelated transcript rules with an arbitrarily
 # large region between them can never be promoted into a composer.
@@ -2528,6 +2824,101 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
+# fm_backend_herdr_pane_prime_agent_foreground: 0 only when the pane's LIVE
+# foreground process group actually contains the prime-agent binary right now.
+#
+# This exists because the reporter identity above is not proof of a live agent:
+# verified 2026-08-08 on prime-agent 0.7.1, `/quit` returns the pane to a login
+# shell while Herdr still reports `agent: prime-agent, agent_status: idle`, and
+# the quit TUI's last composer row stays in the capture window. Without this
+# kernel-level check, a shell whose prompt happens to be `> ` would inherit
+# prime-agent's composer shape - exactly the dead-shell injection hazard the
+# shared composer rule exists to prevent.
+#
+# Three outcomes, because the two callers need different fail-safe directions:
+#   0 - the foreground process IS prime-agent (read succeeded).
+#   1 - the read succeeded and prime-agent is NOT in the foreground: this pane
+#       has genuinely returned to a shell.
+#   2 - the read itself is unusable (RPC failure, unexpected shape, missing
+#       field). Never treat this as evidence either way.
+# The composer arm accepts only 0, so an unreadable probe keeps a bare `>` out
+# of the composer set exactly as before. The liveness classifier below demotes
+# only on 1, so an unreadable probe can never make it close a live agent's pane.
+fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
+  local session=$1 pane=$2 info
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
+  printf '%s' "$info" | jq -e --arg pane "$pane" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+    and (.result.process_info.foreground_processes | type) == "array"
+  ' >/dev/null 2>&1 || return 2
+  printf '%s' "$info" | jq -e '
+    .result.process_info.foreground_processes
+    | any(
+        ((.name // "") | split("/") | last) == "prime-agent"
+        or (((.argv0 // .argv[0]) // "") | ltrimstr("-") | split("/") | last) == "prime-agent"
+      )
+  ' >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# fm_backend_herdr_pane_prime_agent_in_subtree: does the pane still HOST a
+# prime-agent process anywhere below its shell, foreground or not?
+#
+# This is the discriminator the recovery classifier needs and the foreground
+# probe above cannot give it. prime-agent removes itself from the foreground
+# deliberately: Ctrl+Z stops its whole group with SIGTSTP (verified in
+# prime-agent 0.7.1's interactive mode), so a suspended - fully live - agent
+# and a `/quit` pane look identical from the foreground alone. They differ in
+# the process table: the suspended agent is still a stopped child of the pane's
+# shell, while a quit one has exited and left nothing behind.
+#
+# Same three outcomes and the same fail-safe direction as the foreground probe:
+#   0 - a prime-agent process is present in the pane's subtree.
+#   1 - the pane's shell was located in the process table and has no
+#       prime-agent process under it.
+#   2 - unusable: no process-info, no shell pid, no ps, or a process table that
+#       does not even contain the pane's own shell (which is what a pane hosted
+#       on another machine looks like from here).
+fm_backend_herdr_pane_prime_agent_in_subtree() {  # <session> <pane-id>
+  local session=$1 pane=$2 info shell_pid ps_bin rows rc
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
+  shell_pid=$(printf '%s' "$info" | jq -er --arg pane "$pane" '
+    select(.result.type == "pane_process_info" and .result.process_info.pane_id == $pane)
+    | .result.process_info.shell_pid
+    | select(type == "number" and . > 1)
+    | floor
+  ' 2>/dev/null) || return 2
+  ps_bin=${FM_HERDR_PS_BIN:-ps}
+  command -v "$ps_bin" >/dev/null 2>&1 || return 2
+  rows=$("$ps_bin" -axo pid=,ppid=,comm= 2>/dev/null) || return 2
+  [ -n "$rows" ] || return 2
+  printf '%s\n' "$rows" | awk -v root="$shell_pid" '
+    { pid[NR] = $1; ppid[NR] = $2; comm[NR] = $3; n = NR; known[$1] = 1 }
+    END {
+      if (!known[root]) exit 2
+      inpane[root] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= n; i++) {
+          if (!inpane[pid[i]] && inpane[ppid[i]]) { inpane[pid[i]] = 1; changed = 1 }
+        }
+      }
+      for (i = 1; i <= n; i++) {
+        if (!inpane[pid[i]] || pid[i] == root) continue
+        name = comm[i]
+        sub(/^-/, "", name)
+        sub(/.*\//, "", name)
+        if (name == "prime-agent") exit 0
+      }
+      exit 1
+    }
+  '
+  rc=$?
+  case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac
+}
+
 # <mode> is `inject` (default) or `confirm`. They differ on exactly one case: a
 # native Pi composer whose agent is mid-turn. `inject` asks "may I safely type
 # here?" and a working Pi must answer no. `confirm` asks the different question
@@ -2540,6 +2931,7 @@ fm_backend_herdr_composer_state() {  # <target> [mode] -> empty|pending|unknown
   local target=$1 mode=${2:-inject}
   local session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
   local identity agent agent_status row=0 generic_line=0
+  local prime_raw="" prime_line=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   session=$FM_BACKEND_HERDR_SESSION
   pane=$FM_BACKEND_HERDR_PANE
@@ -2568,10 +2960,32 @@ fm_backend_herdr_composer_state() {  # <target> [mode] -> empty|pending|unknown
           raw_match=$line
           generic_line=$row
           found=1
+        elif printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_PRIME_PROMPT_RE"; then
+          # Held aside, not accepted: only native prime-agent identity below
+          # can turn a bare `>` row into a composer.
+          prime_raw=$line
+          prime_line=$row
         fi
         ;;
     esac
   done < <(printf '%s\n' "$cap")
+  # prime-agent: promote the held-aside `>` row only when it is the bottom-most
+  # candidate AND both independent signals agree that this pane is running
+  # prime-agent right now - the live foreground process (kernel-level, and the
+  # one that survives a quit correctly) and Herdr's native reporter identity.
+  if [ "$prime_line" -gt "$generic_line" ] \
+     && fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane"; then
+    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
+    IFS=$'\t' read -r agent agent_status <<EOF
+$identity
+EOF
+    if [ "$agent" = prime-agent ]; then
+      shape=prime
+      raw_match=$prime_raw
+      generic_line=$prime_line
+      found=1
+    fi
+  fi
   # Pi has no prompt glyph or side border. Compare its bottom-most complete
   # separator pair with the last generic match so an earlier bordered transcript
   # row can never suppress the live Pi composer. Identity is consulted only when
@@ -2659,6 +3073,12 @@ EOF
     stripped=${stripped//|/}
     stripped="${stripped#"${stripped%%[![:space:]]*}"}"
     stripped="${stripped%"${stripped##*[![:space:]]}"}"
+  elif [ "$shape" = prime ]; then
+    # Native prime-agent identity is the genuine composer container here, the
+    # same conjunction the separated shape uses: with it, the bare `>` is this
+    # harness's own prompt glyph and the shared owner may read the row as an
+    # empty agent composer; without it the row never reached this point.
+    bordered=1
   elif [ "$shape" = separated ]; then
     # The native Pi identity plus the complete separator pair is the genuine
     # composer container, equivalent to a bordered box for shared content
@@ -2668,7 +3088,9 @@ EOF
   # Delegate the empty/pending/unknown decision to the shared owner. The bare
   # shape only ever starts with an AGENT glyph (FM_BACKEND_HERDR_BARE_PROMPT_RE
   # is '^(❯|›)'), so a bare shell prompt never reaches here - it stays 'unknown'
-  # via the no-composer-row path above, exactly as before.
+  # via the no-composer-row path above, exactly as before. The one bare
+  # shell-style glyph that CAN reach here is prime-agent's `>`, and only with
+  # bordered=1 already set from its native identity.
   fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
 }
 
