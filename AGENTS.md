@@ -342,7 +342,8 @@ Require the matching `resolved` event, forbid `--yes`, and require the worker to
 Resume fleet supervision immediately after the decision lands.
 
 Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
-Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; passed or checks-passed is done; failed is failed, while a cancelled run (a task between runs after a supersession) reads working with a live worker and failed without one.
+Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; checks-passed is done, while passed is done only once the forge confirms its PR merged and otherwise reads unknown; failed is failed, while a cancelled run (a task between runs after a supersession) reads working with a live worker and failed without one.
+An active run whose code identity could not be established also reads unknown; unknown is deliberately not a result, so never read it as done or failed and never let it authorize teardown or cleanup on its own.
 A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership outside the supersession sequence above; steer it back to the gate response flow.
 The worker reports the PR when CI first becomes green rather than waiting for merge monitoring to finish.
 
@@ -497,6 +498,7 @@ Every ship brief must retain the worktree-isolation assertion and stop if launch
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.
 The generated Herdr contract must use a named non-`default` isolated lab and its guarded helper for every lifecycle action.
+When the resolved worker harness is `prime-agent`, scaffold with `--prime-agent`: the repo string cannot identify the harness, so firstmate keys that root-session and persistent-kernel contract from its own dispatch decision.
 
 Load `secondmate-provisioning` before creating or using a charter brief and preserve its idle-by-default and marked-return-channel contracts.
 Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
