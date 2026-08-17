@@ -143,7 +143,7 @@ fm_control_interrupt_clear_key() {  # <harness>
 fm_control_interrupt_ack_source() {  # <harness>
   case "${1-}" in
     muse) printf 'muse-session-terminal' ;;
-    claude|codex|opencode|pi|pi-signed|grok|kimi) printf 'none' ;;
+    claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi) printf 'none' ;;
     *) return 1 ;;
   esac
 }

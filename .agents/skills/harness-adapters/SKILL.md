@@ -309,7 +309,7 @@ The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watch
 `bin/fm-session-start.sh` reports when the live pi or pi-signed session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback; prime-agent has its own report because it has no trust gate.
 When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
 
-## prime-agent (VERIFIED 2026-08-17, Prime Agent 0.7.2)
+## prime-agent (VERIFIED 2026-08-08, Prime Agent 0.7.1; exit, interrupt, and control kinds re-verified 2026-08-17 on 0.7.2)
 
 Prime Agent is a Pi-family CLI, verified for crewmates, scouts, and LOCAL secondmates.
 Remote secondmates are not verified on it and stay refused by `bin/fm-remote-secondmate-control.sh`.
