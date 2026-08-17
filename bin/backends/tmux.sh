@@ -173,7 +173,7 @@ fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
     *)
       if name=$(fm_harness_path_name "$path") || name=$(fm_harness_path_name "$argv0"); then
         case "$name" in
-          prime-agent) printf 'other' ;;
+          prime-agent) printf 'agent' ;;
           *) printf 'agent' ;;
         esac
       else

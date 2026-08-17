@@ -150,6 +150,7 @@ Each pass polled `state/<id>.busy-state` while a real turn ran.
 | Harness | Version verified | Semantic source | Observed result |
 | --- | --- | --- | --- |
 | Pi | 0.82.0 | Extension `agent_start` / `agent_settled` with `ctx.isIdle()` | The spawn seed `busy source=fm-spawn`, then `busy source=pi-ext event=agent-start`, then `idle source=pi-ext event=agent-settled`; the turn-end marker was still touched. |
+| prime-agent | 0.7.2 | Herdr native agent state | A real Herdr pane reported `agent=prime-agent, agent_status=working`, and `fm_busy_classify` returned `busy herdr-native` during the turn; after Escape it reported `unknown missing` once the native state was idle. Tmux has no prime-agent semantic source and remains `unknown missing`. |
 | OpenCode | 1.17.18 | Plugin `session.status` | In a real TUI pane: seed, then `busy source=opencode-plugin event=session-busy`, then `idle source=opencode-plugin event=session-status-idle`. |
 | Claude | 2.1.220 (Claude Code) | Hooks `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd` | `UserPromptSubmit` fired for the argv launch prompt and each steer, and `Stop` closed every completed turn. A mid-stream Escape interrupt fired no closing hook, which is why the firstmate-controlled clear exists. `StopFailure` and `SessionEnd` are wired from the four hook names present in the installed binary; only the abnormal paths they cover were not reproduced live. |
 | Codex | codex-cli 0.145.0 | None usable | See below; classifies `unknown codex-unverified`. |
@@ -175,6 +176,56 @@ tests/fm-busy-state.test.sh
 tests/fm-busy-adapter-wiring.test.sh
 tests/fm-crew-state.test.sh
 ```
+
+## Prime Agent control mechanics
+
+Prime Agent 0.7.2 control mechanics were live-verified on 2026-08-17 in a disposable scout launched by `bin/fm-spawn.sh` with the real Herdr backend.
+The probe used a scratch Git repository and never targeted another fleet task.
+
+The launch and native state probe were:
+
+```sh
+bin/fm-spawn.sh "$probe_id" "$scratch_project" --scout --backend herdr prime-agent
+prime-agent --version
+herdr agent get "$pane_id" --session "$session" | jq -c '.result.agent | {agent,agent_status}'
+```
+
+Observed output shape:
+
+```text
+spawned <probe-id> harness=prime-agent kind=scout window=<session>:<workspace>:<pane>
+0.7.2
+{"agent":"prime-agent","agent_status":"working"}
+```
+
+A submitted turn was cancelled with one Herdr Escape key, leaving the pane agent alive and returning the composer to its idle prompt.
+The executable control-plane proof was:
+
+```sh
+FM_HOME=$PWD bin/fm-control.sh "$probe_id" interrupt
+FM_HOME=$PWD bin/fm-control.sh "$probe_id" exit
+FM_HOME=$PWD bin/fm-control.sh "$probe_id" relaunch --note 'continuing disposable control verification'
+```
+
+Observed output shape:
+
+```text
+interrupt-delivered <probe-id> harness=prime-agent backend=herdr verified=agent-alive cancel=unconfirmed
+stopped <probe-id> harness=prime-agent backend=herdr endpoint=<session>:<workspace>:<pane>
+relaunched <probe-id> harness=prime-agent from=prime-agent model=default effort=default backend=herdr endpoint=<session>:<workspace>:<pane>
+```
+
+After `exit`, `fm_backend_agent_state herdr "$target"` returned `dead`; after `relaunch`, it returned `alive`.
+The measured interrupt is one Escape with no composer-clear key, and the measured exit command is `/quit`.
+`prime-agent` supports ship, scout, and secondmate launch kinds in `bin/fm-spawn.sh`; remote secondmates remain separately refused.
+
+Prime Agent's Herdr-native reporter is a genuine busy source: during a real turn `fm_backend_busy_state herdr "$target"` returned `busy`, and `fm_busy_classify herdr "$target" prime-agent "$probe_id" "$state_dir"` returned `busy herdr-native`.
+After the turn settled, the same classifier returned `unknown missing`, so native idle is not treated as proof of idle.
+On tmux, where no Prime Agent semantic source is available, the classifier remains `unknown missing`.
+The live Herdr composer read returned `empty`; the shared classifier still returns `unknown` for a bare unstructured `>` row, so no `FM_COMPOSER_IDLE_RE` entry was added.
+
+The control-plane adapter matrix was compared against every verified adapter named by `AGENTS.md` and `bin/fm-harness.sh`; Prime Agent was the only verified adapter absent from `bin/fm-control-lib.sh`.
+The corresponding regression is `tests/fm-control.test.sh`.
 
 ## Turn-end guard
 

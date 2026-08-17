@@ -59,6 +59,24 @@ Claude Code is the harness whose title no longer attributes it at all; every oth
 Codex reported `codex-aarch64-a` at 0.145.0 and `codex` at 0.146.0, and Kimi Code reported `kimi-code` as its foreground `comm` at 0.29.1 and `kimi` at 0.31.1, so these identities move between ordinary patch releases in both directions.
 That is the evidence for treating any single process name as a surface under vendor control rather than a stable contract.
 
+Prime Agent 0.7.2 was additionally observed on 2026-08-17 in a disposable tmux launch on Linux with tmux 3.4.
+Both independent name sources reported `prime-agent`, and the patched classifier returned `alive` while the pane agent was live.
+After `/quit`, the same pane returned to `bash` and the recovery-grade classifier returned `dead`.
+
+```sh
+tmux display-message -p -t "$target" '#{pane_current_command}'
+ps -t "${tty#/dev/}" -o pgid=,tpgid=,comm=
+. bin/fm-backend.sh; fm_backend_agent_state tmux "$target"
+```
+
+Observed output shape:
+
+```text
+prime-agent
+<pgid> <tpgid> prime-agent
+alive
+```
+
 The crewmate-only Muse Code 0.1.0-R708.1 adapter was verified separately on 2026-08-05 against tmux on macOS arm64.
 Its installed `muse-bin-0.1.0-R708.1` foreground identity classified `alive`, while `musescore`, `amuse`, `muse-binary`, and `muse-bind` remained ambiguous in the portable regression.
 [`muse.md`](muse.md#process-identity) owns the artifact identity and launcher evidence for that verification.

@@ -83,11 +83,11 @@ chmod +x "$LAB/bin/agent-launcher"
 fm_backend_source tmux || fail "fm_backend_source tmux failed"
 
 PRIME_PATH="$LAB/bin/prime-agent/0.7.1"
-[ "$(fm_backend_tmux_classify_process_name "$PRIME_PATH" "$PRIME_PATH")" = other ] \
-  || fail "a prime-agent executable path must stay outside tmux agent liveness"
+[ "$(fm_backend_tmux_classify_process_name "$PRIME_PATH" "$PRIME_PATH")" = agent ] \
+  || fail "a verified prime-agent executable path must classify as a tmux agent"
 fm_harness_process_matches "$PRIME_PATH" "$PRIME_PATH" \
   || fail "the same prime-agent executable path must remain a session-lock harness identity"
-pass "tmux liveness excludes Prime paths while session locking recognizes them"
+pass "tmux liveness recognizes Prime paths while session locking retains the same identity"
 
 "$REAL_TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -n idle -c "$LAB/wt" \
   || fail "could not start the private tmux server"

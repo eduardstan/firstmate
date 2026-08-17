@@ -309,7 +309,7 @@ The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watch
 `bin/fm-session-start.sh` reports when the live pi or pi-signed session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback; prime-agent has its own report because it has no trust gate.
 When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
 
-## prime-agent (VERIFIED 2026-08-08, Prime Agent 0.7.1)
+## prime-agent (VERIFIED 2026-08-17, Prime Agent 0.7.2)
 
 Prime Agent is a Pi-family CLI, verified for crewmates, scouts, and LOCAL secondmates.
 Remote secondmates are not verified on it and stay refused by `bin/fm-remote-secondmate-control.sh`.
@@ -324,8 +324,9 @@ Every fact below was established against the installed binary - a live pane, its
 | Autonomy | None needed. prime-agent has no permission system, exactly like Pi; a crewmate ran git and shell tools unattended with no approval gate. |
 | Trust dialog | None, and no trust store on disk - its extension API has no `project_trust` event, which pi 0.83.0 does. Project-local extensions auto-load with no grant. First run on a machine that has never run it may show onboarding (`onboardingShown` in `settings.json`); not exercised here. |
 | Busy state | Not firstmate-owned. Under Herdr, prime-agent's own built-in reporter publishes pane agent state natively, so `bin/fm-busy-lib.sh`'s herdr-native arm already answers and no extension of ours is installed or armed. The per-task extension `fm-spawn` writes carries only the `turn_end` wake touch. |
-| Exit command | `/quit`. It exits the TUI to a shell and prints `Resume this session with: prime-agent --resume <session-uuid>`. It does NOT stop the daemon session - the session was still `lifecycle=live` afterwards. `Ctrl+D` exits on an empty editor; `Ctrl+C` interrupts and then exits. |
-| Interrupt | Single Escape cancels the running turn. It does NOT restore the interrupted prompt into the composer the way muse does, and it does NOT clear typed text - Escape on an idle pane leaves the composer untouched. Clear with `Ctrl+U`. |
+| Exit command | `/quit`. In a live Prime Agent 0.7.2 pane it returned the endpoint to `bash`, and the backend's recovery-grade state changed to `dead`; it printed `Resume this session with: prime-agent --resume <session-uuid>`. It does NOT stop the detached daemon session. `Ctrl+D` exits on an empty editor; `Ctrl+C` interrupts and then exits. |
+| Interrupt | Single Escape cancels the running turn and leaves the agent alive at its composer. It does NOT restore the interrupted prompt into the composer the way muse does, so the control plane sends no follow-up clear key. Escape on an idle pane leaves any pre-existing typed text untouched; `Ctrl+U` is only a manual composer clear. |
+| Control kinds | Crewmate, scout, and LOCAL secondmate, confirmed against `bin/fm-spawn.sh`'s `ship`, `scout`, and `secondmate` launch paths. |
 | Skill invocation | `/skill:<skill>`, e.g. `/skill:no-mistakes`; see the invocation list above. |
 | Environment marker | `PI_CODING_AGENT=true`, byte-identical to pi, so it identifies only the FAMILY. `PRIME_AGENT_CODING_AGENT_DIR` and `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` are its own and are what detection keys on; `FM_PI_HARNESS` does NOT reach a tool subprocess here. See Detection above. |
 | Composer | A bare `>` prompt glyph on a background-filled row with no border, plus one of five rotating placeholders `Try "... @<filepath> ..."` drawn in dark truecolor `38;2;113;113;122` (luminance ~114), which the shared ghost stripper removes. |
