@@ -109,7 +109,36 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# Give TERM a generous shutdown window, then guarantee that test cleanup cannot hang.
+reap() {
+  local pid=$1 i=0 state
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null; do
+    state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    case "$state" in
+      ''|Z*) break ;;
+    esac
+    if [ "$i" -ge 50 ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wait "$pid" 2>/dev/null || true
+}
+
+test_reap_kills_term_ignoring_child() {
+  local pid start elapsed
+  ( trap '' TERM; while :; do :; done ) &
+  pid=$!
+  start=$(date +%s)
+  reap "$pid"
+  elapsed=$(( $(date +%s) - start ))
+  kill -0 "$pid" 2>/dev/null && fail "reap left a TERM-ignoring child alive"
+  [ "$elapsed" -ge 4 ] || fail "reap did not exercise its SIGKILL timeout (elapsed ${elapsed}s)"
+  pass "reap bounds TERM cleanup with a SIGKILL fallback"
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -1881,3 +1910,4 @@ test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing
 test_afk_present_reverts_watcher_to_one_shot
 test_afk_paused_changed_pane_hands_off_plain_stale
+test_reap_kills_term_ignoring_child
