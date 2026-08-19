@@ -1604,6 +1604,7 @@ case "\${1:-} \${2:-}" in
       exit 1
     fi
     : > "\${FM_FAKE_HERDR_CLOSED:?}"
+    printf '%s\n' '{"type":"ok"}'
     ;;
   "pane get")
     if [ "\${FM_FAKE_HERDR_PANE_GET_GARBAGE:-0}" = 1 ]; then
@@ -1611,6 +1612,17 @@ case "\${1:-} \${2:-}" in
       exit 0
     fi
     if [ -e "\${FM_FAKE_HERDR_CLOSED:?}" ]; then
+      delay=\${FM_FAKE_HERDR_CLOSE_VISIBILITY_POLLS:-0}
+      if [ "\$delay" -gt 0 ]; then
+        count_file=\${FM_FAKE_HERDR_CLOSE_VISIBILITY_COUNT:?}
+        count=0
+        [ -f "\$count_file" ] && count=\$(cat "\$count_file")
+        if [ "\$count" -lt "\$delay" ]; then
+          printf '%s' "\$((count + 1))" > "\$count_file"
+          printf '%s\n' '{"result":{"pane":{"pane_id":"wG:pQ","tab_id":"wG:tQ","workspace_id":"wG"}}}'
+          exit 0
+        fi
+      fi
       printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
       exit 1
     fi
@@ -1672,6 +1684,8 @@ SH
   [ -e "$case_dir/state/task-x1.turn-ended" ] || { : > "$release"; fail "herdr-orphan-refusal: refusal erased the turn-end record"; }
   assert_grep "presentation lock is contended" "$case_dir/stderr" \
     "herdr-orphan-refusal: the pre-return refusal was not explained visibly"
+  assert_not_contains "$(cat "$case_dir/stderr")" "close was attempted under the session presentation lock" \
+    "herdr-orphan-refusal: lock contention was mislabeled as an attempted close"
   if [ -s "$thlog" ]; then
     : > "$release"; fail "herdr-orphan-refusal: the contended refusal still returned the isolated copy: $(cat "$thlog")"
   fi
@@ -1731,6 +1745,10 @@ SH
     || fail "herdr-close-retain: teardown succeeded while the exact pane was never confirmed gone"
   assert_grep "not confirmed gone" "$case_dir/stderr" \
     "herdr-close-retain: the unconfirmed close refusal was not explained visibly"
+  assert_grep "close was attempted under the session presentation lock" "$case_dir/stderr" \
+    "herdr-close-retain: the refusal blamed lock availability instead of the attempted close"
+  assert_not_contains "$(cat "$case_dir/stderr")" "once the close can run under the session lock" \
+    "herdr-close-retain: the attempted-close refusal still sent the operator to the wrong lock cause"
   # The slot must remain leased to this task: the isolated copy is still here
   # with its branch intact, and treehouse was never asked to return it.
   [ -d "$case_dir/wt" ] \
@@ -1763,6 +1781,27 @@ SH
   grep -q "teardown task-x1 complete" "$case_dir/stdout2" \
     || fail "herdr-close-retain: the successful retry did not report completion"
   pass "herdr teardown never frees the isolated copy while the close is unconfirmed, and the retry returns it exactly once"
+}
+
+test_herdr_flat_teardown_waits_for_close_visibility() {
+  local case_dir log closed visibility_count
+  case_dir=$(make_case herdr-close-visibility)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/herdr.log"; : > "$log"
+  closed="$case_dir/closed"
+  visibility_count="$case_dir/close-visibility-count"
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_CLOSE_VISIBILITY_POLLS=3 FM_FAKE_HERDR_CLOSE_VISIBILITY_COUNT="$visibility_count" \
+    FM_BACKEND_HERDR_CLOSE_VERIFY_POLLS=4 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-close-visibility: teardown did not wait for the acknowledged close to become visible: $(cat "$case_dir/stderr")"
+  [ -e "$closed" ] || fail "herdr-close-visibility: the close command was not issued"
+  grep -q 'pane close wG:pQ --session default' "$log" \
+    || fail "herdr-close-visibility: teardown did not issue the same session-scoped pane close as the direct command"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "herdr-close-visibility: delayed pane disappearance left durable metadata after confirmation"
+  pass "herdr teardown confirms an acknowledged close after transient pane visibility"
 }
 
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence() {
@@ -2876,6 +2915,7 @@ test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes
 test_herdr_flat_teardown_failed_close_never_returns_worktree_retry_releases_once
+test_herdr_flat_teardown_waits_for_close_visibility
 test_herdr_flat_teardown_refuses_records_on_unparseable_presence
 test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
