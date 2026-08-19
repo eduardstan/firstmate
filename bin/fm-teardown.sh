@@ -2558,6 +2558,8 @@ HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=
 HERDR_PRESENTATION_PANE=
+HERDR_CLOSE_LOCK_HELD=0
+HERDR_CLOSE_ATTEMPTED=0
 if [ "$BACKEND" = herdr ] \
    && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
   fm_backend_source herdr || true
@@ -2580,6 +2582,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # return; a contended lock already refused this teardown while everything was
   # intact.
   if teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then
+    HERDR_CLOSE_LOCK_HELD=1
     # stderr is deliberately NOT discarded here. This is the highest-frequency
     # projected-close call site, and the helper's only stderr output is a real
     # warning - unverifiable workspace.move support, a refused focus-unsafe
@@ -2588,6 +2591,7 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
     # Swallowing them left a wrong active workspace with no operator-visible
     # signal at all. The close stays non-fatal exactly as before: the presence
     # gate below is what decides whether any durable record may be removed.
+    HERDR_CLOSE_ATTEMPTED=1
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
   else
@@ -2595,6 +2599,8 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    HERDR_CLOSE_LOCK_HELD=1
+    HERDR_CLOSE_ATTEMPTED=1
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
   else
     echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
@@ -2625,7 +2631,13 @@ if [ "$BACKEND" = herdr ]; then
     exit 1
   fi
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
-    echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
+    if [ "$HERDR_CLOSE_LOCK_HELD" -ne 1 ]; then
+      echo "error: herdr pane $T for $ID is not confirmed gone because its close was not attempted without the session presentation lock; retaining every durable task record - rerun teardown once the lock is available" >&2
+    elif [ "$HERDR_CLOSE_ATTEMPTED" -eq 1 ]; then
+      echo "error: herdr pane $T for $ID is not confirmed gone after a close was attempted under the session presentation lock; retaining every durable task record - inspect Herdr and rerun teardown" >&2
+    else
+      echo "error: herdr pane $T for $ID is not confirmed gone because the focus-safe close was refused or skipped while the session presentation lock was held; retaining every durable task record - inspect Herdr and rerun teardown" >&2
+    fi
     exit 1
   fi
 fi

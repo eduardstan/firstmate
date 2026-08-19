@@ -1848,11 +1848,25 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
 
 # fm_backend_herdr_explicit_close_pane_confirmed: issue one explicit close and
 # succeed only when a structured follow-up proves the exact pane is gone.
+# FM_BACKEND_HERDR_CLOSE_VERIFY_POLLS bounds the post-close visibility settle (default 10).
 fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 presence
+  local session=$1 pane_id=$2 presence attempt=0
+  local max_attempts=${FM_BACKEND_HERDR_CLOSE_VERIFY_POLLS:-10}
+  case "$max_attempts" in
+    ''|*[!0-9]*) max_attempts=10 ;;
+  esac
   fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || return 1
-  presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
-  [ "$presence" = dead ]
+  # Herdr acknowledges pane.close before the pane registry necessarily reflects
+  # the removal.  Poll only this close's structured disappearance, preserving
+  # the fail-safe refusal when it never becomes pane_not_found.
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
+    [ "$presence" = dead ] && return 0
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt "$max_attempts" ] || break
+    sleep 0.05
+  done
+  return 1
 }
 
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
