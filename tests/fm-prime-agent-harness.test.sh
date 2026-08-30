@@ -144,7 +144,7 @@ run_spawn() {  # <home> <proj> <wt> <fakebin> <launch-log> <args>...
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" FM_FAKE_LAUNCH_LOG="$log" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_NICE=0 FM_FAKE_PANE_PATH="$wt" FM_FAKE_LAUNCH_LOG="$log" \
     TMUX="fake,1,0" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
