@@ -102,6 +102,15 @@ prime_turnend_seen() {  # <file>
   printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
 }
 
+arm_merge_poll() {  # <state-dir> <id>
+  local state=$1 id=$2
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1/bin/fm-pr-lib.sh"
+    fm_pr_poll_prepare "$2" "$3" github https://github.com/o/r/pull/3 github.com o/r 3 "$1/bin/fm-pr-poll.sh"
+    fm_pr_poll_publish_prepared
+  ' _ "$ROOT" "$state" "$id"
+}
+
 record_pi_busy() {  # <state-dir> <id>
   local state=$1 id=$2 gen
   gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
@@ -126,6 +135,115 @@ reap() {
     i=$((i + 1))
   done
   wait "$pid" 2>/dev/null || true
+}
+
+test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case merge-wait); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-merge"
+  printf 'done: PR https://github.com/o/r/pull/3 checks green\n' > "$state/merge.status"
+  printf 'window=%s\nkind=ship\npr=https://github.com/o/r/pull/3\n' "$window" > "$state/merge.meta"
+  chmod 600 "$state/merge.meta"
+  arm_merge_poll "$state" merge || fail "valid merge poll fixture could not be armed"
+  printf 'finished, awaiting merge\n' > "$capture_file"
+  sig=$(seen_sig "$state/merge.status"); printf '%s' "$sig" > "$state/.seen-merge_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "finished, awaiting merge")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  : > "$state/.paused-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file"     FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"
+    fail "a valid merge wait produced a stale alarm: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a valid merge wait printed a stale alarm: $(cat "$out")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "merge wait did not retain its bounded pause marker"; }
+  reap "$pid"
+
+  rm -f "$state/merge.check.sh" "$state/merge.pr-poll" "$state/merge.pr-poll-registration"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file"     FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; fail "an invalid merge poll did not restore stale detection"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "invalid merge poll did not surface the stale pane"
+  grep -F "possible wedge" "$out" >/dev/null && fail "invalid merge poll was mislabeled as a wedge escalation"
+  pass "a valid merge wait uses the pause cadence, while an invalid poll restores stale detection"
+}
+
+test_live_worker_child_suppresses_stale_until_child_exits() {
+  local dir state fakebin out capture_file window key pane_hash sig pid pane_pid child_pid
+  dir=$(make_case live-worker-child); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-child"
+  printf 'working: benchmark child\n' > "$state/child.status"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/child.meta"
+  printf 'idle\n' > "$capture_file"
+  sig=$(seen_sig "$state/child.status"); printf '%s' "$sig" > "$state/.seen-child_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+
+  # Keep a pane-root process blocked on a FIFO while its benchmark child runs.
+  # The FIFO keeps the root alive after the child exits, so the second phase
+  # exercises the exact child-exited-to-stale transition.
+  mkfifo "$dir/release"
+  (
+    sleep 30 &
+    printf '%s\n' "$!" > "$dir/child.pid"
+    read -t 30 -r _ < "$dir/release" || true
+  ) &
+  pane_pid=$!
+  child_pid=''
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    child_pid=$(cat "$dir/child.pid" 2>/dev/null || true)
+    [ -n "$child_pid" ] && break
+    sleep 0.1
+  done
+  [ -n "$child_pid" ] || fail "pane child fixture did not start"
+
+  # A FIFO writer can block while cleanup races the pane root; run it in a
+  # bounded helper so this regression test can never hang during cleanup.
+  release_pane() {
+    local writer
+    (printf x > "$dir/release") 2>/dev/null &
+    writer=$!
+    if ! wait_live "$writer" 20; then
+      kill "$writer" 2>/dev/null || true
+    fi
+    wait "$writer" 2>/dev/null || true
+  }
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · benchmark child' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    release_pane
+    kill "$pane_pid" "$child_pid" 2>/dev/null || true
+    reap "$pid"
+    fail "live worker child did not suppress stale alarm: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "live worker child printed a stale alarm: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "live worker child enqueued a stale wake"
+
+  kill "$child_pid" 2>/dev/null || true
+  wait_for_exit "$pid" 40 || {
+    release_pane
+    kill "$pane_pid" 2>/dev/null || true
+    reap "$pid"
+    fail "worker did not escalate after its child exited"
+  }
+  grep -F "stale: $window" "$out" >/dev/null || fail "child exit did not restore stale detection"
+  grep -F "possible wedge" "$out" >/dev/null || fail "child exit stale wake omitted wedge evidence"
+  release_pane
+  reap "$pane_pid"
+  pass "a live worker child suppresses stale noise, then child exit restores wedge escalation"
 }
 
 test_reap_kills_term_ignoring_child() {
@@ -1878,6 +1996,8 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
+test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid
+test_live_worker_child_suppresses_stale_until_child_exits
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold

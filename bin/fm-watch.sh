@@ -248,25 +248,19 @@ window_has_live_child() {  # <window>
   pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
   case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pane_pid" -gt 0 ] || return 1
-  LC_ALL=C ps -eo pid=,ppid= 2>/dev/null | awk -v root="$pane_pid" '
-    BEGIN { owned[root] = 1 }
+  LC_ALL=C ps -eo pid=,ppid=,stat= 2>/dev/null | awk -v root="$pane_pid" '
     {
       pid = $1
       ppid = $2
-      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/) parent[pid] = ppid
+      state = $3
+      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/ && state !~ /^Z/) parent[pid] = ppid
     }
     END {
-      changed = 1
-      while (changed) {
-        changed = 0
-        for (pid in parent) {
-          if (!owned[pid] && owned[parent[pid]]) {
-            owned[pid] = 1
-            changed = 1
-          }
-        }
+      for (pid in parent) {
+        ancestor = pid
+        while (ancestor != root && (ancestor in parent)) ancestor = parent[ancestor]
+        if (ancestor == root && pid != root) { print pid; exit }
       }
-      for (pid in owned) if (pid != root) { print pid; exit }
     }
   ' | grep -q .
 }
