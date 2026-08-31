@@ -308,7 +308,7 @@ provider_for_harness() {
     claude)       printf 'claude\n' ;;
     codex)        printf 'codex\n' ;;
     opencode)     printf 'codex\n' ;;
-    pi|pi-signed) printf 'pi\n' ;;
+    pi|pi-signed|prime-agent) printf 'pi\n' ;;
     grok)         printf 'grok\n' ;;
     kimi)         printf 'kimi\n' ;;
     cursor)       printf 'cursor\n' ;;

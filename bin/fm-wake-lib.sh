@@ -153,11 +153,11 @@ fm_watcher_healthy() {
 #               watcher is armed at each turn end and exits on its wake, so it
 #               runs only BETWEEN turns. Mid-turn a fresh beacon with no live
 #               watcher process is the healthy state.
-#   extension   Pi (and pi-signed): .pi/extensions/fm-primary-pi-watch.ts owns
-#               continuity. It tears the watcher down on every actionable wake and
-#               spawns the replacement itself, so a genuinely unheld singleton lock
-#               is healthy during that hand-off only with extension ownership and a
-#               fresh beacon. Any held but unhealthy lock remains down.
+#   extension   Pi (and pi-signed) and Prime Agent: their primary extensions own
+#               continuity. They tear the watcher down on every actionable wake and
+#               spawn the replacement themselves, so a genuinely unheld singleton
+#               lock is healthy during that hand-off only with extension ownership
+#               and a fresh beacon. Any held but unhealthy lock remains down.
 #   persistent  every other harness (codex foreground checkpoint, opencode/grok
 #               background arm, tmux, unknown): the watcher runs as a tracked live
 #               process, so a live identity-matched pid is the real liveness signal.
@@ -172,7 +172,7 @@ fm_supervision_model() {
   harness=$("$FM_WAKE_LIB_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
   case "$harness" in
     claude|cursor) printf 'autoarm\n' ;;
-    pi|pi-signed) printf 'extension\n' ;;
+    pi|pi-signed|prime-agent) printf 'extension\n' ;;
     *) printf 'persistent\n' ;;
   esac
 }
@@ -235,6 +235,23 @@ fm_pi_extension_owns_supervision() {
   fm_pid_alive "$session_pid"
 }
 
+# Prime Agent primary extension evidence mirrors the Pi proof but uses Prime's
+# own marker names and extension directory. Both extension builds must match the
+# loaded marker and the session lock pid.
+fm_prime_agent_extension_owns_supervision() {
+  local state=$1 root=$2 lock="$1/.lock" session_pid pair source marker version
+  for pair in \
+    "fm-primary-prime-watch.ts:.prime-watch-extension-loaded" \
+    "fm-primary-turnend-guard.ts:.prime-turnend-extension-loaded"; do
+    source=${pair%%:*}
+    marker=${pair#*:}
+    version=$(fm_pi_extension_version "$root/.prime/agent/extensions/$source") || return 1
+    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
+  done
+  session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
+  fm_pid_alive "$session_pid"
+}
+
 # fm_watcher_supervision_verdict <state> <watch-path> [grace] [home] [root]
 # Model-aware "is supervision healthy right now" verdict for the pull warning
 # guard (bin/fm-guard.sh), NOT the arm layer or the turn-end guard. Sets:
@@ -283,7 +300,8 @@ fm_watcher_supervision_verdict() {
     FM_WATCHER_VERDICT_OK=true
   elif [ "$fresh" = true ]; then
     if [ "$model" = extension ] && fm_watcher_lock_unheld "$state" \
-      && fm_pi_extension_owns_supervision "$state" "$root"; then
+      && { fm_pi_extension_owns_supervision "$state" "$root" \
+        || fm_prime_agent_extension_owns_supervision "$state" "$root"; }; then
       # shellcheck disable=SC2034 # Read by callers after the function returns.
       FM_WATCHER_VERDICT_OK=true
     else

@@ -7,6 +7,10 @@
 # bin/fm-claude-stop-autoarm.sh uses it to prove a Stop hook fires inside the
 # lock-owning primary session before it may arm or rewake.
 # This file is sourced by scripts and has no side effects on source.
+# shellcheck source=bin/fm-prime-agent-lib.sh
+if [ -r "$(dirname -- "${BASH_SOURCE[0]}")/fm-prime-agent-lib.sh" ]; then
+  . "$(dirname -- "${BASH_SOURCE[0]}")/fm-prime-agent-lib.sh"
+fi
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
 # deliberately not added to the tables below: Cursor's installed names are
@@ -23,7 +27,7 @@ FM_HARNESS_RE='claude|codex|opencode|grok|kimi|^pi$|^pi-signed$'
 # FM_HARNESS_RE. Used only for the stricter path evidence below, where the
 # loose regex would also match ordinary firstmate paths such as
 # bin/fm-claude-stop-autoarm.sh.
-FM_HARNESS_NAMES=(claude codex opencode grok kimi pi-signed pi)
+FM_HARNESS_NAMES=(claude codex opencode grok kimi prime-agent pi-signed pi)
 
 # Print the exact harness name carried by executable path $1 - its own basename
 # or any directory component - or return 1.
@@ -62,6 +66,9 @@ fm_harness_process_matches() {  # <comm> <args>
   local comm=$1 args=$2 base argv0 name
   FM_HARNESS_IS_CLAUDE=0
   base=$(basename -- "$comm")
+  # Prime Agent is an exact executable identity; do not let a helper such as
+  # prime-agent-helper satisfy the verified-harness match.
+  case "$base" in prime-agent) return 0 ;; esac
   if printf '%s' "$base" | grep -qE "$FM_HARNESS_RE"; then
     case "$base" in *claude*) FM_HARNESS_IS_CLAUDE=1 ;; esac
     return 0
@@ -143,13 +150,22 @@ EOF
   printf '%s\n' "$outermost"
 }
 
-# True if $1 is a live process that looks like a verified harness.
+# True if $1 is a live process that looks like a verified harness holding a
+# session someone can still be working in. prime-agent's recorded pid is a
+# detached daemon worker, so an abandoned worker is not a live session holder.
 fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
   args=$(ps -o args= -p "$pid" 2>/dev/null)
-  fm_harness_process_matches "$comm" "$args"
+  fm_harness_process_matches "$comm" "$args" || return 1
+  case "$(basename -- "$comm")" in
+    prime-agent)
+      declare -F fm_prime_agent_worker_abandoned >/dev/null 2>&1 \
+        && fm_prime_agent_worker_abandoned "$pid" && return 1
+      ;;
+  esac
+  return 0
 }
 
 # True when state dir $1 holds a session lock whose pid is ANY harness ancestor

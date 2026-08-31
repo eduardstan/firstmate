@@ -185,6 +185,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
+# shellcheck source=bin/fm-prime-agent-lib.sh
+. "$SCRIPT_DIR/fm-prime-agent-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
@@ -1144,6 +1146,112 @@ content_in_default() {
   [ "$merged_tree" = "$default_tree" ]
 }
 
+# Remotes consulted by the reachability check and the remote-tracking refs it
+# fetched for the task branch, used by the refusal message and ref cleanup.
+TEARDOWN_REMOTES_CHECKED=
+TEARDOWN_LANDED_REFS=
+TEARDOWN_REMOTE_CHECK_ERROR=
+
+redact_git_remote_url() {
+  case "$1" in
+    http://*@*|https://*@*)
+      printf '%s\n' "$1" | sed -E 's#^(https?://)[^/@]+@#\1redacted@#'
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+configured_remote_url_for() {
+  local wanted=$1 remote candidate redacted candidates matched=
+  for remote in $(git -C "$WT" remote 2>/dev/null || true); do
+    candidates=$(git -C "$WT" config --get-all "remote.$remote.pushurl" 2>/dev/null || true)
+    if [ -z "$candidates" ]; then
+      candidates=$(git -C "$WT" config --get-all "remote.$remote.url" 2>/dev/null || true)
+    fi
+    while IFS= read -r candidate; do
+      [ -n "$candidate" ] || continue
+      redacted=$(redact_git_remote_url "$candidate")
+      if [ "$candidate" = "$wanted" ] || [ "$redacted" = "$wanted" ]; then
+        if [ -n "$matched" ] && [ "$candidate" != "$matched" ]; then
+          return 2
+        fi
+        matched=$candidate
+      fi
+    done <<< "$candidates"
+  done
+  [ -n "$matched" ] || return 1
+  printf '%s\n' "$matched"
+}
+
+# Best-effort restore the remote-tracking refs consulted by
+# refresh_landed_check_remotes: reset prior refs and delete refs created for the
+# safety check.
+drop_landed_check_refs() {
+  local entry ref old
+  for entry in $TEARDOWN_LANDED_REFS; do
+    ref=${entry%%|*}
+    old=${entry#*|}
+    if [ -n "$old" ]; then
+      git -C "$WT" update-ref "$ref" "$old" 2>/dev/null || true
+    else
+      git -C "$WT" update-ref -d "$ref" 2>/dev/null || true
+    fi
+  done
+  TEARDOWN_LANDED_REFS=
+}
+
+# Refresh temporary task-branch refs from each configured remote and from the
+# optional no-mistakes fork push target. Only successful fetches become evidence,
+# so a failed or unresolvable target cannot loosen the safety check. Sets
+# TEARDOWN_REMOTES_CHECKED for the refusal message and TEARDOWN_LANDED_REFS for
+# drop_landed_check_refs.
+refresh_landed_check_remotes() {
+  local branch=$1 remote fork_url configured_fork_url configured_fork_status ref old
+  TEARDOWN_REMOTES_CHECKED=
+  TEARDOWN_LANDED_REFS=
+  TEARDOWN_REMOTE_CHECK_ERROR=
+  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 0
+  for remote in $(git -C "$WT" remote 2>/dev/null || true); do
+    TEARDOWN_REMOTES_CHECKED="${TEARDOWN_REMOTES_CHECKED:+$TEARDOWN_REMOTES_CHECKED, }$remote"
+    ref="refs/remotes/$remote/$branch"
+    old=$(git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" 2>/dev/null) || old=
+    if git -C "$WT" fetch --quiet --no-tags "$remote" "+refs/heads/$branch:$ref" >/dev/null 2>&1; then
+      TEARDOWN_LANDED_REFS="${TEARDOWN_LANDED_REFS:+$TEARDOWN_LANDED_REFS }$ref|$old"
+    fi
+  done
+  if command -v no-mistakes >/dev/null 2>&1; then
+    fork_url=$(cd "$WT" && no-mistakes status 2>/dev/null \
+      | sed -n 's/^[[:space:]]*fork:[[:space:]]*//p' | head -1) || true
+    if [ -n "$fork_url" ]; then
+      TEARDOWN_REMOTES_CHECKED="${TEARDOWN_REMOTES_CHECKED:+$TEARDOWN_REMOTES_CHECKED, }fork (via no-mistakes)"
+      if configured_fork_url=$(configured_remote_url_for "$fork_url"); then
+        fork_url=$configured_fork_url
+      else
+        configured_fork_status=$?
+        if [ "$configured_fork_status" -eq 2 ]; then
+          TEARDOWN_REMOTE_CHECK_ERROR="multiple configured git push destinations match the credential-masked no-mistakes fork target"
+          fork_url=
+        else
+          case "$fork_url" in
+            http://redacted@*|https://redacted@*)
+              TEARDOWN_REMOTE_CHECK_ERROR="no configured git remote matches the credential-masked no-mistakes fork target"
+              fork_url=
+              ;;
+          esac
+        fi
+      fi
+      if [ -n "$fork_url" ]; then
+        ref="refs/remotes/fm-no-mistakes-fork/$branch"
+        old=$(git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" 2>/dev/null) || old=
+        if git -C "$WT" fetch --quiet --no-tags "$fork_url" "+refs/heads/$branch:$ref" >/dev/null 2>&1; then
+          TEARDOWN_LANDED_REFS="${TEARDOWN_LANDED_REFS:+$TEARDOWN_LANDED_REFS }$ref|$old"
+        fi
+      fi
+    fi
+  fi
+}
+
+
 # Has the worktree's committed work actually LANDED, though its commits are not
 # reachable from any remote-tracking branch? True when a merged PR proves the
 # current local work is contained in the PR head, OR the content is already in the
@@ -1468,8 +1576,20 @@ validate_worktree_teardown_safety() {
       branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
       TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
     fi
-    if ! work_is_landed "$branch"; then
+    # Refresh configured remotes and the optional no-mistakes fork target before
+    # deciding that a commit is unlanded. Only successful fetches become evidence,
+    # and their temporary refs are restored before teardown continues.
+    refresh_landed_check_remotes "$branch"
+    if [ "$branch" != HEAD ]; then
+      if unpushed2=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
+        unpushed=$(printf '%s\n' "$unpushed2" | head -5)
+      fi
+    fi
+    drop_landed_check_refs
+    if [ -n "$unpushed" ] && ! work_is_landed "$branch"; then
       echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
+      printf 'remotes checked: %s\n' "${TEARDOWN_REMOTES_CHECKED:-none}" >&2
+      [ -z "$TEARDOWN_REMOTE_CHECK_ERROR" ] || printf 'fork push target could not be checked: %s.\n' "$TEARDOWN_REMOTE_CHECK_ERROR" >&2
       printf 'unpushed commits:\n%s\n' "$unpushed" >&2
       echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
       return 1
@@ -2012,6 +2132,9 @@ remove_firstmate_home() {
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
+  # Retire detached Prime Agent sessions before removing a secondmate home.
+  # This is best effort for cleanup and never broadens the target beyond this home.
+  fm_prime_agent_stop_sessions_under "$abs_home_path" || true
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
@@ -2509,6 +2632,7 @@ cleanup_firstmate_home_children() {
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
+      fm_prime_agent_stop_sessions_under "$child_wt" || true
       rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
         "$child_wt/.opencode/plugins/fm-busy-state.js" \
         "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
@@ -2538,6 +2662,7 @@ cleanup_firstmate_home_children() {
     fm_backlog_atomic_transition remove "$sub_state/$child_id.meta" "task record" "$sub_state" || return 1
     rm -f "$sub_state/$child_id.turn-ended" \
       "$sub_state/$child_id.pi-ext.ts" \
+      "$sub_state/$child_id.prime-ext.ts" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
       "$sub_state/$child_id.muse-session" "$sub_state/$child_id.muse-session-current" \
       "$sub_state/$child_id.cursor-session" "$sub_state/$child_id.reconcile-nudged"
@@ -2723,6 +2848,9 @@ fi
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
+  # Retire detached Prime Agent workers before the generic reaper, so their
+  # own session leases and journals are closed cleanly.
+  fm_prime_agent_stop_sessions_under "$WT" || true
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
 
@@ -2873,7 +3001,7 @@ remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 status_retire_presentation_task "$STATE" "$ID" || exit 1
 rm -f "$STATE/$ID.turn-ended" \
-  "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
+  "$STATE/$ID.pi-ext.ts" "$STATE/$ID.prime-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
   "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
   "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
