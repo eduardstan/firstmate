@@ -19,7 +19,7 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-turnend-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
-REQUIRED_REASON='watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn'
+REQUIRED_REASON='repair a missing or failed watcher cycle'
 
 # --- PREDICATE: bin/fm-supervision-lib.sh -----------------------------------
 
