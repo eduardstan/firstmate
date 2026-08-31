@@ -244,24 +244,41 @@ window_harness() {
 # classifier. Only descendants of the exact recorded pane pid count, so an
 # unrelated process elsewhere on the host cannot suppress a wedge.
 window_has_live_child() {  # <window>
-  local w=$1 backend pane_pid
+  local w=$1 backend pane_pid harness ignored_comm
   backend=$(window_backend "$w")
   [ "$backend" = tmux ] || return 1
+  harness=$(window_harness "$w")
+  case "$harness" in
+    claude) ignored_comm=claude ;;
+    codex) ignored_comm=codex ;;
+    opencode) ignored_comm=opencode ;;
+    pi|pi-signed) ignored_comm=pi ;;
+    prime-agent) ignored_comm=prime-agent ;;
+    grok) ignored_comm=grok ;;
+    kimi) ignored_comm=kimi ;;
+    muse) ignored_comm=muse ;;
+    *) ignored_comm= ;;
+  esac
   pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
   case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pane_pid" -gt 0 ] || return 1
-  LC_ALL=C ps -eo pid=,ppid=,stat= 2>/dev/null | awk -v root="$pane_pid" '
+  LC_ALL=C ps -eo pid=,ppid=,stat=,comm= 2>/dev/null | awk \
+    -v root="$pane_pid" -v ignored="$ignored_comm" '
     {
       pid = $1
       ppid = $2
       state = $3
-      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/ && state !~ /^Z/) parent[pid] = ppid
+      comm = $4
+      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/ && state !~ /^Z/) {
+        parent[pid] = ppid
+        command[pid] = comm
+      }
     }
     END {
       for (pid in parent) {
         ancestor = pid
         while (ancestor != root && (ancestor in parent)) ancestor = parent[ancestor]
-        if (ancestor == root && pid != root) { print pid; exit }
+        if (ancestor == root && pid != root && command[pid] != ignored) { print pid; exit }
       }
     }
   ' | grep -q .
