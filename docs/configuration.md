@@ -292,9 +292,15 @@ The full cmux home label also includes a short hash of the resolved `FM_ROOT` pa
 
 ## Harness support
 
-claude, codex, opencode, pi, pi-signed, grok, kimi, and cursor are empirically verified for crewmate and secondmate launches; [README requirements](../README.md#requirements) own the set supported for the primary session.
+claude, codex, opencode, pi, pi-signed, prime-agent, grok, kimi, and cursor are empirically verified for crewmate and local secondmate launches; [README requirements](../README.md#requirements) own the set supported for the primary session.
 A cursor secondmate or primary runs the tracked project-scope `.cursor/hooks.json` in its own home and must be launched with `--trust`, or no project hook loads; [`docs/supervision-protocols/cursor.md`](supervision-protocols/cursor.md) owns its supervision protocol.
 Cursor typed-submit confirmation is verified on tmux and Herdr only.
+prime-agent runs every session in a detached daemon worker that outlives both the pane and an explicit quit, so teardown (task worktree and secondmate home alike) and every secondmate relaunch retire the worker bound to that directory first ([`bin/fm-prime-agent-lib.sh`](../bin/fm-prime-agent-lib.sh)); without that a home would keep a live session-lock holder and land read-only.
+An in-place restart needs no retirement of its own: session-lock liveness asks prime-agent whether the recorded worker still has any client attached AND whether every session it hosts is idle, so a quit worker is reclaimable while an attached or still-working one keeps the lock.
+A worker whose pane died MID-TURN therefore keeps the lock on purpose, and an in-place restart does land read-only until that turn finishes; any answer that cannot prove the worker is finished counts as still alive.
+A quit pane also classifies dead rather than alive - its reporter identity survives the agent - so secondmate recovery relaunches it instead of skipping it as live.
+The discriminator there is the pane's whole process subtree, not which process group holds the terminal: a Ctrl+Z-suspended agent is still a stopped prime-agent process under the pane's shell and stays alive, while a quit pane has no prime-agent process left under it at all.
+Remote secondmates are not verified on prime-agent and stay refused.
 On Zellij, cmux, and Orca a typed-plane Cursor send (a harness-native invocation or an explicit backend target; ordinary text steers ride the durable inbox and exit 0 at enqueue) lands, but `fm-send` reports delivery unconfirmed and exits non-zero because their shared submit core does not consult the busy footer; [runtime backend verification](verification/runtime-backends.md#cursor-agent-cli) owns the evidence and transcript-state boundary.
 muse is verified for crewmate and scout launches ONLY, and `fm-spawn.sh` refuses it for a secondmate, because muse ships no usable hook surface for a primary session's turn-end supervision; [`docs/verification/muse.md`](verification/muse.md) owns that evidence.
 muse also needs a worker-reachable credential before spawning, and the portable fleet path is the `<config>/muse/auth.json` credential stored by `muse login`, because a caller-only `META_API_KEY` does not cross a long-lived backend daemon.
@@ -330,6 +336,7 @@ Kimi continues to use the captain's normal Kimi home, including the existing con
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+prime-agent secondmate launches do the same with that home's tracked `.prime/agent/extensions/fm-primary-prime-watch.ts` and `.prime/agent/extensions/fm-primary-turnend-guard.ts`, which need no trust grant to load.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
@@ -395,6 +402,8 @@ An absent or incompatible `tasks-axi` reports `MISSING: tasks-axi (install: npm 
 An absent or incompatible `gh-axi` reports `MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)`.
 An absent or incompatible `lavish-axi` reports `MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)`.
 An absent or too-old `quota-axi` reports `MISSING: quota-axi (install: npm install -g quota-axi)`; firstmate cannot resolve a profile array without a compatible binary.
+antigravity-usage is the one optional tool here: per-turn quota instrumentation (`bin/fm-turn-quota-writer.sh`, see [`docs/turnend-guard.md`](turnend-guard.md)) probes it for Gemini/Antigravity consumption when it is on `PATH`, but it is never required, is never reported as `MISSING:`, and no bootstrap or dispatch path depends on it.
+When it is absent, its turn record fields are written as the explicit `absent` marker rather than zero, so a missing reading can never be read as a free turn.
 Bootstrap also reports a `TANGLE:` line when `FM_ROOT` is on a named non-default branch; follow the printed checkout remediation rather than treating it as an installable tool problem.
 In a read-only session that did not get the fleet lock, the same line is advisory and omits the checkout command.
 The locked session-start deferred network stage runs bootstrap's best-effort project clone refresh through `fm-fleet-sync.sh`; [`fm-bootstrap.sh`'s header](../bin/fm-bootstrap.sh) owns the exact clone-refresh overlap, liveness-before-convergence, per-mate concurrency, ordered diagnostic replay, and sequential-fallback contract.
