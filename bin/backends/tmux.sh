@@ -205,40 +205,31 @@ fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
 # absent target from the client's active window rather than failing, so callers
 # must confirm exact window membership first, exactly as the classifier below
 # does, or they will describe some other pane entirely.
-# fm_backend_tmux_foreground_processes: the single reader behind both name
-# accessors above and behind the watcher's pane-activity probe. One line per
-# foreground-process-group member, as `<comm>\t<args>`; comm never contains a
-# tab, so the pair splits unambiguously. The comm-only and argv[0]-only views
-# below are projections of this one read, so the three consumers cannot drift
-# apart on which processes belong to a pane.
-fm_backend_tmux_foreground_processes() {  # <target>
-  local target=$1 tty pid pgid tpgid comm args
+fm_backend_tmux_foreground_comms() {  # <target>
+  local target=$1 tty pid pgid tpgid comm
   tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
   [ -n "$tty" ] || return 0
   LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
     | while read -r pid pgid tpgid comm; do
         [ -n "$comm" ] || continue
         [ "$pgid" = "$tpgid" ] || continue
-        args=$(LC_ALL=C ps -p "$pid" -o args= 2>/dev/null || true)
-        printf '%s\t%s\n' "$comm" "$args"
+        printf '%s\n' "$comm"
       done
 }
 
-fm_backend_tmux_foreground_comms() {  # <target>
-  local comm args
-  fm_backend_tmux_foreground_processes "$1" | while IFS=$'\t' read -r comm args; do
-    [ -n "$comm" ] && printf '%s\n' "$comm"
-  done
-}
-
 fm_backend_tmux_foreground_argv0s() {  # <target>
-  local comm args argv0
-  fm_backend_tmux_foreground_processes "$1" | while IFS=$'\t' read -r comm args; do
-    [ -n "$args" ] || continue
-    args=${args#"${args%%[![:space:]]*}"}
-    argv0=${args%%[[:space:]]*}
-    [ -n "$argv0" ] && printf '%s\n' "$argv0"
-  done
+  local target=$1 tty pid pgid tpgid comm args argv0
+  tty=$(tmux display-message -p -t "$target" '#{pane_tty}' 2>/dev/null) || return 0
+  [ -n "$tty" ] || return 0
+  LC_ALL=C ps -t "${tty#/dev/}" -o pid=,pgid=,tpgid=,comm= 2>/dev/null \
+    | while read -r pid pgid tpgid comm; do
+        [ -n "$comm" ] || continue
+        [ "$pgid" = "$tpgid" ] || continue
+        args=$(LC_ALL=C ps -p "$pid" -o args= 2>/dev/null) || continue
+        args=${args#"${args%%[![:space:]]*}"}
+        argv0=${args%%[[:space:]]*}
+        [ -n "$argv0" ] && printf '%s\n' "$argv0"
+      done
 }
 
 # fm_backend_tmux_agent_state: recovery-grade harness-agent state for one

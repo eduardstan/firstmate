@@ -260,30 +260,65 @@ pane_process_is_harness() {  # <comm> <args> <recorded-harness>
   return 1
 }
 
-# window_has_live_child: 0 iff the pane's foreground process group currently
-# holds a process that is not the pane's own harness. This is a stale-pane
+# window_has_live_child: 0 iff the recorded tmux pane process currently owns a
+# live descendant that is not the pane's own harness. This is a stale-pane
 # activity signal, not a worker state verdict: a long child command can leave
 # the pane unchanged while it runs, but its disappearance must immediately
-# return the pane to the ordinary stale classifier.
+# return the pane to the ordinary stale classifier. Only descendants of the
+# exact recorded pane pid count, so an unrelated process elsewhere on the host
+# cannot suppress a wedge.
 #
-# Scope is the foreground process group, not the pane's descendants, for the
-# reason bin/backends/tmux.sh already records for the sibling liveness probe: a
-# process left running in the BACKGROUND of an otherwise idle pane - an MCP
-# stdio server, a detached dev server, a leftover tail - is deliberately not
-# activity, or one never-exiting leftover would mute this window's supervision
-# for as long as it lives. Reading it through the backend keeps the two
-# pane-process probes on one definition of "belongs to this pane".
+# Descendants, NOT the pane tty's foreground process group, is the scope that
+# can answer this question at all: every verified harness starts its tool
+# subprocesses in a new session (a Claude Code tool child reports sid == its own
+# pid and no controlling terminal), so a worker-owned child never appears on the
+# pane tty and a foreground-group read would report activity for no worker on
+# any host. Parentage survives that detach, so the descendant walk still sees
+# it. The widening this costs - a leftover the worker left running in the
+# background also reads as activity - is bounded upstream rather than here: the
+# pane keeps accruing BUSY_TURN_MAX_SECS with no completed turn, so
+# busy_turn_over_age still routes it into wedge_timer_check.
+#
+# The process table is read at most once per supervision cycle and shared by
+# every window: the answer for one cycle is a single point-in-time snapshot of
+# the host anyway, and the poll loop clears PANE_PROC_TABLE before each cycle so
+# a child that starts or exits is seen on the very next poll.
 window_has_live_child() {  # <window>
-  local w=$1 backend harness comm args
+  local w=$1 backend pane_pid harness comm args
   backend=$(window_backend "$w")
   [ "$backend" = tmux ] || return 1
-  fm_backend_source tmux || return 1
   harness=$(window_harness "$w")
+  pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
+  case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pane_pid" -gt 0 ] || return 1
+  [ -n "${PANE_PROC_TABLE:-}" ] \
+    || PANE_PROC_TABLE=$(LC_ALL=C ps -eo pid=,ppid=,stat=,comm=,args= 2>/dev/null)
   while IFS=$'\t' read -r comm args; do
     [ -n "$comm" ] || continue
     pane_process_is_harness "$comm" "$args" "$harness" && continue
     return 0
-  done < <(fm_backend_tmux_foreground_processes "$w")
+  done < <(printf '%s\n' "$PANE_PROC_TABLE" | awk \
+    -v root="$pane_pid" '
+    {
+      pid = $1
+      ppid = $2
+      state = $3
+      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/ && state !~ /^Z/) {
+        parent[pid] = ppid
+        command[pid] = $4
+        line = ""
+        for (i = 5; i <= NF; i++) line = line (i > 5 ? " " : "") $i
+        arguments[pid] = line
+      }
+    }
+    END {
+      for (pid in parent) {
+        ancestor = pid
+        while (ancestor != root && (ancestor in parent)) ancestor = parent[ancestor]
+        if (ancestor == root && pid != root) print command[pid] "\t" arguments[pid]
+      }
+    }
+  ')
   return 1
 }
 
@@ -830,6 +865,7 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
 fi
 
 while :; do
+  PANE_PROC_TABLE=
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
   # down so the rightful singleton continues alone. The EXIT trap's release
