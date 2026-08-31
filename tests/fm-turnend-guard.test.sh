@@ -19,7 +19,7 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-turnend-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
-REQUIRED_REASON='repair a missing or failed watcher cycle'
+REQUIRED_REASON='watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn'
 
 # --- PREDICATE: bin/fm-supervision-lib.sh -----------------------------------
 
@@ -188,10 +188,18 @@ make_secondmate_linked_home_dir() {
   printf '%s\n' "$dir"
 }
 
+# The guard renders its repair instruction for the harness it detects, so the
+# Claude path is only exercised when the runner's own Pi-family markers cannot
+# outrank CLAUDECODE (bin/fm-harness.sh detect_own). Clearing them here is what
+# keeps this suite asserting the Claude auto-arm behavior rather than whichever
+# harness happens to be running it.
 run_hook() {
   local dir=$1 stop_active=$2 home
   home=$(cd "$dir" && pwd)
-  printf '{"stop_hook_active":%s}' "$stop_active" | CLAUDECODE=1 FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" 2>&1
+  printf '{"stop_hook_active":%s}' "$stop_active" \
+    | env -u PI_CODING_AGENT -u PRIME_AGENT_CODING_AGENT_DIR \
+        -u PRIME_AGENT_INTERNAL_DAEMON_WORKER -u FM_PI_HARNESS -u GROK_AGENT \
+        CLAUDECODE=1 FM_HOME="$home" bash "$dir/bin/fm-turnend-guard.sh" 2>&1
 }
 
 nonexistent_pid() {
