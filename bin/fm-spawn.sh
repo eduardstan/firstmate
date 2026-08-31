@@ -38,6 +38,13 @@
 #   axes chosen by firstmate at intake. They are only threaded into harnesses whose
 #   installed CLIs were verified to support that axis; unsupported axes are omitted
 #   from that harness's launch rather than guessed.
+#   Prime Agent completion gates are configured with repeatable --autonomous-gate
+#   commands and optional --autonomous-max-continuations, --autonomous-max-turns,
+#   --autonomous-max-tokens, --autonomous-timeout-ms, --autonomous-gate-retries,
+#   and --autonomous-gate-timeout-ms limits. At least one gate implies --autonomous;
+#   defaults are 24 continuations, 96 turns, 500000 tokens, 14400000 ms, 5 retries,
+#   and 900000 ms. These options are emitted only to prime-agent.
+#   Autonomous gates are refused for secondmates and no-mistakes ships.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -1243,9 +1250,9 @@ launch_template() {
     pi|pi-signed)
       printf '%s' '__PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive

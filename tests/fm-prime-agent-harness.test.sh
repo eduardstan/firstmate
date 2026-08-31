@@ -270,7 +270,7 @@ test_provider_reaches_pi_which_also_exposes_the_axis() {
     --provider openai-codex --model openai-codex/gpt-5.6-sol) && status=0 || status=$?
   expect_code 0 "$status" "Pi spawn with a provider failed: $out"
 
-  launch=$(grep -F ' pi ' "$log" | tail -1)
+  launch=$(grep -F -- "--provider 'openai-codex'" "$log" | tail -1)
   assert_contains "$launch" "--provider 'openai-codex'" "Pi launch dropped a provider flag its CLI exposes"
   assert_grep 'provider=openai-codex' "$home/state/$id.meta" "meta does not record the provider for Pi"
 
