@@ -60,6 +60,9 @@ The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYC
 
 The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
+A live descendant of a recorded tmux pane process counts as stale-pane activity while it exists, but an exited child is not evidence of progress and the next poll returns to normal wedge detection.
+A checks-green terminal worker with a valid armed PR poll is an expected forge wait and uses the declared-pause recheck cadence.
+Invalid or missing PR-poll artifacts do not grant that exemption, so stale detection still surfaces the pane.
 
 ## Regression coverage
 
@@ -71,6 +74,7 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
+`tests/fm-watch-triage.test.sh` covers live pane-child suppression until child exit, valid merge-wait pause cadence, and restoration of stale detection when the poll becomes invalid.
 
 ## Active limits and verification
 
