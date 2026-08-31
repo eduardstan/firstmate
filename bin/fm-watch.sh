@@ -84,6 +84,10 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# ONE owner of "is this process a verified harness?" - the pane-activity probe
+# below must recognize a harness the same way the session lock does.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -237,51 +241,67 @@ window_harness() {
   grep '^harness=' "$meta" | cut -d= -f2- || true
 }
 
+# pane_process_is_harness: true when a pane descendant is the agent harness
+# itself rather than worker-spawned work. The harness sits under every pane, so
+# counting it as activity would mute every alarm for that window; command-name
+# equality cannot decide it, because Claude Code's native installer names the
+# executable by version and macOS reports a full path in `comm`. The shared
+# session-lock evidence (basename, path component, argv[0], bare interpreter)
+# decides, widened by the window's own recorded harness so an adapter outside
+# the lock-eligible list - muse - is still recognized as its pane's harness.
+# Over-recognition here can only surface an extra alarm, never silence one.
+pane_process_is_harness() {  # <comm> <args> <recorded-harness>
+  local comm=$1 args=$2 name=$3 argv0
+  fm_harness_process_matches "$comm" "$args" && return 0
+  [ -n "$name" ] || return 1
+  argv0=${args%% *}
+  case "/$comm/" in */"$name"/*) return 0 ;; esac
+  case "/$argv0/" in */"$name"/*) return 0 ;; esac
+  return 1
+}
+
 # window_has_live_child: 0 iff the recorded tmux pane process currently owns a
-# live descendant. This is a stale-pane activity signal, not a worker state
-# verdict: a long child command can leave the pane unchanged while it runs, but
-# its disappearance must immediately return the pane to the ordinary stale
-# classifier. Only descendants of the exact recorded pane pid count, so an
-# unrelated process elsewhere on the host cannot suppress a wedge.
+# live descendant that is not the pane's own harness. This is a stale-pane
+# activity signal, not a worker state verdict: a long child command can leave
+# the pane unchanged while it runs, but its disappearance must immediately
+# return the pane to the ordinary stale classifier. Only descendants of the
+# exact recorded pane pid count, so an unrelated process elsewhere on the host
+# cannot suppress a wedge.
 window_has_live_child() {  # <window>
-  local w=$1 backend pane_pid harness ignored_comm
+  local w=$1 backend pane_pid harness comm args
   backend=$(window_backend "$w")
   [ "$backend" = tmux ] || return 1
   harness=$(window_harness "$w")
-  case "$harness" in
-    claude) ignored_comm=claude ;;
-    codex) ignored_comm=codex ;;
-    opencode) ignored_comm=opencode ;;
-    pi|pi-signed) ignored_comm=pi ;;
-    prime-agent) ignored_comm=prime-agent ;;
-    grok) ignored_comm=grok ;;
-    kimi) ignored_comm=kimi ;;
-    muse) ignored_comm=muse ;;
-    *) ignored_comm= ;;
-  esac
   pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
   case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pane_pid" -gt 0 ] || return 1
-  LC_ALL=C ps -eo pid=,ppid=,stat=,comm= 2>/dev/null | awk \
-    -v root="$pane_pid" -v ignored="$ignored_comm" '
+  while IFS=$'\t' read -r comm args; do
+    [ -n "$comm" ] || continue
+    pane_process_is_harness "$comm" "$args" "$harness" && continue
+    return 0
+  done < <(LC_ALL=C ps -eo pid=,ppid=,stat=,comm=,args= 2>/dev/null | awk \
+    -v root="$pane_pid" '
     {
       pid = $1
       ppid = $2
       state = $3
-      comm = $4
       if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/ && state !~ /^Z/) {
         parent[pid] = ppid
-        command[pid] = comm
+        command[pid] = $4
+        line = ""
+        for (i = 5; i <= NF; i++) line = line (i > 5 ? " " : "") $i
+        arguments[pid] = line
       }
     }
     END {
       for (pid in parent) {
         ancestor = pid
         while (ancestor != root && (ancestor in parent)) ancestor = parent[ancestor]
-        if (ancestor == root && pid != root && command[pid] != ignored) { print pid; exit }
+        if (ancestor == root && pid != root) print command[pid] "\t" arguments[pid]
       }
     }
-  ' | grep -q .
+  ')
+  return 1
 }
 
 window_label() {

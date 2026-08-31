@@ -137,6 +137,18 @@ reap() {
   wait "$pid" 2>/dev/null || true
 }
 
+# A FIFO writer can block while cleanup races the pane-root fixture, so bound
+# it: a supervision regression test must never hang indefinitely.
+release_fifo() {  # <fifo>
+  local fifo=$1 writer
+  (printf x > "$fifo") 2>/dev/null &
+  writer=$!
+  if ! wait_live "$writer" 20; then
+    kill "$writer" 2>/dev/null || true
+  fi
+  wait "$writer" 2>/dev/null || true
+}
+
 test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid() {
   local dir state fakebin out capture_file window key pane_hash sig pid
   dir=$(make_case merge-wait); state="$dir/state"; fakebin="$dir/fakebin"
@@ -210,17 +222,7 @@ test_live_worker_child_suppresses_stale_until_child_exits() {
   done
   [ -n "$child_pid" ] || fail "pane child fixture did not start"
 
-  # A FIFO writer can block while cleanup races the pane root; run it in a
-  # bounded helper so this regression test can never hang during cleanup.
-  release_pane() {
-    local writer
-    (printf x > "$dir/release") 2>/dev/null &
-    writer=$!
-    if ! wait_live "$writer" 20; then
-      kill "$writer" 2>/dev/null || true
-    fi
-    wait "$writer" 2>/dev/null || true
-  }
+  release_pane() { release_fifo "$dir/release"; }
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · benchmark child' \
@@ -248,6 +250,55 @@ test_live_worker_child_suppresses_stale_until_child_exits() {
   release_pane
   reap "$pane_pid"
   pass "a live worker child suppresses stale noise, then child exit restores wedge escalation"
+}
+
+test_pane_harness_process_is_not_child_activity() {
+  local dir state fakebin out capture_file window key pane_hash sig pid pane_pid harness_bin
+  dir=$(make_case pane-harness); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-harness"
+  printf 'working: long silence\n' > "$state/harness.status"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/harness.meta"
+  printf 'idle\n' > "$capture_file"
+  sig=$(seen_sig "$state/harness.status"); printf '%s' "$sig" > "$state/.seen-harness_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+
+  # The pane's only descendant is the harness itself, installed the way Claude
+  # Code's native installer does it: a version-named executable whose command
+  # name says nothing and whose install path carries the harness identity. An
+  # idle harness must never count as worker activity, or every alarm for this
+  # window is muted forever.
+  mkdir -p "$dir/claude/versions"
+  harness_bin="$dir/claude/versions/2.1.220"
+  cp "$(command -v sleep)" "$harness_bin" || fail "harness fixture binary could not be installed"
+  mkfifo "$dir/release"
+  (
+    "$harness_bin" 60 &
+    printf '%s\n' "$!" > "$dir/harness.pid"
+    read -t 60 -r _ < "$dir/release" || true
+  ) &
+  pane_pid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$dir/harness.pid" ] && break
+    sleep 0.1
+  done
+  [ -s "$dir/harness.pid" ] || fail "pane harness fixture did not start"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · long silence' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; release_fifo "$dir/release"; reap "$pane_pid"; fail "an idle pane harness muted the stale alarm: $(cat "$out")"; }
+  release_fifo "$dir/release"
+  reap "$pane_pid"
+  grep -F "stale: $window" "$out" >/dev/null || fail "idle harness suppressed stale detection: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "idle harness suppressed wedge escalation: $(cat "$out")"
+  pass "an idle pane harness process is not counted as worker child activity"
 }
 
 test_reap_kills_term_ignoring_child() {
@@ -2002,6 +2053,7 @@ test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid
 test_live_worker_child_suppresses_stale_until_child_exits
+test_pane_harness_process_is_not_child_activity
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
