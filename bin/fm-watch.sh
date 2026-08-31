@@ -267,6 +267,11 @@ pane_process_is_harness() {  # <comm> <args> <recorded-harness>
 # return the pane to the ordinary stale classifier. Only descendants of the
 # exact recorded pane pid count, so an unrelated process elsewhere on the host
 # cannot suppress a wedge.
+#
+# The process table is read at most once per supervision cycle and shared by
+# every window: the answer for one cycle is a single point-in-time snapshot of
+# the host anyway, and the poll loop clears PANE_PROC_TABLE before each cycle so
+# a child that starts or exits is seen on the very next poll.
 window_has_live_child() {  # <window>
   local w=$1 backend pane_pid harness comm args
   backend=$(window_backend "$w")
@@ -275,11 +280,13 @@ window_has_live_child() {  # <window>
   pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
   case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pane_pid" -gt 0 ] || return 1
+  [ -n "${PANE_PROC_TABLE:-}" ] \
+    || PANE_PROC_TABLE=$(LC_ALL=C ps -eo pid=,ppid=,stat=,comm=,args= 2>/dev/null)
   while IFS=$'\t' read -r comm args; do
     [ -n "$comm" ] || continue
     pane_process_is_harness "$comm" "$args" "$harness" && continue
     return 0
-  done < <(LC_ALL=C ps -eo pid=,ppid=,stat=,comm=,args= 2>/dev/null | awk \
+  done < <(printf '%s\n' "$PANE_PROC_TABLE" | awk \
     -v root="$pane_pid" '
     {
       pid = $1
@@ -843,6 +850,7 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
 fi
 
 while :; do
+  PANE_PROC_TABLE=
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
   # down so the rightful singleton continues alone. The EXIT trap's release
