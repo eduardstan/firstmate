@@ -235,6 +235,42 @@ window_harness() {
   grep '^harness=' "$meta" | cut -d= -f2- || true
 }
 
+# window_has_live_child: 0 iff the recorded tmux pane process currently owns a
+# live descendant. This is a stale-pane activity signal, not a worker state
+# verdict: a long child command can leave the pane unchanged while it runs, but
+# its disappearance must immediately return the pane to the ordinary stale
+# classifier. Only descendants of the exact recorded pane pid count, so an
+# unrelated process elsewhere on the host cannot suppress a wedge.
+window_has_live_child() {  # <window>
+  local w=$1 backend pane_pid
+  backend=$(window_backend "$w")
+  [ "$backend" = tmux ] || return 1
+  pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
+  case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pane_pid" -gt 0 ] || return 1
+  LC_ALL=C ps -eo pid=,ppid= 2>/dev/null | awk -v root="$pane_pid" '
+    BEGIN { owned[root] = 1 }
+    {
+      pid = $1
+      ppid = $2
+      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/) parent[pid] = ppid
+    }
+    END {
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (pid in parent) {
+          if (!owned[pid] && owned[parent[pid]]) {
+            owned[pid] = 1
+            changed = 1
+          }
+        }
+      }
+      for (pid in owned) if (pid != root) { print pid; exit }
+    }
+  ' | grep -q .
+}
+
 window_label() {
   local w=$1 task
   task=$(window_to_task "$w" "$STATE")
@@ -409,6 +445,17 @@ pause_state_class() {  # <window> <task>
     *) rm -f "$recheck_file" ;;
   esac
   printf '%s' "$class"
+}
+
+# task_waiting_for_merge: 0 only for a task with a valid, still-armed PR poll.
+# A checks-green worker is then deliberately idle on the forge, so it uses the
+# same bounded pause cadence as any other declared external wait. Validation is
+# intentionally strict: an incomplete or tampered poll never hides a terminal
+# pane from the normal stale alarm.
+task_waiting_for_merge() {  # <task>
+  local task=$1
+  [ -n "$task" ] || return 1
+  fm_pr_poll_artifacts_valid "$STATE" "$task" "$SCRIPT_DIR/fm-pr-poll.sh" >/dev/null 2>&1
 }
 
 surface_nonterminal_stale() {  # <window> <hash>
@@ -936,7 +983,8 @@ EOF
     key=${key//\//_}
     key=${key//./_}
     last=$(last_status_line "$STATE/$task.status")
-    if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
+    if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ] \
+      && ! task_waiting_for_merge "$task"; then
       clear_pause_tracking "$w"
     fi
     if [ "$kind" = secondmate ] && ! status_is_paused "$last"; then
@@ -957,7 +1005,9 @@ EOF
     # harness renders its busy indicator) so busy-looking strings in displayed
     # content cannot suppress stale detection. Read once per window per poll and
     # reused below so a busy verdict is consistent within one cycle.
-    if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
+    child_now=1
+    window_has_live_child "$w" && child_now=0
+    if [ "$child_now" -eq 0 ] || window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
@@ -992,7 +1042,9 @@ EOF
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
+            if task_waiting_for_merge "$task"; then
+              handle_paused_stale "$w" "$task" "$h"
+            elif crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
@@ -1070,7 +1122,7 @@ EOF
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
         # unless a genuinely busy pane has gone too long with no completed turn -
         # then route it through the same wedge timer instead of erasing it.
-        if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
+        if [ "$busy_now" -eq 0 ] && [ "$child_now" -ne 0 ] && busy_turn_over_age "$task"; then
           wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
         else
           rm -f "$ssf" "$ewf"
@@ -1082,7 +1134,7 @@ EOF
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
-      if [ "$busy_now" -eq 0 ] && busy_turn_over_age "$task"; then
+      if [ "$busy_now" -eq 0 ] && [ "$child_now" -ne 0 ] && busy_turn_over_age "$task"; then
         wedge_timer_check "$w" "$ssf" "busy (no completed turn)" "$ewf"
       else
         rm -f "$ssf" "$ewf"
