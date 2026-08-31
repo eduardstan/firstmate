@@ -6,16 +6,18 @@
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
-# A diverged default branch may converge after a fetched history rewrite only when
-# the local-only and freshly-fetched-remote-only commits form equal-length,
-# topologically oldest-first sequences whose trees match one-to-one by position
-# (a differing count, or any positional tree mismatch, refuses), the clone is
-# clean, and every linked worktree is inspectable and holds no unlanded content.
-# Every other off-default or diverged state may hold real work, so it is left
-# untouched and reported as a loud, actionable "STUCK" warning. Nothing is ever
-# forced, stashed, or discarded.
+# Every other off-default state - a non-default named branch, a detached HEAD with
+# unique commits, a dirty tree, or a diverged default - may hold real work, so it
+# is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
+# ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
+# stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
 # and fetch failures.
+# A candidate under projects/ must be the root of its own work tree: git discovery
+# walks up, so a plain nested directory would otherwise resolve to the enclosing
+# repository (the firstmate checkout) and be synced under that directory's label.
+# Anything else is reported as "skipped: not a clone root" naming the repository
+# that would have been touched.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
@@ -295,194 +297,6 @@ report_stuck() {
   echo "$label: STUCK: on $state, $behind commits behind $BASE - needs attention"
 }
 
-report_convergence_refusal() {
-  local condition=$1 commit=$2 detail=${3:-} behind
-  behind=$(git -C "$PROJ" rev-list --count "$DEFAULT..$BASE" 2>/dev/null) || behind="?"
-  if [ -n "$detail" ]; then
-    echo "$label: STUCK: diverged $DEFAULT; rewrite convergence refused: $condition at commit $commit ($detail); $behind commits behind $BASE - needs attention"
-  else
-    echo "$label: STUCK: diverged $DEFAULT; rewrite convergence refused: $condition at commit $commit; $behind commits behind $BASE - needs attention"
-  fi
-}
-
-remote_tree_contains() {
-  grep -Fxq -- "$1" <<EOF
-$REMOTE_TREES
-EOF
-}
-
-# Refresh the exact default branch through an explicit heads-to-remote-tracking
-# refspec. A successful return proves BASE names a real branch on origin and that
-# the remote-tracking ref used by the convergence proof was fetched just now.
-refresh_remote_default_for_convergence() {
-  local output
-  if ! output=$(git -C "$PROJ" fetch origin --quiet --no-tags \
-      "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT" 2>&1); then
-    report_convergence_refusal "remote branch $BASE was not freshly fetched as a real remote-tracking branch" \
-      "$local_rev" "$(first_line "$output")"
-    return 1
-  fi
-  if ! git -C "$PROJ" show-ref --verify --quiet "refs/remotes/origin/$DEFAULT"; then
-    report_convergence_refusal "fresh fetch did not produce remote-tracking branch $BASE" "$local_rev"
-    return 1
-  fi
-}
-
-# Refuse when a linked worktree cannot be proved clean and landed. A commit not
-# reachable from a remote is still content-landed when its exact tree is present
-# on the freshly fetched default branch, which covers linked worktrees based on
-# the same deliberate history rewrite.
-linked_worktrees_are_landed() {
-  local project_abs listed wt_path wt_head wt_abs status unlanded commit tree
-  project_abs=$(cd "$PROJ" && pwd -P) || {
-    report_convergence_refusal "clone path cannot be inspected" "$local_rev"
-    return 1
-  }
-  listed=$(git -C "$PROJ" -c core.quotePath=false worktree list --porcelain 2>/dev/null) || {
-    report_convergence_refusal "linked worktrees cannot be listed" "$local_rev"
-    return 1
-  }
-  wt_path=
-  wt_head=
-  while IFS= read -r line; do
-    case "$line" in
-      worktree\ *) wt_path=${line#worktree }; wt_head= ;;
-      HEAD\ *) wt_head=${line#HEAD } ;;
-      '')
-        [ -n "$wt_path" ] || continue
-        wt_abs=$(cd "$wt_path" 2>/dev/null && pwd -P) || {
-          report_convergence_refusal "linked worktree cannot be inspected" "${wt_head:-unknown}" "$wt_path"
-          return 1
-        }
-        if [ "$wt_abs" != "$project_abs" ]; then
-          if ! status=$(git -C "$wt_path" status --porcelain 2>/dev/null); then
-            report_convergence_refusal "linked worktree status cannot be inspected" "${wt_head:-unknown}" "$wt_path"
-            return 1
-          fi
-          if [ -n "$status" ]; then
-            report_convergence_refusal "linked worktree has uncommitted changes" "${wt_head:-unknown}" "$wt_path"
-            return 1
-          fi
-          if ! unlanded=$(git -C "$wt_path" rev-list HEAD --not --remotes 2>/dev/null); then
-            report_convergence_refusal "linked worktree commits cannot be inspected" "${wt_head:-unknown}" "$wt_path"
-            return 1
-          fi
-          while IFS= read -r commit; do
-            [ -n "$commit" ] || continue
-            tree=$(git -C "$PROJ" rev-parse "$commit^{tree}" 2>/dev/null) || {
-              report_convergence_refusal "linked worktree commit tree cannot be inspected" "$commit" "$wt_path"
-              return 1
-            }
-            if ! remote_tree_contains "$tree"; then
-              report_convergence_refusal "linked worktree has unlanded content" "$commit" "$wt_path; tree $tree is absent from $BASE"
-              return 1
-            fi
-          done <<EOF
-$unlanded
-EOF
-        fi
-        wt_path=
-        wt_head=
-        ;;
-    esac
-  done <<EOF
-$listed
-
-EOF
-}
-
-converge_proven_history_rewrite() {
-  local commit tree local_count=0 before after status
-  local local_only remote_only remote_count remote_commit remote_tree i
-  local -a local_commits=() remote_commits=()
-
-  refresh_remote_default_for_convergence || return 1
-  remote_rev=$(git -C "$PROJ" rev-parse "$BASE") || {
-    report_convergence_refusal "freshly fetched $BASE cannot be read" "$local_rev"
-    return 1
-  }
-  REMOTE_TREES=$(git -C "$PROJ" log --format=%T "$BASE" 2>/dev/null) || {
-    report_convergence_refusal "$BASE tree history cannot be inspected" "$local_rev"
-    return 1
-  }
-
-  # A rewritten counterpart is proved by position, not by mere membership: the
-  # local-only and remote-only commits must form equal-length, oldest-first
-  # sequences whose trees match one-to-one. Membership alone would accept a local
-  # commit (e.g. a revert) that merely recreates an older remote tree and then
-  # discard it in the reset below.
-  local_only=$(git -C "$PROJ" rev-list --topo-order --reverse "$DEFAULT" --not "$BASE" 2>&1) || {
-    report_convergence_refusal "local-only commits cannot be enumerated" "$local_rev" "$(first_line "$local_only")"
-    return 1
-  }
-  remote_only=$(git -C "$PROJ" rev-list --topo-order --reverse "$BASE" --not "$DEFAULT" 2>&1) || {
-    report_convergence_refusal "commits unique to $BASE cannot be enumerated" "$local_rev" "$(first_line "$remote_only")"
-    return 1
-  }
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    local_commits+=("$commit")
-  done <<EOF
-$local_only
-EOF
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    remote_commits+=("$commit")
-  done <<EOF
-$remote_only
-EOF
-  local_count=${#local_commits[@]}
-  remote_count=${#remote_commits[@]}
-  if [ "$local_count" -gt 0 ] && [ "$local_count" -ne "$remote_count" ]; then
-    report_convergence_refusal "local-only and $BASE-only commit counts differ" "$local_rev" \
-      "$local_count local-only commits vs $remote_count commits unique to $BASE"
-    return 1
-  fi
-  i=0
-  while [ "$i" -lt "$local_count" ]; do
-    commit=${local_commits[$i]}
-    remote_commit=${remote_commits[$i]}
-    i=$(( i + 1 ))
-    tree=$(git -C "$PROJ" rev-parse "$commit^{tree}" 2>/dev/null) || {
-      report_convergence_refusal "local-only commit tree cannot be inspected" "$commit"
-      return 1
-    }
-    remote_tree=$(git -C "$PROJ" rev-parse "$remote_commit^{tree}" 2>/dev/null) || {
-      report_convergence_refusal "$BASE commit tree cannot be inspected" "$remote_commit"
-      return 1
-    }
-    if [ "$tree" != "$remote_tree" ]; then
-      report_convergence_refusal "local-only commit has no identical tree on $BASE" "$commit" \
-        "tree $tree; $BASE commit $remote_commit has tree $remote_tree"
-      return 1
-    fi
-  done
-
-  if ! status=$(git -C "$PROJ" status --porcelain 2>/dev/null); then
-    report_convergence_refusal "working tree cleanliness cannot be inspected" "$local_rev"
-    return 1
-  fi
-  if [ -n "$status" ]; then
-    report_convergence_refusal "working tree is not clean" "$local_rev" "$(first_line "$status")"
-    return 1
-  fi
-  linked_worktrees_are_landed || return 1
-
-  before=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
-    report_convergence_refusal "local $DEFAULT cannot be read" "$local_rev"
-    return 1
-  }
-  if ! git -C "$PROJ" reset --hard --quiet "$BASE"; then
-    report_convergence_refusal "reset onto proven $BASE failed" "$local_rev"
-    return 1
-  fi
-  after=$(git -C "$PROJ" rev-parse --short "$DEFAULT") || {
-    echo "$label: converged rewritten $DEFAULT but cannot read the new revision"
-    return 0
-  }
-  echo "$label: converged rewritten $DEFAULT $before..$after ($local_count local-only commit trees matched $BASE)"
-}
-
 sync_project() {
   PROJ=$1
   label=$(project_label)
@@ -491,8 +305,23 @@ sync_project() {
     echo "$label: skipped: not a directory"
     return 0
   fi
-  if ! git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Git repository discovery walks UP from $PROJ, so a plain directory merely
+  # nested inside a repository - a worktree container left under projects/, say -
+  # resolves to the ENCLOSING repository, which in a firstmate home is the
+  # firstmate checkout itself. Every later `git -C "$PROJ"` would then read, prune
+  # and fast-forward that repository under this project's label, turning a routine
+  # refresh into an unrequested self-update reported as a project sync. Require
+  # $PROJ to be the root of its own work tree before any other git command runs.
+  proj_top=$(git -C "$PROJ" rev-parse --show-toplevel 2>/dev/null) || proj_top=""
+  if [ -z "$proj_top" ]; then
     echo "$label: skipped: not a git repo"
+    return 0
+  fi
+  # Both sides are physical paths (git resolves --show-toplevel through symlinks),
+  # so a symlinked clone dir still compares equal to its own root.
+  proj_abs=$(cd "$PROJ" && pwd -P) || proj_abs=""
+  if [ "$proj_top" != "$proj_abs" ]; then
+    echo "$label: skipped: not a clone root (git would act on $proj_top)"
     return 0
   fi
   mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")
@@ -555,6 +384,10 @@ sync_project() {
       report_stuck "$(stuck_state)"
       return 0
     fi
+  elif [ "$dirty" = yes ]; then
+    # On the default branch but with uncommitted changes we must not disturb.
+    report_stuck "$(stuck_state)"
+    return 0
   fi
 
   if ! git -C "$PROJ" rev-parse --verify --quiet "$DEFAULT^{commit}" >/dev/null; then
@@ -570,16 +403,6 @@ sync_project() {
     echo "$label: skipped: cannot read $BASE"
     return 0
   }
-  if [ "$dirty" = yes ]; then
-    if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE" 2>/dev/null \
-        && ! git -C "$PROJ" merge-base --is-ancestor "$BASE" "$DEFAULT" 2>/dev/null; then
-      report_convergence_refusal "working tree is not clean" "$local_rev" \
-        "$(first_line "$(git -C "$PROJ" status --porcelain 2>/dev/null || true)")"
-    else
-      report_stuck "$(stuck_state)"
-    fi
-    return 0
-  fi
   if [ "$local_rev" = "$remote_rev" ]; then
     if [ "$recovered" = yes ]; then
       echo "$label: recovered: re-attached $DEFAULT (already current)"
@@ -589,11 +412,7 @@ sync_project() {
     return 0
   fi
   if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BASE"; then
-    if git -C "$PROJ" merge-base --is-ancestor "$BASE" "$DEFAULT" 2>/dev/null; then
-      report_stuck "diverged $DEFAULT"
-    else
-      converge_proven_history_rewrite || true
-    fi
+    report_stuck "diverged $DEFAULT"
     return 0
   fi
 

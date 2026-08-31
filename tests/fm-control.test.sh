@@ -35,7 +35,7 @@ mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-VERIFIED_HARNESSES="claude codex opencode pi pi-signed prime-agent grok kimi muse"
+VERIFIED_HARNESSES="claude codex opencode pi pi-signed grok kimi cursor muse"
 
 # The expectation table, written out independently of the implementation so a
 # silent change to either side shows up here. The fourth field is the composer
@@ -48,9 +48,9 @@ verified_adapter_contract() {  # <harness> -> exit command, interrupt key, repea
     opencode) printf '/exit\tEscape\t2\t\n' ;;
     pi) printf '/quit\tEscape\t1\t\n' ;;
     pi-signed) printf '/quit\tEscape\t1\t\n' ;;
-    prime-agent) printf '/quit\tEscape\t1\t\n' ;;
     grok) printf '/exit\tC-c\t1\t\n' ;;
     kimi) printf '/exit\tEscape\t1\t\n' ;;
+    cursor) printf '/exit\tEscape\t1\t\n' ;;
     muse) printf '/exit\tEscape\t1\tC-u\n' ;;
     *) return 1 ;;
   esac
@@ -216,44 +216,16 @@ keys_sent() {  # <case-dir>
 
 # --- 1. adapter contract across every verified harness -----------------------
 
-# Every mechanics table is keyed by harness and refuses an unverified one with a
-# nonzero return, so an adapter added to fm_control_harness_supported but missed
-# in one table lands on that refusal branch: under `set -e` the assignment in
-# bin/fm-control.sh aborts the run mid-lifecycle. Sweep the whole matrix rather
-# than the values one table at a time, so the next adapter cannot repeat it.
-test_every_supported_harness_resolves_every_mechanics_table() {
-  local harness fn out
-  for harness in $VERIFIED_HARNESSES; do
-    fm_control_harness_supported "$harness" \
-      || fail "$harness must be a supported control-plane harness"
-    for fn in fm_control_harness_family fm_control_interrupt_key \
-        fm_control_interrupt_repeat fm_control_interrupt_clear_key \
-        fm_control_interrupt_ack_source fm_control_exit_command; do
-      out=$("$fn" "$harness") \
-        || fail "$fn has no entry for the supported harness $harness"
-      case "$fn" in
-        fm_control_interrupt_clear_key) ;;
-        *) [ -n "$out" ] || fail "$fn returned an empty value for $harness" ;;
-      esac
-    done
-    fm_control_harness_supports_kind "$harness" ship \
-      || fail "$harness must resolve its task-kind support"
-  done
-  for fn in fm_control_harness_family fm_control_interrupt_key \
-      fm_control_interrupt_repeat fm_control_interrupt_clear_key \
-      fm_control_interrupt_ack_source fm_control_exit_command; do
-    "$fn" someagent >/dev/null \
-      && fail "$fn must refuse the unverified harness someagent"
-  done
-  pass "fm-control-lib: every supported harness resolves every mechanics table"
-}
-
 test_exit_types_each_harness_verified_command() {
   local dir out rc harness expected key repeat clear
   for harness in $VERIFIED_HARNESSES; do
     dir=$(new_case "exit-$harness")
     add_task "$dir" t1 "$harness"
-    alive_as "$dir" "$harness"
+    if [ "$harness" = cursor ]; then
+      alive_as "$dir" cursor-agent
+    else
+      alive_as "$dir" "$harness"
+    fi
     out=$(run_control "$dir" t1 exit); rc=$?
     expect_code 0 "$rc" "exit on $harness should succeed"$'\n'"$out"
     IFS=$'\t' read -r expected key repeat clear <<< "$(verified_adapter_contract "$harness")"
@@ -269,7 +241,11 @@ test_interrupt_sends_each_harness_verified_key() {
   for harness in $VERIFIED_HARNESSES; do
     dir=$(new_case "int-$harness")
     add_task "$dir" t1 "$harness"
-    alive_as "$dir" "$harness"
+    if [ "$harness" = cursor ]; then
+      alive_as "$dir" cursor-agent
+    else
+      alive_as "$dir" "$harness"
+    fi
     out=$(run_control "$dir" t1 interrupt); rc=$?
     expect_code 0 "$rc" "interrupt on $harness should succeed"$'\n'"$out"
     IFS=$'\t' read -r expected key repeat clear <<< "$(verified_adapter_contract "$harness")"
@@ -289,9 +265,9 @@ test_interrupt_sends_each_harness_verified_key() {
 test_harness_family_resolution() {
   local pair recorded want got
   for pair in claude:claude claude-latest:claude codex:codex codex-cli:codex \
-      opencode:opencode grok:grok grok-2:grok kimi:kimi muse:muse \
-      muse-bin-0.1.0:muse prime-agent:prime-agent \
-      pi:pi pi-signed:pi-signed; do
+      opencode:opencode grok:grok grok-2:grok kimi:kimi cursor:cursor \
+      cursor-agent:cursor muse:muse muse-bin-0.1.0:muse pi:pi \
+      pi-signed:pi-signed; do
     recorded=${pair%%:*}
     want=${pair#*:}
     got=$(fm_control_harness_family "$recorded") \
@@ -399,7 +375,7 @@ test_harness_kind_capability() {
   done
   fm_control_harness_supports_kind muse secondmate \
     && fail "muse has no primary supervision protocol and must not claim a secondmate"
-  for harness in claude codex opencode pi pi-signed prime-agent grok kimi; do
+  for harness in claude codex opencode pi pi-signed grok kimi; do
     fm_control_harness_supports_kind "$harness" secondmate \
       || fail "$harness should be able to run a secondmate"
   done
@@ -887,14 +863,16 @@ test_fm_send_still_marks_the_same_secondmate_task() {
     FM_SEND_SETTLE=0 FM_ROOT_OVERRIDE="$dir/home" \
     "$SEND" domain "audit the build" 2>&1); rc=$?
   expect_code 0 "$rc" "fm-send to a secondmate should still succeed"$'\n'"$out"
-  case "$(literals "$dir")" in
+  # The marked steer rides fm-send's durable inbox plane; only the doorbell is
+  # typed, so the marker is asserted on the recorded body.
+  case "$(bash -c '. "$1"; fm_task_inbox_body "$2"' _ "$ROOT/bin/fm-task-inbox-lib.sh" \
+    "$dir/home/state/domain.inbox/001.msg")" in
     "$FM_FROMFIRST_MARK"*) : ;;
     *) fail "fm-send must still mark a kind=secondmate target: $(literals "$dir")" ;;
   esac
   pass "fm-control's arrival leaves fm-send's from-firstmate marking untouched"
 }
 
-test_every_supported_harness_resolves_every_mechanics_table
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once

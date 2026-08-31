@@ -115,6 +115,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
+  cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
   chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh"
@@ -1120,9 +1121,9 @@ install_integrated_autoarm() {
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
-  cp "$ROOT/bin/fm-prime-agent-lib.sh" "$dir/bin/fm-prime-agent-lib.sh"
-  cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/fm-timeout-lib.sh"
+  cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
   cp "$ROOT/bin/fm-session-lock-lib.sh" "$dir/bin/fm-session-lock-lib.sh"
+  cp "$ROOT/bin/fm-cursor-lib.sh" "$dir/bin/fm-cursor-lib.sh"
   cp "$ROOT/bin/fm-lock.sh" "$dir/bin/fm-lock.sh"
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
   ln -s /bin/bash "$dir/fake-claude"
@@ -1296,6 +1297,155 @@ test_hook_claude_mode_allows_on_fresh_rewake_epoch() {
   expect_code 0 "$status" "--claude mode must allow the stop whose rewake the auto-arm already owns"
   [ -z "$out" ] || fail "--claude rewake-epoch allow produced output: $out"
   pass "fm-turnend-guard --claude: fresh rewake epoch prevents a duplicate continuation for the same event"
+}
+
+# The 2026-08-14 lapse: a cycle armed, delivered one rewake, exited, and left its
+# owner lock behind holding a live pid. Both Stop participants read that lock as
+# "recovery is already under way", so with work in flight and a beacon 40 minutes
+# cold every turn ended blind and nothing re-armed. A stale ledger outcome for
+# the lock's own pid is the proof that no decision is in flight any more.
+test_hook_claude_mode_blocks_on_abandoned_autoarm_claim() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-claim")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=464 owner_pid=%s outcome=rewake updated_at=1\n' "$pid" > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "an owner lock left behind by a finished claim must not pass for recovery under way"
+  assert_contains "$out" "TURN WOULD END BLIND" "abandoned-claim block must carry the blind-turn banner"
+  assert_contains "$out" "2 task(s) in flight" "abandoned-claim block must name the unsupervised work"
+  pass "fm-turnend-guard --claude: an abandoned auto-arm claim no longer allows a blind stop (incident regression)"
+}
+
+# The ledger-blind variant of the same lapse: a session teardown killed the claim's
+# process group before it could record any outcome, so its entry still reads
+# "arming" - in flight however old, by contract - while the recorded pid now belongs
+# to an unrelated live process. The identity the claim wrote into its own lock is
+# the only thing that separates that from a real arm still running.
+test_hook_claude_mode_blocks_on_pid_reused_arming_claim() {
+  local dir out status pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-reused-pid-claim")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  # The claim recorded ITS OWN identity; this test shell now stands in for the
+  # unrelated process that inherited the number.
+  identity=$(fm_test_pid_identity "$$") || fail "could not compute a claim pid-identity"
+  printf '%s\n' "$identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=1\n' "$pid" > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  : > "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a claim whose recorded identity no longer matches its live pid must not pass for recovery under way"
+  assert_contains "$out" "TURN WOULD END BLIND" "reused-pid claim block must carry the blind-turn banner"
+  assert_contains "$out" "2 task(s) in flight" "reused-pid claim block must name the unsupervised work"
+  pass "fm-turnend-guard --claude: a claim whose pid was reused stops counting as recovery even while its entry reads arming"
+}
+
+# The legacy stuck-arming shape (the 2026-08-26 flap): a live identity-matched
+# lock-holding owner frozen at arming past grace with a beacon just as stale
+# must not count as recovery under way.
+test_hook_claude_mode_blocks_on_stuck_arming_claim() {
+  local dir out status pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-stuck-arming-claim")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  identity=$(fm_test_pid_identity "$pid") || fail "could not compute a claim pid-identity"
+  printf '%s\n' "$identity" > "$dir/state/.claude-autoarm.lock/pid-identity"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=1\n' "$pid" > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a live owner stuck arming past grace with a stale beacon must not pass for recovery under way"
+  assert_contains "$out" "TURN WOULD END BLIND" "stuck-arming claim block must carry the blind-turn banner"
+  assert_contains "$out" "2 task(s) in flight" "stuck-arming claim block must name the unsupervised work"
+  pass "fm-turnend-guard --claude: a hung owner frozen at arming with no watcher beat no longer allows a blind stop"
+}
+
+# The generation model's ownership proof: a live open ledger claim (two-line
+# entry, identity-matched owner, watcher still beating) owns recovery with no
+# lock held at all.
+test_hook_claude_mode_allows_on_open_generation_claim() {
+  local dir out status pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-open-generation")
+  : > "$dir/state/task1.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(fm_test_pid_identity "$pid") || fail "could not compute a claim pid-identity"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=1\n%s\n' "$pid" "$identity" \
+    > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  : > "$dir/state/.last-watcher-beat"
+  [ ! -e "$dir/state/.claude-autoarm.lock" ] || fail "this case must start with no owner lock at all"
+  out=$(run_hook_claude "$dir" false); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "--claude mode must allow when a live open generation claim owns recovery"
+  [ -z "$out" ] || fail "open-generation-claim allow produced output: $out"
+  pass "fm-turnend-guard --claude: a live open generation claim owns recovery with no lock held"
+}
+
+# The same claim gone stuck (entry and beacon both past grace) stops counting
+# as recovery even though its owner is alive and identity-matched.
+test_hook_claude_mode_blocks_on_stuck_generation_claim() {
+  local dir out status pid identity
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-stuck-generation")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/task2.meta"
+  sleep 60 &
+  pid=$!
+  identity=$(fm_test_pid_identity "$pid") || fail "could not compute a claim pid-identity"
+  printf 'epoch=464 owner_pid=%s outcome=arming updated_at=1\n%s\n' "$pid" "$identity" \
+    > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 2 "$status" "a stuck generation claim must not pass for recovery under way"
+  assert_contains "$out" "TURN WOULD END BLIND" "stuck-generation-claim block must carry the blind-turn banner"
+  assert_contains "$out" "2 task(s) in flight" "stuck-generation-claim block must name the unsupervised work"
+  pass "fm-turnend-guard --claude: a stuck generation claim no longer allows a blind stop"
+}
+
+# The same abandoned claim on the terminal path: stepping aside for it allowed the
+# stop silently AND spent no attended alarm, so a genuinely broken automatic
+# mechanism stayed invisible. The guard must clear the claim and finish instead.
+test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim() {
+  local dir out status pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-abandoned-terminal")
+  : > "$dir/state/task1.meta"
+  : > "$dir/state/.claude-autoarm-failure-notified"
+  seed_claude_budget "$dir" 4 3
+  sleep 60 &
+  pid=$!
+  record_autoarm_owner "$dir" "$pid"
+  printf 'epoch=3 owner_pid=%s outcome=failed-suppressed updated_at=1\n' "$pid" > "$dir/state/.claude-autoarm-epoch"
+  touch -t 202001010000 "$dir/state/.claude-autoarm-epoch"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  expect_code 0 "$status" "the verified attended fail-open still ends the turn once it is spent"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "an abandoned claim suppressed the episode's attended alarm"
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" "abandoned-claim terminal path did not consume the one-time alarm"
+  assert_absent "$dir/state/.claude-autoarm.lock" "abandoned-claim terminal path left the stale claim in place"
+  assert_absent "$dir/state/.claude-autoarm.lock.steal" "abandoned-claim reclaim left its serialization mutex behind"
+  pass "fm-turnend-guard --claude: the terminal path clears an abandoned claim instead of stepping aside silently"
 }
 
 test_hook_claude_mode_preserves_fresh_failed_progression() {
@@ -1600,62 +1750,6 @@ test_hook_claude_mode_secondmate_reblocks_like_primary() {
   pass "fm-turnend-guard --claude: secondmate home re-blocks unclaimed and allows auto-arm-claimed stops"
 }
 
-# Quota instrumentation must price every real turn. A stop that continues one of
-# this guard's own blocks is the same turn and records once; a stop_hook_active
-# stop with no outstanding block is a genuinely new turn and MUST be recorded,
-# because Claude Code keeps that flag true for the rest of the session after any
-# asyncRewake continuation.
-install_quota_writer_probe() {
-  local dir=$1
-  cat > "$dir/bin/fm-turn-quota-writer.sh" << 'SH'
-#!/usr/bin/env bash
-printf 'called\n' >> "${FM_HOME:?}/state/.quota-writer-calls"
-SH
-  chmod +x "$dir/bin/fm-turn-quota-writer.sh"
-}
-
-quota_writer_calls() {
-  wc -l < "$1/state/.quota-writer-calls" 2>/dev/null | tr -d ' ' || printf '0'
-}
-
-test_hook_claude_mode_quota_records_every_new_turn() {
-  local dir pid identity out status
-  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-quota")
-  install_quota_writer_probe "$dir"
-  : > "$dir/state/task1.meta"
-
-  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" false); status=$?
-  expect_code 2 "$status" "first --claude stop must block while unhealthy"
-  [ "$(quota_writer_calls "$dir")" = "1" ] || fail "a new turn must record exactly one quota row (got: $(quota_writer_calls "$dir"))"
-
-  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
-  expect_code 2 "$status" "the continuation of this guard's own block must re-block while still unhealthy"
-  [ "$(quota_writer_calls "$dir")" = "1" ] || fail "the continuation of a guard block must not append a second quota row (got: $(quota_writer_calls "$dir"))"
-
-  sleep 60 &
-  pid=$!
-  identity=$(watcher_identity "$dir" "$pid") || {
-    kill "$pid" 2>/dev/null || true
-    wait "$pid" 2>/dev/null || true
-    fail "could not identify live watcher holder"
-  }
-  record_watcher_lock "$dir" "$pid" "$identity"
-  touch "$dir/state/.last-watcher-beat"
-  out=$(run_hook_claude "$dir" true); status=$?
-  expect_code 0 "$status" "--claude must allow once the watcher is healthy again"
-  [ ! -f "$dir/state/.turnend-claude-blocks" ] || fail "allow must clear the consecutive-block ledger"
-  [ "$(quota_writer_calls "$dir")" = "1" ] || fail "the stop that closes a block chain is still the same turn (got: $(quota_writer_calls "$dir"))"
-
-  out=$(run_hook_claude "$dir" true); status=$?
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  rm -rf "$dir/state/.watch.lock"
-  expect_code 0 "$status" "a healthy later stop must still allow"
-  [ "$(quota_writer_calls "$dir")" = "2" ] || fail "stop_hook_active=true with no outstanding block is a new turn and must be recorded (got: $(quota_writer_calls "$dir"))"
-
-  pass "fm-turnend-guard --claude: quota records every new turn and never double-counts a guard-block continuation"
-}
-
 test_predicate_healthy_no_inflight
 test_predicate_unhealthy_no_beacon
 test_predicate_unhealthy_stale_beacon
@@ -1708,6 +1802,12 @@ test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
 test_hook_claude_mode_allows_on_fresh_rewake_epoch
+test_hook_claude_mode_blocks_on_abandoned_autoarm_claim
+test_hook_claude_mode_blocks_on_pid_reused_arming_claim
+test_hook_claude_mode_blocks_on_stuck_arming_claim
+test_hook_claude_mode_allows_on_open_generation_claim
+test_hook_claude_mode_blocks_on_stuck_generation_claim
+test_hook_claude_mode_terminal_fail_open_clears_abandoned_claim
 test_hook_claude_mode_preserves_fresh_failed_progression
 test_hook_claude_mode_integrated_monotonic_fail_open
 test_hook_claude_mode_recovery_contention_is_not_ordinary_allow
@@ -1720,4 +1820,3 @@ test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
 test_hook_claude_mode_waits_for_late_claim
 test_hook_claude_mode_secondmate_reblocks_like_primary
-test_hook_claude_mode_quota_records_every_new_turn

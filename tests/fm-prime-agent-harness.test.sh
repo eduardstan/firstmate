@@ -12,6 +12,8 @@
 #   - prime-agent's composer prompt glyph is a plain `>`, which the fleet-wide
 #     composer rule treats as a DEAD SHELL on an unstructured row. It may read
 #     as an empty agent composer only inside a real composer container.
+#   - an explicit FM_PI_HARNESS=pi or pi-signed launch marker overrides stale
+#     Prime-specific markers; Prime markers win only without that override.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -25,7 +27,7 @@ TMP_ROOT=$(fm_test_tmproot fm-prime-agent-harness)
 # --- detection --------------------------------------------------------------
 
 detect() {  # <env assignment>...
-  env -u CLAUDECODE -u GROK_AGENT -u FM_PI_HARNESS \
+  env -u CLAUDECODE -u GROK_AGENT -u FM_PI_HARNESS -u PI_CODING_AGENT \
     -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER \
     "$@" "$HARNESS"
 }
@@ -50,17 +52,17 @@ test_detection_splits_the_pi_family() {
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed)
   [ "$out" = pi-signed ] || fail "pi-signed selection regressed (got '$out')"
 
-  # FM_PI_HARNESS is subject to the SAME supervisor inheritance as CLAUDECODE:
-  # a supervisor first started from a pi-signed worker hands it to every later
-  # prime-agent worker. The per-tool-call vendor marker must therefore outrank
-  # it too, or that worker reports itself as a Pi it is not.
+  # An explicit launch-boundary FM_PI_HARNESS=pi or pi-signed is authoritative
+  # over Prime-specific markers that may be stale in a shared supervisor
+  # environment. Prime markers win only when that explicit Pi-family override is
+  # absent.
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed PRIME_AGENT_CODING_AGENT_DIR=/x)
-  [ "$out" = prime-agent ] \
-    || fail "an inherited FM_PI_HARNESS outranked prime-agent's own marker (got '$out')"
+  [ "$out" = pi-signed ] \
+    || fail "an explicit pi-signed marker did not override a stale Prime marker (got '$out')"
 
-  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi PRIME_AGENT_INTERNAL_DAEMON_WORKER=1 CLAUDECODE=1)
-  [ "$out" = prime-agent ] \
-    || fail "an inherited launch stamp plus CLAUDECODE outranked the daemon-worker marker (got '$out')"
+  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi PRIME_AGENT_INTERNAL_DAEMON_WORKER=1)
+  [ "$out" = pi ] \
+    || fail "an explicit pi marker did not override a stale Prime marker (got '$out')"
 
   # An empty marker value is not a marker.
   out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=)

@@ -12,6 +12,12 @@
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 #
+# It also pins the clone-root guard: a plain directory under projects/ resolves,
+# through git's upward repository discovery, to the ENCLOSING repository - in a
+# firstmate home, the firstmate checkout itself - so it must be skipped by name
+# with the enclosing repo left untouched, in both the whole-fleet and
+# single-project forms, while a symlinked clone dir still syncs.
+#
 # It also pins the orphaned .git/packed-refs.lock recovery in the fetch step
 # (fetch_with_packed_refs_lock_guard, backed by bin/fm-lock-lib.sh's shared
 # staleness proof): a provably-stale lock is retried then removed and the clone
@@ -81,48 +87,6 @@ advance_origin() {
   git -C "$work" push -q origin main
 }
 
-# rewrite_origin_with_identical_trees <clone>: replace origin/main with a new
-# commit chain whose commits have the same trees as clone's local main but new
-# identities. The clone remains on the old chain, producing the deliberate
-# ahead/behind shape that fleet-sync's guarded convergence handles.
-rewrite_origin_with_identical_trees() {
-  local clone=$1 commit
-  local -a trees=()
-  while IFS= read -r commit; do
-    trees+=("$(git -C "$clone" rev-parse "$commit^{tree}")")
-  done < <(git -C "$clone" rev-list --reverse main)
-  push_rewritten_trees "$clone" "${trees[@]}"
-}
-
-# push_rewritten_trees <clone> <tree>...: force origin/main onto a fresh chain of
-# commits carrying exactly the given trees, oldest first.
-push_rewritten_trees() {
-  local clone=$1 tree rewritten parent='' index=0
-  shift
-  for tree in "$@"; do
-    index=$(( index + 1 ))
-    if [ -n "$parent" ]; then
-      rewritten=$(printf 'rewritten commit %s\n' "$index" \
-        | git -C "$clone" commit-tree "$tree" -p "$parent")
-    else
-      rewritten=$(printf 'rewritten commit %s\n' "$index" \
-        | git -C "$clone" commit-tree "$tree")
-    fi
-    parent=$rewritten
-  done
-  git -C "$clone" update-ref refs/heads/rewritten-for-test "$parent"
-  git -C "$clone" push -q --force origin refs/heads/rewritten-for-test:refs/heads/main
-  git -C "$clone" update-ref -d refs/heads/rewritten-for-test
-}
-
-build_rewritten_pair() {
-  local home=$1 name=$2 clone
-  clone=$(build_pair "$home" "$name")
-  commit_file "$clone" file.txt v1 C1
-  rewrite_origin_with_identical_trees "$clone"
-  printf '%s\n' "$clone"
-}
-
 head_sha() { git -C "$1" rev-parse HEAD; }
 
 # run_sync <home> [args...]: run fleet-sync against an isolated home, stdout only.
@@ -130,6 +94,40 @@ run_sync() {
   local home=$1
   shift
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-fleet-sync.sh" "$@" 2>/dev/null
+}
+
+# build_enclosing_home <name>: an FM_HOME that is itself nested inside another git
+# repository - firstmate's own layout, where projects/ sits inside the firstmate
+# checkout. The enclosing repo is a clean clone of a bare origin that is one commit
+# ahead, so a sync that walked git discovery UP out of projects/<dir> would find a
+# fast-forward available and visibly take it. Echoes the enclosing repo, which is
+# also the home. Its work tree is left pristine so the only thing under projects/
+# is what the test puts there.
+build_enclosing_home() {
+  local name=$1 root work remote enclosing remote_abs
+  root="$TMP_ROOT/enclosing-$name"
+  work="$root/work"
+  remote="$root/remote.git"
+  enclosing="$root/enclosing"
+  mkdir -p "$root"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  printf '/projects/\n' > "$work/.gitignore"
+  git -C "$work" add .gitignore
+  commit_file "$work" AGENTS.md v0 C0
+
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main
+
+  git clone --quiet "file://$remote_abs" "$enclosing"
+  commit_file "$work" AGENTS.md v1 C1
+  git -C "$work" push -q origin main
+
+  mkdir -p "$enclosing/projects"
+  printf '%s\n' "$enclosing"
 }
 
 # --- packed-refs.lock fixtures ----------------------------------------------
@@ -347,108 +345,9 @@ test_diverged_is_stuck_untouched() {
 
   assert_contains "$out" "epsilon: STUCK:" "diverged clone reports STUCK"
   assert_contains "$out" "diverged main" "STUCK names the diverged state"
-  assert_contains "$out" "local-only commit has no identical tree on origin/main" "refusal names the failed tree condition"
-  assert_contains "$out" "$before" "refusal names the offending local-only commit"
   assert_contains "$out" "commits behind origin/main - needs attention" "STUCK is quantified"
   [ "$(head_sha "$clone")" = "$before" ] || fail "diverged clone was moved"
   pass "diverged default branch is reported STUCK and left untouched"
-}
-
-test_identical_tree_rewrite_converges() {
-  local home clone out before remote
-  home=$(new_home)
-  clone=$(build_rewritten_pair "$home" rewrite-match)
-  before=$(head_sha "$clone")
-  remote=$(git -C "$clone" rev-parse origin/main)
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "rewrite-match: converged rewritten main" "identical-tree rewrite reports convergence"
-  assert_contains "$out" "2 local-only commit trees matched origin/main" "convergence reports its tree proof"
-  assert_not_contains "$out" "STUCK" "proven rewrite is not left stuck"
-  [ "$(head_sha "$clone")" = "$remote" ] || fail "proven rewrite did not move main to origin/main"
-  [ "$(head_sha "$clone")" != "$before" ] || fail "proven rewrite left main on old history"
-  pass "diverged histories with identical commit trees converge onto the freshly fetched remote"
-}
-
-test_out_of_position_tree_rewrite_refuses() {
-  local home clone out before mismatch t0 t1
-  home=$(new_home)
-  clone=$(build_pair "$home" rewrite-revert)
-  commit_file "$clone" file.txt v1 C1
-  commit_file "$clone" file.txt v0 "revert C1"
-  before=$(head_sha "$clone")
-  mismatch=$(git -C "$clone" rev-parse main~1)
-  t0=$(git -C "$clone" rev-parse "main~2^{tree}")
-  t1=$(git -C "$clone" rev-parse "main~1^{tree}")
-  # Every local tree exists somewhere on the rewritten origin, but only out of
-  # position: the local revert tree matches an older remote commit.
-  push_rewritten_trees "$clone" "$t0" "$t0" "$t1"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "local-only commit has no identical tree on origin/main" "out-of-position refusal names the failed condition"
-  assert_contains "$out" "$mismatch" "refusal names the offending local commit"
-  assert_contains "$out" "tree $t1" "refusal names the local tree"
-  assert_contains "$out" "has tree $t0" "refusal names the remote commit tree"
-  [ "$(head_sha "$clone")" = "$before" ] || fail "out-of-position rewrite moved main"
-  grep -qx v0 "$clone/file.txt" || fail "out-of-position rewrite lost the local revert content"
-  pass "tree matches out of position refuse convergence instead of discarding a local revert"
-}
-
-test_unequal_rewrite_length_refuses() {
-  local home clone out before t0 t1
-  home=$(new_home)
-  clone=$(build_pair "$home" rewrite-shorter)
-  commit_file "$clone" file.txt v1 C1
-  commit_file "$clone" file.txt v0 "revert C1"
-  before=$(head_sha "$clone")
-  t0=$(git -C "$clone" rev-parse "main~2^{tree}")
-  t1=$(git -C "$clone" rev-parse "main~1^{tree}")
-  push_rewritten_trees "$clone" "$t0" "$t1"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "local-only and origin/main-only commit counts differ" "count mismatch refusal names the failed condition"
-  assert_contains "$out" "3 local-only commits vs 2 commits unique to origin/main" "count mismatch refusal reports both counts"
-  [ "$(head_sha "$clone")" = "$before" ] || fail "count-mismatched rewrite moved main"
-  pass "a rewritten remote with fewer commits than the local-only run refuses convergence"
-}
-
-test_identical_tree_rewrite_dirty_refuses() {
-  local home clone out before
-  home=$(new_home)
-  clone=$(build_rewritten_pair "$home" rewrite-dirty)
-  before=$(head_sha "$clone")
-  printf 'dirty rewrite work\n' >> "$clone/file.txt"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "working tree is not clean" "dirty rewrite refusal names the failed condition"
-  assert_contains "$out" "$before" "dirty rewrite refusal names the offending HEAD commit"
-  [ "$(head_sha "$clone")" = "$before" ] || fail "dirty rewritten clone was moved"
-  grep -q "dirty rewrite work" "$clone/file.txt" || fail "dirty rewritten clone lost its working-tree edit"
-  pass "a dirty diverged clone refuses rewrite convergence and stays untouched"
-}
-
-test_identical_tree_rewrite_linked_unlanded_refuses() {
-  local home clone linked out before unlanded
-  home=$(new_home)
-  clone=$(build_rewritten_pair "$home" rewrite-linked)
-  before=$(head_sha "$clone")
-  linked="$home/linked-rewrite-work"
-  git -C "$clone" worktree add -q -b rewrite-feature "$linked"
-  commit_file "$linked" linked.txt unlanded "linked unlanded commit"
-  unlanded=$(head_sha "$linked")
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "linked worktree has unlanded content" "linked-worktree refusal names the failed condition"
-  assert_contains "$out" "$unlanded" "linked-worktree refusal names the offending commit"
-  assert_contains "$out" "$linked" "linked-worktree refusal names the worktree"
-  [ "$(head_sha "$clone")" = "$before" ] || fail "clone moved despite linked unlanded work"
-  [ "$(head_sha "$linked")" = "$unlanded" ] || fail "linked unlanded work was moved"
-  pass "a linked worktree with unlanded content blocks rewrite convergence"
 }
 
 test_on_default_clean_behind_fast_forwards() {
@@ -723,6 +622,57 @@ test_transient_packed_refs_lock_self_clears() {
   pass "a transient packed-refs.lock that self-clears is retried without a force-remove"
 }
 
+test_non_clone_dir_never_syncs_the_enclosing_repo() {
+  local home before out after
+  home=$(build_enclosing_home nonclone)
+  # A worktree container, not a clone: the repo is one level BELOW it.
+  mkdir -p "$home/projects/not-a-clone/wt"
+  before=$(head_sha "$home")
+
+  out=$(run_sync "$home")
+  after=$(head_sha "$home")
+
+  assert_contains "$out" "not-a-clone: skipped: not a clone root" \
+    "a non-repo directory under projects/ must be skipped by name"
+  assert_not_contains "$out" "not-a-clone: synced" \
+    "a non-repo directory must never be reported as a synced project"
+  [ "$before" = "$after" ] || \
+    fail "fleet-sync fast-forwarded the enclosing repo ($before -> $after) under a project's label"
+  pass "a non-repo directory under projects/ never fast-forwards the enclosing repo"
+}
+
+test_non_clone_dir_named_directly_never_syncs_the_enclosing_repo() {
+  local home before out after
+  home=$(build_enclosing_home nonclonedirect)
+  mkdir -p "$home/projects/not-a-clone"
+  before=$(head_sha "$home")
+
+  out=$(run_sync "$home" not-a-clone)
+  after=$(head_sha "$home")
+
+  assert_contains "$out" "not-a-clone: skipped: not a clone root" \
+    "the single-project form must apply the same clone-root guard"
+  [ "$before" = "$after" ] || \
+    fail "the single-project form fast-forwarded the enclosing repo ($before -> $after)"
+  pass "the single-project form also refuses a directory that is not its own clone root"
+}
+
+test_symlinked_clone_still_syncs() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" sigma)
+  advance_origin "$home" sigma C1
+  # A symlinked clone dir is a real clone root; the guard compares resolved paths,
+  # so it must not be mistaken for a directory nested in someone else's repo.
+  mv "$clone" "$home/real-sigma"
+  ln -s "$home/real-sigma" "$clone"
+
+  out=$(run_sync "$home")
+
+  assert_contains "$out" "sigma: synced" "a symlinked clone must still fast-forward"
+  pass "the clone-root guard accepts a symlinked clone directory"
+}
+
 test_non_signature_fetch_failure_is_not_retried() {
   local home fakebin clone out err
   home=$(new_home)
@@ -750,11 +700,6 @@ test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
 test_dirty_is_stuck_untouched
 test_non_default_branch_is_stuck_untouched
 test_diverged_is_stuck_untouched
-test_identical_tree_rewrite_converges
-test_out_of_position_tree_rewrite_refuses
-test_unequal_rewrite_length_refuses
-test_identical_tree_rewrite_dirty_refuses
-test_identical_tree_rewrite_linked_unlanded_refuses
 test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
@@ -771,3 +716,6 @@ test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal
 test_transient_packed_refs_lock_self_clears
 test_non_signature_fetch_failure_is_not_retried
+test_non_clone_dir_never_syncs_the_enclosing_repo
+test_non_clone_dir_named_directly_never_syncs_the_enclosing_repo
+test_symlinked_clone_still_syncs
