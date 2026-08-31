@@ -218,6 +218,20 @@ test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid() {
   [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "merge wait did not retain its bounded pause marker"; }
   reap "$pid"
 
+  # Steady state: the pane hash never changes again, so the absorb decided on
+  # the hash's first sight must still come back on its long declared cadence.
+  touch -t 200001010000 "$state/merge.status"
+  sig=$(seen_sig "$state/merge.status"); printf '%s' "$sig" > "$state/.seen-merge_status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; fail "an unchanged merge wait never rechecked on its declared cadence"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the merge-wait recheck printed no wake: $(cat "$out")"
+  grep -F "declared pause" "$out" >/dev/null || fail "the merge-wait recheck was not a declared-pause recheck: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "the merge-wait recheck was mislabeled as a wedge escalation"
+
   rm -f "$state/merge.check.sh" "$state/merge.pr-poll" "$state/merge.pr-poll-registration"
   : > "$out"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -227,7 +241,7 @@ test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid() {
   wait_for_exit "$pid" 40 || { reap "$pid"; fail "an invalid merge poll did not restore stale detection"; }
   grep -F "stale: $window" "$out" >/dev/null || fail "invalid merge poll did not surface the stale pane"
   grep -F "possible wedge" "$out" >/dev/null && fail "invalid merge poll was mislabeled as a wedge escalation"
-  pass "a valid merge wait uses the pause cadence, while an invalid poll restores stale detection"
+  pass "a valid merge wait rechecks on its declared cadence, while an invalid poll restores stale detection"
 }
 
 test_merge_wait_exemption_requires_a_finished_status() {
@@ -256,6 +270,33 @@ test_merge_wait_exemption_requires_a_finished_status() {
   grep -F "stale: $window" "$out" >/dev/null || fail "a blocked worker with an armed poll was not surfaced: $(cat "$out")"
   [ ! -e "$state/.paused-$key" ] || fail "a blocked worker with an armed poll was pause-tracked"
   pass "the merge-wait exemption needs a finished status, not just a valid armed poll"
+}
+
+test_pane_probe_terminates_on_a_cyclic_process_table() {
+  local dir state fakebin window table verdict rc
+  dir=$(make_case pane-probe-cycle); state="$dir/state"; fakebin="$dir/fakebin"
+  window="test:fm-cycle"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/cycle.meta"
+
+  # A process-table snapshot is not guaranteed to be a tree. macOS reports
+  # kernel_task as pid 0 with ppid 0, and pid reuse across one ps pass can
+  # splice a cycle anywhere. The probe must still answer, because a probe that
+  # never returns takes the entire supervision loop down with it - strictly
+  # worse than the false alarms this whole change removes.
+  table=$(printf '%s\n' \
+    "0 0 S kernel_task kernel_task" \
+    "1 0 S init /sbin/init" \
+    "555 1 S bash -bash" \
+    "777 555 S benchmark /tmp/benchmark --run")
+  # shellcheck disable=SC2016 # $1/$2 are the bash -c positional args below.
+  verdict=$(timeout 20 env PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
+    FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_PANE_PID=555 PANE_PROC_TABLE="$table" \
+    bash -c '. "$1/bin/fm-watch.sh"; window_has_live_child "$2" && printf live || printf none' \
+    _ "$ROOT" "$window")
+  rc=$?
+  [ "$rc" -ne 124 ] || fail "the pane-activity probe hung on a cyclic process table"
+  [ "$verdict" = live ] || fail "the probe lost a real descendant on a cyclic table (verdict: ${verdict:-<none>}, rc=$rc)"
+  pass "the pane-activity probe terminates on a cyclic process table and still finds the live child"
 }
 
 test_live_worker_child_suppresses_stale_until_child_exits() {
@@ -2165,6 +2206,7 @@ test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid
 test_merge_wait_exemption_requires_a_finished_status
+test_pane_probe_terminates_on_a_cyclic_process_table
 test_live_worker_child_suppresses_stale_until_child_exits
 test_live_worker_child_still_hits_the_no_completed_turn_ceiling
 test_pane_harness_process_is_not_child_activity

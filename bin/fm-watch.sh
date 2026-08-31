@@ -309,12 +309,25 @@ window_has_live_child() {  # <window>
         line = ""
         for (i = 5; i <= NF; i++) line = line (i > 5 ? " " : "") $i
         arguments[pid] = line
+        rows++
       }
     }
+    # The walk is bounded by the number of recorded rows, which no simple
+    # parent chain can exceed. A snapshot is not guaranteed to be a tree: macOS
+    # reports kernel_task as pid 0 with ppid 0, and pid reuse between the reads
+    # of one ps pass can splice a cycle on any platform. An unbounded walk over
+    # either one never returns and takes the whole supervision loop with it.
+    # Exhausting the bound means the chain never reached the pane, so the pid is
+    # not counted as a descendant: this probe fails toward surfacing an alarm,
+    # never toward muting one.
     END {
       for (pid in parent) {
         ancestor = pid
-        while (ancestor != root && (ancestor in parent)) ancestor = parent[ancestor]
+        hops = 0
+        while (ancestor != root && (ancestor in parent) && hops < rows) {
+          ancestor = parent[ancestor]
+          hops++
+        }
         if (ancestor == root && pid != root) print command[pid] "\t" arguments[pid]
       }
     }
@@ -1111,6 +1124,18 @@ EOF
               mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
               wake "stale: $w"
             fi
+          elif [ -e "$pf" ] && task_waiting_for_merge "$task"; then
+            # Steady state of a finished worker waiting on the forge: the pane
+            # hash stops changing, so without this the absorb decided on the
+            # hash's first sight would be permanent and a forge wait that
+            # silently stopped progressing could rot invisibly. Route it through
+            # the same declared-pause handler the paused sibling path uses, so
+            # the wait re-surfaces once per PAUSE_RESURFACE_SECS as a recheck
+            # rather than a wedge. When the exemption stops holding - the poll
+            # goes invalid, or the status leaves `done:` - clear_pause_tracking
+            # at the top of this loop drops the recorded hash and the very next
+            # poll takes the ordinary first-sight path.
+            handle_paused_stale "$w" "$task" "$h"
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
             # wedge timer is running for it) - keep treating it that way

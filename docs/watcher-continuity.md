@@ -62,9 +62,10 @@ The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
 A live descendant of a recorded tmux pane process counts as stale-pane activity while it exists, but an exited child is not evidence of progress and the next poll returns to normal wedge detection.
 Descendants, not the pane tty's foreground process group, is the only scope that can see this: every verified harness starts its tool subprocesses in a new session with no controlling terminal, so a worker-owned child never appears on the pane tty at all, while parentage survives that detach.
+The parent walk is bounded by the size of the process-table snapshot it reads, because that snapshot is not guaranteed to be a tree - macOS reports `kernel_task` as pid 0 with ppid 0, and pid reuse can splice a cycle - and a probe that never returns would take the supervision loop with it; a chain that exhausts the bound is not counted as a descendant, so the probe fails toward surfacing an alarm.
 The pane's own agent harness never counts as that activity: it is recognized by the same evidence the session lock uses (command basename, an exact harness path component, `argv[0]`, or a bare interpreter's script path) plus the window's recorded `harness=`, because a version-named executable and macOS's full-path `comm` both defeat command-name equality.
 A live child quiets the immediate stale wake only. The `BUSY_TURN_MAX_SECS` no-completed-turn ceiling keeps accruing underneath it, so a tool call that hangs and never exits - and equally a leftover the worker left running in the background, which the descendant scope also counts - still wedge-escalates rather than muting the window for its lifetime.
-A finished (`done:`) worker with a valid armed PR poll is an expected forge wait and uses the declared-pause recheck cadence.
+A finished (`done:`) worker with a valid armed PR poll is an expected forge wait and uses the declared-pause recheck cadence, including on later polls of an unchanged pane, so a forge wait that stops progressing still re-surfaces once per `PAUSE_RESURFACE_SECS` instead of rotting invisibly.
 Both halves are required: a poll is armed when the PR opens, so a worker that later declares `blocked:` or `needs-decision:` is actionable and still surfaces, and invalid or missing PR-poll artifacts do not grant the exemption either.
 
 ## Regression coverage
@@ -77,7 +78,7 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
-`tests/fm-watch-triage.test.sh` covers live pane-child suppression until child exit, the no-completed-turn ceiling still reached under a child that never exits, an idle version-named harness process, an idle harness known only from the window's recorded `harness=`, valid merge-wait pause cadence, and restoration of stale detection when the status is actionable or the poll becomes invalid.
+`tests/fm-watch-triage.test.sh` covers pane-probe termination on a cyclic process table, live pane-child suppression until child exit, the no-completed-turn ceiling still reached under a child that never exits, an idle version-named harness process, an idle harness known only from the window's recorded `harness=`, valid merge-wait pause cadence, and restoration of stale detection when the status is actionable or the poll becomes invalid.
 
 ## Active limits and verification
 
