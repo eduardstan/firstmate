@@ -697,6 +697,21 @@ write_pi_loaded_markers() {
   write_pi_turnend_loaded_marker "$home" "$root" "$pid"
 }
 
+# Hide one host-installed command from command -v without changing the host or
+# weakening the production check. Bash sources this file for every subprocess.
+make_missing_tool_env() {  # <path> <tool>
+  local path=$1 tool=$2
+  cat > "$path" <<SH
+command() {
+  if [ "\${1:-}" = -v ] && [ "\${2:-}" = '$tool' ]; then
+    return 1
+  fi
+  builtin command "\$@"
+}
+export -f command
+SH
+}
+
 # --- context digest: absent vs empty vs present -----------------------------
 
 test_context_digest_absent_empty_present() {
@@ -954,11 +969,12 @@ EOF
   make_fake_ps_claude "$fakebin"
   # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
   rm -f "$fakebin/node"
+  make_missing_tool_env "$home/hide-node.bash" node
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
   printf 'Captain memory that may be truncated away safely.\n' > "$home/data/captain.md"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(BASH_ENV="$home/hide-node.bash" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   lock_line=$(printf '%s\n' "$out" | grep -n '^LOCK$' | head -1 | cut -d: -f1)
   boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
@@ -1358,11 +1374,12 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   rm -f "$fakebin/node"
+  make_missing_tool_env "$home/hide-node.bash" node
 
   printf 'needs-decision: pick a library\n' > "$home/state/task-z.status"
   append_wake "$home/state" signal task-z.status "needs-decision: pick a library"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(BASH_ENV="$home/hide-node.bash" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"

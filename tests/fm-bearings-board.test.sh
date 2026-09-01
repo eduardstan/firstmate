@@ -3,6 +3,7 @@
 # slot-injection round-trip through the built page, bind-before-arm, and
 # idempotent re-arm of the stable board source.
 set -u
+umask 077
 
 # shellcheck source=tests/lib.sh
 # shellcheck disable=SC1091

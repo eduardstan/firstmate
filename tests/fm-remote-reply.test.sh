@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end remote reply relay through fm-on and the process-event runner.
 set -u
+umask 077
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
