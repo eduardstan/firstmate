@@ -1848,7 +1848,6 @@ fm_backend_herdr_workspace_presence_state() {  # <session> <workspace_id>
 
 # fm_backend_herdr_explicit_close_pane_confirmed: issue one explicit close and
 # succeed only when a structured follow-up proves the exact pane is gone.
-# FM_BACKEND_HERDR_CLOSE_VERIFY_POLLS bounds the post-close visibility settle (default 10).
 fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
   local session=$1 pane_id=$2 presence attempt=0
   local max_attempts=${FM_BACKEND_HERDR_CLOSE_VERIFY_POLLS:-10}
@@ -1920,30 +1919,15 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   agent=$(printf '%s' "$out" | jq -r '.result.agent.agent // empty' 2>/dev/null)
   case "$status" in
     working|idle|done|blocked)
-      # prime-agent's reporter identity SURVIVES the agent it describes: after
-      # `/quit` the pane is a login shell while `agent get` still answers
-      # `agent: prime-agent, agent_status: idle` (verified 2026-08-08 on
-      # prime-agent 0.7.1). Registration is therefore not proof of a live agent
-      # for this harness, and reporting `live` here would leave a quit
-      # secondmate pane classified `alive` forever - never relaunched, and its
-      # detached worker never retired.
-      #
-      # Absence from the FOREGROUND alone is not that proof, because
-      # prime-agent takes itself out of the foreground on purpose: Ctrl+Z stops
-      # its whole process group with SIGTSTP and hands the terminal back to the
-      # login shell while the agent - a stopped child of that shell - is still
-      # very much alive. Only a pane whose process subtree holds no prime-agent
-      # process AT ALL has genuinely returned to a bare shell, which is what
-      # `/quit` leaves behind. Both probes must positively confirm (exit 1);
-      # an unreadable one (exit 2) keeps the registered verdict, so a probe this
-      # backend cannot answer never licenses closing a live agent's pane.
+      # prime-agent registration survives `/quit`, so native identity alone is
+      # not proof that an agent still occupies this pane.
       if [ "$agent" = prime-agent ]; then
         fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane_id"
         fg_rc=$?
         if [ "$fg_rc" -eq 1 ]; then
           fm_backend_herdr_pane_prime_agent_in_subtree "$session" "$pane_id"
           live_rc=$?
-          if [ "$live_rc" -eq 1 ]; then printf 'no-agent'; return 0; fi
+          [ "$live_rc" -eq 1 ] && { printf 'no-agent'; return 0; }
         fi
       fi
       printf 'live'
@@ -2650,187 +2634,21 @@ fm_backend_herdr_capture_ansi() {  # <target> <lines>
   printf '%s' "$out" | tail -n "$lines"
 }
 
-# Thin adapter over the shared plain-text stripper (bin/fm-composer-lib.sh),
-# used only for STRUCTURAL row/shape detection where ghost text must be kept so
-# the box border or bare prompt glyph is still visible. Content extraction uses
-# the shared fm_composer_strip_ghost instead.
-fm_backend_herdr_strip_ansi() {  # <text>
-  printf '%s' "$1" | fm_composer_strip_ansi
-}
-
-# fm_backend_herdr_composer_state: classify the composer's own row as
-# empty|pending|unknown, scanning a generous tail-window capture of <target>.
-# herdr's CLI exposes no cursor-row primitive (unlike tmux's #{cursor_y}), so
-# this locates the composer structurally, recognizing THREE shapes and keeping
-# whichever match comes LAST (scanning forward), so a shape earlier in
-# scrollback/a popup can never outrank the real (bottom-anchored) composer:
-#
-#   bordered - a boxed composer (verified grok 0.2.82): the row's TRIMMED
-#              content both STARTS and ENDS with the same border glyph (│, ┃,
-#              or a plain ASCII |). The box's own top/bottom rows use rounded
-#              corners (╭─…─╮ / ╰─…─╯), which never match; popup item rows and
-#              horizontal separator rows carry no border glyph at all; the
-#              footer help line ("Enter:send │ … │ …") uses │ only as an
-#              INTERIOR separator and does not start with one, so it never
-#              matches either.
-#   bare     - an UNBORDERED composer (verified real claude 2.x and codex
-#              0.142.x, both under herdr 0.7.1, docs/herdr-backend.md
-#              "Incident (2026-07-07)"): the row's TRIMMED content starts with
-#              one of the verified agent-specific prompt glyphs but carries no
-#              closing border at all - claude's own live input row is a bare
-#              "❯ …" with no surrounding │, and codex's is a bare "› …". Both
-#              harnesses ALSO render bordered decorative boxes elsewhere (a
-#              startup welcome banner, an update-available notice) that
-#              satisfy the bordered shape above; requiring a match on EITHER
-#              shape and keeping the last (bottom-most) one is what keeps the
-#              live composer winning over a stale decorative box still sitting
-#              in the same capture window - a bordered box is only ever
-#              followed later on screen by the actual live composer, never the
-#              reverse, in every harness observed so far. The bare shape is
-#              deliberately narrower than the bordered content classifier so a
-#              no-agent shell fallback prompt (`>`, `$`, `%`, or `#`) falls
-#              through to `unknown` instead of being misread as delivered.
-#   prime    - prime-agent's composer is a bare row whose only prompt glyph is
-#              a plain `>` - the very glyph the shared safety rule treats as a
-#              dead shell on an unstructured row - followed by a rotating
-#              de-emphasised placeholder (`Try "explain how @<filepath>
-#              works"`, one of five). Like Pi's shape above, it is accepted
-#              only on an identity conjunction the rendered row cannot carry,
-#              but it needs TWO signals rather than Pi's one: the pane's live
-#              foreground process must BE prime-agent
-#              (fm_backend_herdr_pane_prime_agent_foreground, kernel-level) AND
-#              Herdr's native `agent get` must identify it as prime-agent. The
-#              reporter alone is not enough here, because a quit prime-agent
-#              leaves its identity behind while the pane returns to a login
-#              shell (verified 2026-08-08), and a shell prompt of `> ` would
-#              then inherit this shape. Unlike Pi's arm neither signal is gated
-#              on agent STATUS, because the busy pane is exactly the case this
-#              shape has to serve: mid-turn submit confirmation falls back to
-#              the composer read whenever the pre-Enter baseline is not legibly
-#              idle.
-#   separated - Pi's composer is one or more content rows between two solid
-#              horizontal `─` separator rows, with no prompt glyph or side
-#              borders. This shape is accepted ONLY when Herdr's native
-#              `agent get` identifies the target as Pi and reports it idle,
-#              done, or blocked. A missing/stale/non-Pi agent identity, a
-#              working Pi, an over-tall candidate, or an incomplete separator
-#              pair remains unknown. This identity + structure conjunction is
-#              what makes a blank Pi row safe without weakening dead-shell or
-#              ambiguous-pane refusal.
-#
-#   empty   - blank, a bare prompt glyph, known ghost/placeholder text
-#             ("Type a message...", verified grok 0.2.82's empty-composer
-#             placeholder), or only de-emphasised ANSI ghost/placeholder text
-#             recognized by the shared fm_composer_strip_ghost extractor
-#             (dim/faint or dark-TRUECOLOR foreground). Safe to treat as
-#             submitted.
-#   pending - real, unsubmitted text sits in the composer. This deliberately
-#             also covers a slash-command popup that just closed but only
-#             auto-completed or filled an argument-hint placeholder into the
-#             composer (e.g. "/compact" -> "/compact compaction
-#             instructions", verified live against real grok 0.2.82) - that
-#             first Enter is a SELECTION, not a submission.
-#   unknown - the pane could not be read, or no composer row (of either shape)
-#             was found in the captured window.
-#
-# Ghost/placeholder note: herdr's ANSI pane read preserves the harness's own
-# de-emphasis styling, and the classifier extracts real typed content with the
-# shared fm_composer_strip_ghost (bin/fm-composer-lib.sh), which drops dim/faint
-# runs (claude's rotating prompt suggestion, codex's idle suggestion after the
-# bare `›` prompt) AND dark/muted truecolor foreground runs (grok's placeholder),
-# while keeping non-de-emphasised real typed input. This is the same owner the
-# tmux adapter routes through, so the two backends cannot drift (task
-# afk-herdr-false-pending); it superseded a herdr-only faint byte-pattern check
-# that recognized only codex's bold-wrapped bare prompt and missed claude's own
-# dim ghost - the overnight away-mode injection wedge on the primary claude pane.
-# Rows of the pane tail the structural composer scan looks at. WHY 40: a harness
-# footer plus a multi-line custom statusline can occupy 11-12 rows under the
-# composer, and at 20 the composer row itself falls out of the window, which
-# reads as `unknown` and defers injection just as a false `pending` does. The
-# read is free: the capture already pulls 200 rows and this only bounds the tail
-# it scans.
-FM_BACKEND_HERDR_COMPOSER_LINES=${FM_BACKEND_HERDR_COMPOSER_LINES:-40}
-# Known ghost/placeholder composer text. Extend this if another
-# herdr-verified harness needs its own idle placeholder recognized.
-FM_BACKEND_HERDR_IDLE_RE=${FM_BACKEND_HERDR_IDLE_RE:-'^Type a message\.\.\.$'}
-# Known bare (unbordered) prompt glyphs a composer row may start with: ❯
-# (claude) and › (codex) only. Generic shell-style glyphs > $ % # are still
-# recognized after a bordered composer row has already been structurally found.
-# Deliberately an alternation, not a `[...]` bracket expression: under a C/POSIX
-# locale (LC_CTYPE=C, the fleet default), grep's bracket expressions match
-# individual BYTES rather than whole multibyte characters, so `[❯›]` silently
-# decomposes into the shared leading UTF-8 byte (0xE2) and spuriously matches
-# ANY multibyte glyph in that range - including box-drawing corners like ╰,
-# misclassifying a bordered composer's bottom border row as the bare shape.
-# An alternation's branches are matched as whole literal byte sequences and
-# stay correct regardless of locale.
-FM_BACKEND_HERDR_BARE_PROMPT_RE=${FM_BACKEND_HERDR_BARE_PROMPT_RE:-'^(❯|›)'}
-# prime-agent's composer prompt. Deliberately NOT added to the bare shape
-# above: `>` is also a dead-shell prompt, so this candidate is only ever
-# promoted to a composer once native agent identity says the pane is running
-# prime-agent (see the `prime` shape in the header). Requiring a space or an
-# end of row after the glyph keeps a redirection-looking transcript row
-# (`>>foo`) out of the candidate set.
+# prime-agent uses a shell-style `>` composer glyph. It remains untrusted until
+# native identity and the current foreground process both identify Prime Agent.
 FM_BACKEND_HERDR_PRIME_PROMPT_RE=${FM_BACKEND_HERDR_PRIME_PROMPT_RE:-'^>( |$)'}
-# Pi allows a multi-line composer between its horizontal separators. Bound the
-# structural candidate so two unrelated transcript rules with an arbitrarily
-# large region between them can never be promoted into a composer.
-FM_BACKEND_HERDR_PI_COMPOSER_MAX_LINES=${FM_BACKEND_HERDR_PI_COMPOSER_MAX_LINES:-8}
 
-fm_backend_herdr_pi_separator_row() {  # <plain-row>
-  local row=$1
-  row="${row#"${row%%[![:space:]]*}"}"
-  row="${row%"${row##*[![:space:]]}"}"
-  [ "${#row}" -ge 8 ] || return 1
-  [ -z "${row//─/}" ]
-}
-
-# Locate the content and closing-row position of the bottom-most complete pair
-# of Pi separator rows. A separator closes the preceding candidate and
-# immediately opens the next, so an earlier transcript rule can never outrank
-# the live bottom composer pair. Globals let the caller compare this shape's
-# screen position with generic bordered/bare candidates without losing empty
-# composer content through command substitution.
-fm_backend_herdr_pi_composer_find() {  # <ansi-capture>
-  local cap=$1 line plain open=0 lines=0 candidate="" max row=0 open_row=0
-  max=$FM_BACKEND_HERDR_PI_COMPOSER_MAX_LINES
-  case "$max" in ''|*[!0-9]*|0) max=8 ;; esac
-  FM_BACKEND_HERDR_PI_PAIR_FOUND=0
-  FM_BACKEND_HERDR_PI_PAIR_VALID=0
-  FM_BACKEND_HERDR_PI_PAIR_OPEN_LINE=0
-  FM_BACKEND_HERDR_PI_PAIR_LINE=0
-  FM_BACKEND_HERDR_PI_LAST_SEPARATOR_LINE=0
-  FM_BACKEND_HERDR_PI_CONTENT=""
-  while IFS= read -r line; do
-    row=$((row + 1))
-    plain=$(fm_backend_herdr_strip_ansi "$line")
-    if fm_backend_herdr_pi_separator_row "$plain"; then
-      FM_BACKEND_HERDR_PI_LAST_SEPARATOR_LINE=$row
-      if [ "$open" -eq 1 ]; then
-        FM_BACKEND_HERDR_PI_PAIR_FOUND=1
-        FM_BACKEND_HERDR_PI_PAIR_OPEN_LINE=$open_row
-        FM_BACKEND_HERDR_PI_PAIR_LINE=$row
-        if [ "$lines" -le "$max" ]; then
-          FM_BACKEND_HERDR_PI_PAIR_VALID=1
-          FM_BACKEND_HERDR_PI_CONTENT=$candidate
-        else
-          FM_BACKEND_HERDR_PI_PAIR_VALID=0
-          FM_BACKEND_HERDR_PI_CONTENT=""
-        fi
-      fi
-      open=1
-      open_row=$row
-      lines=0
-      candidate=""
-    elif [ "$open" -eq 1 ]; then
-      [ -z "$candidate" ] || candidate="${candidate}"$'\n'
-      candidate="${candidate}${line}"
-      lines=$((lines + 1))
-    fi
-  done <<EOF
-$cap
-EOF
-}
+# --- herdr composer capture and capability primitives -----------------------
+#
+# These functions are the ONLY herdr-specific composer knowledge left: the
+# ANSI pane capture (with its small-N workaround), the native `agent get`
+# identity probe, and the capability descriptor. Every shape - the bordered
+# box, the bare agent-glyph row, opencode's left-bar, and pi's
+# identity-gated separated pair (which this adapter pioneered) - now lives in
+# the shared owner (bin/fm-composer-lib.sh, fm_composer_classify_screen), so
+# a new harness shape is taught there once and every backend learns it in the
+# same commit. The muse `⟩` glyph this adapter's local bare-prompt pattern
+# silently omitted is exactly the drift class that consolidation removes.
 
 fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   local out
@@ -2838,26 +2656,9 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
-# fm_backend_herdr_pane_prime_agent_foreground: 0 only when the pane's LIVE
-# foreground process group actually contains the prime-agent binary right now.
-#
-# This exists because the reporter identity above is not proof of a live agent:
-# verified 2026-08-08 on prime-agent 0.7.1, `/quit` returns the pane to a login
-# shell while Herdr still reports `agent: prime-agent, agent_status: idle`, and
-# the quit TUI's last composer row stays in the capture window. Without this
-# kernel-level check, a shell whose prompt happens to be `> ` would inherit
-# prime-agent's composer shape - exactly the dead-shell injection hazard the
-# shared composer rule exists to prevent.
-#
-# Three outcomes, because the two callers need different fail-safe directions:
-#   0 - the foreground process IS prime-agent (read succeeded).
-#   1 - the read succeeded and prime-agent is NOT in the foreground: this pane
-#       has genuinely returned to a shell.
-#   2 - the read itself is unusable (RPC failure, unexpected shape, missing
-#       field). Never treat this as evidence either way.
-# The composer arm accepts only 0, so an unreadable probe keeps a bare `>` out
-# of the composer set exactly as before. The liveness classifier below demotes
-# only on 1, so an unreadable probe can never make it close a live agent's pane.
+# fm_backend_herdr_composer_identity: the native agent identity/state probe
+# backing the shared classifier's separated (pi) shape - the genuine herdr
+# primitive no other backend has natively.
 fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
   local session=$1 pane=$2 info
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
@@ -2876,24 +2677,6 @@ fm_backend_herdr_pane_prime_agent_foreground() {  # <session> <pane-id>
   return 0
 }
 
-# fm_backend_herdr_pane_prime_agent_in_subtree: does the pane still HOST a
-# prime-agent process anywhere below its shell, foreground or not?
-#
-# This is the discriminator the recovery classifier needs and the foreground
-# probe above cannot give it. prime-agent removes itself from the foreground
-# deliberately: Ctrl+Z stops its whole group with SIGTSTP (verified in
-# prime-agent 0.7.1's interactive mode), so a suspended - fully live - agent
-# and a `/quit` pane look identical from the foreground alone. They differ in
-# the process table: the suspended agent is still a stopped child of the pane's
-# shell, while a quit one has exited and left nothing behind.
-#
-# Same three outcomes and the same fail-safe direction as the foreground probe:
-#   0 - a prime-agent process is present in the pane's subtree.
-#   1 - the pane's shell was located in the process table and has no
-#       prime-agent process under it.
-#   2 - unusable: no process-info, no shell pid, no ps, or a process table that
-#       does not even contain the pane's own shell (which is what a pane hosted
-#       on another machine looks like from here).
 fm_backend_herdr_pane_prime_agent_in_subtree() {  # <session> <pane-id>
   local session=$1 pane=$2 info shell_pid ps_bin rows rc
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 2
@@ -2933,232 +2716,113 @@ fm_backend_herdr_pane_prime_agent_in_subtree() {  # <session> <pane-id>
   case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac
 }
 
-# <mode> is `inject` (default) or `confirm`. They differ on exactly one case: a
-# native Pi composer whose agent is mid-turn. `inject` asks "may I safely type
-# here?" and a working Pi must answer no. `confirm` asks the different question
-# "did the text I already typed leave the composer?", where a working agent is
-# not a hazard but the very condition being measured, so the structural read is
-# allowed to return its real empty/pending verdict. Every other refusal -
-# unreadable identity, non-Pi, incomplete or over-tall separator pair - is
-# unchanged in both modes.
-fm_backend_herdr_composer_state() {  # <target> [mode] -> empty|pending|unknown
-  local target=$1 mode=${2:-inject}
-  local session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
-  local identity agent agent_status row=0 generic_line=0
-  local prime_raw="" prime_line=0
-  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
-  session=$FM_BACKEND_HERDR_SESSION
-  pane=$FM_BACKEND_HERDR_PANE
-  cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES" 2>/dev/null \
-    || fm_backend_herdr_capture "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES") || { printf 'unknown'; return 0; }
-  # Structural scan: locate the bottom-most composer row and remember its RAW
-  # (styled) bytes. Shape detection runs on the plain row (fm_backend_herdr_strip_ansi
-  # keeps ghost text so the border/prompt glyph is still visible); the raw row is
-  # kept for ANSI-aware content extraction after the scan.
-  while IFS= read -r line; do
-    row=$((row + 1))
-    trimmed=$(fm_backend_herdr_strip_ansi "$line")
-    trimmed="${trimmed#"${trimmed%%[![:space:]]*}"}"
-    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-    [ -n "$trimmed" ] || continue
-    case "$trimmed" in
-      '│'*'│'|'┃'*'┃'|'|'*'|')
-        shape=bordered
-        raw_match=$line
-        generic_line=$row
-        found=1
-        ;;
-      *)
-        if printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_BARE_PROMPT_RE"; then
-          shape=bare
-          raw_match=$line
-          generic_line=$row
-          found=1
-        elif printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_PRIME_PROMPT_RE"; then
-          # Held aside, not accepted: only native prime-agent identity below
-          # can turn a bare `>` row into a composer.
-          prime_raw=$line
-          prime_line=$row
-        fi
-        ;;
-    esac
-  done < <(printf '%s\n' "$cap")
-  # prime-agent: promote the held-aside `>` row only when it is the bottom-most
-  # candidate AND both independent signals agree that this pane is running
-  # prime-agent right now - the live foreground process (kernel-level, and the
-  # one that survives a quit correctly) and Herdr's native reporter identity.
-  if [ "$prime_line" -gt "$generic_line" ] \
-     && fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane"; then
-    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
-    IFS=$'\t' read -r agent agent_status <<EOF
-$identity
-EOF
-    if [ "$agent" = prime-agent ]; then
-      shape=prime
-      raw_match=$prime_raw
-      generic_line=$prime_line
-      found=1
-    fi
-  fi
-  # Pi has no prompt glyph or side border. Compare its bottom-most complete
-  # separator pair with the last generic match so an earlier bordered transcript
-  # row can never suppress the live Pi composer. Identity is consulted only when
-  # a lower separator pair could change the verdict.
-  fm_backend_herdr_pi_composer_find "$cap"
-  if [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -eq 1 ] \
-     && [ "$FM_BACKEND_HERDR_PI_PAIR_LINE" -gt "$generic_line" ] \
-     && [ "$generic_line" -lt "$FM_BACKEND_HERDR_PI_PAIR_OPEN_LINE" ]; then
-    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
-    IFS=$'\t' read -r agent agent_status <<EOF
-$identity
-EOF
-    case "$agent:$agent_status" in
-      pi:idle|pi:done|pi:blocked)
-        if [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ]; then
-          shape=separated
-          raw_match=$FM_BACKEND_HERDR_PI_CONTENT
-          found=1
-        else
-          found=0
-        fi
-        ;;
-      pi:*)
-        # A working Pi cannot authorize injection, and the lower separator pair
-        # proves any generic row above is not current. In confirm mode the
-        # question is delivery, not injection safety, so the same structural
-        # read is honoured (still only from a complete, in-budget pair).
-        if [ "$mode" = confirm ] && [ "$FM_BACKEND_HERDR_PI_PAIR_VALID" -eq 1 ]; then
-          shape=separated
-          raw_match=$FM_BACKEND_HERDR_PI_CONTENT
-          found=1
-        else
-          found=0
-        fi
-        ;;
-      :*)
-        # An unreadable identity cannot prove the lower pair is the live Pi
-        # composer, in either mode.
-        found=0
-        ;;
-      *) : ;; # A known non-Pi agent keeps its established generic verdict.
-    esac
-  elif [ "$FM_BACKEND_HERDR_PI_PAIR_FOUND" -eq 0 ] \
-       && [ "$FM_BACKEND_HERDR_PI_LAST_SEPARATOR_LINE" -gt "$generic_line" ]; then
-    # A lower unmatched separator can mean the generic row is stale - a partly
-    # captured Pi composer whose opening separator fell out of the window, with
-    # a decorative box still visible above it - without providing the complete
-    # Pi composer structure injection requires.
-    #
-    # It only means that on a Pi target. A solid `─` rule is ordinary chrome for
-    # other harnesses: claude frames its own live composer between two rules, and
-    # the upper one carries a label ("─── name ──") so it is not a bare
-    # separator, leaving exactly the lone-trailing-rule shape above. Reading that
-    # as staleness discarded a live, idle claude composer and returned `unknown`
-    # on every poll, which deferred every away-mode escalation for a whole night.
-    # Gate on the same native identity the complete-pair branch above already
-    # relies on: only a Pi pane's separator invalidates a generic match. An
-    # unreadable identity cannot rule Pi out, so it still invalidates - doubt
-    # keeps blocking injection, exactly as before.
-    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
-    IFS=$'\t' read -r agent agent_status <<EOF
-$identity
-EOF
-    case "$agent" in
-      ''|pi) found=0 ;;
-      *) : ;;  # A known non-Pi agent keeps its established generic verdict.
-    esac
-  fi
-  [ "$found" -eq 1 ] || { printf 'unknown'; return 0; }
-  # Content: extract the real typed text from the raw row with the shared,
-  # fleet-wide ghost stripper (bin/fm-composer-lib.sh), which drops dim/faint AND
-  # dark-truecolor ghost/placeholder runs. This replaces the former herdr-only
-  # faint byte-pattern check (which recognized only Codex's bold-wrapped bare
-  # prompt and missed claude's own dim prompt-suggestion ghost - the overnight
-  # afk-herdr-false-pending wedge) and, in a dark theme, drops the composer's own
-  # dark box border too, which is why the bordered flag was read from the plain
-  # shape above, not from this ghost-stripped content.
-  stripped=$(printf '%s\n' "$raw_match" | fm_composer_strip_ghost)
-  stripped="${stripped#"${stripped%%[![:space:]]*}"}"
-  stripped="${stripped%"${stripped##*[![:space:]]}"}"
-  if [ "$shape" = bordered ]; then
-    bordered=1
-    stripped=${stripped//│/}
-    stripped=${stripped//┃/}
-    stripped=${stripped//|/}
-    stripped="${stripped#"${stripped%%[![:space:]]*}"}"
-    stripped="${stripped%"${stripped##*[![:space:]]}"}"
-  elif [ "$shape" = prime ]; then
-    # Native prime-agent identity is the genuine composer container here, the
-    # same conjunction the separated shape uses: with it, the bare `>` is this
-    # harness's own prompt glyph and the shared owner may read the row as an
-    # empty agent composer; without it the row never reached this point.
-    bordered=1
-  elif [ "$shape" = separated ]; then
-    # The native Pi identity plus the complete separator pair is the genuine
-    # composer container, equivalent to a bordered box for shared content
-    # classification. ANSI stripping keeps real text and drops only styling.
-    bordered=1
-  fi
-  # Delegate the empty/pending/unknown decision to the shared owner. The bare
-  # shape only ever starts with an AGENT glyph (FM_BACKEND_HERDR_BARE_PROMPT_RE
-  # is '^(❯|›)'), so a bare shell prompt never reaches here - it stays 'unknown'
-  # via the no-composer-row path above, exactly as before. The one bare
-  # shell-style glyph that CAN reach here is prime-agent's `>`, and only with
-  # bordered=1 already set from its native identity.
-  fm_composer_classify_content "$bordered" "$stripped" "$FM_BACKEND_HERDR_IDLE_RE"
+fm_backend_herdr_composer_identity() {  # <target> -> "<agent>\t<status>"
+  fm_backend_herdr_parse_target "$1" || return 1
+  fm_backend_herdr_agent_identity_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
 }
 
-# fm_backend_herdr_agent_busy: 0 when <target>'s agent is currently mid-turn
-# (native agent_status genuinely working). The herdr twin of the tmux submit
-# core's fm_pane_is_busy predicate, used by the busy-queued Enter fallback in
-# fm_backend_herdr_send_text_submit below. Uses classify_agent_status (not the
-# submit-active variant) so a blocked agent - stuck waiting on the human, not
-# grinding - is never mistaken for a mid-turn queueing site.
-fm_backend_herdr_agent_busy() {  # <target>
-  local status
-  fm_backend_herdr_parse_target "$1" || return 1
-  status=$(fm_backend_herdr_classify_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
-  [ "$status" = busy ]
+# fm_backend_herdr_composer_state: thin adapter - capture plus capabilities
+# in, shared verdict out. The ANSI capture is preferred (styled=1 lets the
+# shared classifier strip ghost/placeholder text); when it fails on an older
+# herdr, the plain capture degrades the descriptor to styled=0 rather than
+# letting ghost text be misread as typed input. Identity is fetched lazily,
+# only when the classifier reports the verdict depends on it (a pi separator
+# pair below every other candidate), preserving this adapter's original
+# consult-only-when-needed behavior.
+fm_backend_herdr_composer_state() {  # <target> -> empty|pending|pending-unproven|unknown
+  local target=$1 cap caps verdict identity plain line trimmed prime_row=0
+  fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  if cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_COMPOSER_CAPTURE_LINES" 2>/dev/null); then
+    caps=$(printf 'styled=1\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
+  elif cap=$(fm_backend_herdr_capture "$target" "$FM_COMPOSER_CAPTURE_LINES"); then
+    caps=$(printf 'styled=0\ncursor=0\nidentity=1\nrows=%s' "$FM_COMPOSER_CAPTURE_LINES")
+  else
+    printf 'unknown'
+    return 0
+  fi
+  # Only ask Herdr for the extra process fact when the capture contains the
+  # shell-style glyph that could be prime-agent's composer.
+  plain=$(printf '%s\n' "$cap" | fm_composer_strip_ansi)
+  while IFS= read -r line; do
+    trimmed=$line
+    fm_composer_normalize_trim_var trimmed
+    if printf '%s' "$trimmed" | grep -qE "$FM_BACKEND_HERDR_PRIME_PROMPT_RE"; then
+      prime_row=1
+    fi
+  done <<EOF
+$plain
+EOF
+  if [ "$prime_row" = 1 ] \
+     && fm_backend_herdr_pane_prime_agent_foreground "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"; then
+    caps=$(printf '%s\nprime=1' "$caps")
+  fi
+  verdict=$(fm_composer_classify_screen "$caps" "$cap")
+  if [ "$verdict" = need-identity ]; then
+    if ! identity=$(fm_backend_herdr_composer_identity "$target" 2>/dev/null) || [ -z "$identity" ]; then
+      identity=probe-absent
+    fi
+    verdict=$(fm_composer_classify_screen "$caps" "$cap" '' "$identity")
+    [ "$verdict" != need-identity ] || verdict=unknown
+  fi
+  printf '%s' "$verdict"
+}
+
+# fm_backend_herdr_rendered_busy_state: busy|idle|unknown from the pane's
+# RENDERED busy footer, the same delivery-only signal bin/fm-tmux-lib.sh's
+# fm_pane_busy_state reads, scanning the same 40-line tail folded to its last
+# 12 non-blank rows. This is NOT a worker-state source: herdr's native
+# agent-state (fm_backend_herdr_busy_state) stays the semantic owner, and this
+# read exists only so the submit core below can confirm a delivery for a
+# harness whose native state never transitions. Without a harness argument the
+# shared matcher uses its union of verified tokens, which is what the submit
+# core wants: it has no recorded harness for the pane.
+fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unknown
+  local target=$1 harness=${2:-} cap visible
+  cap=$(fm_backend_herdr_capture "$target" 40) || { printf 'unknown'; return 0; }
+  visible=$(printf '%s' "$cap" | grep -v '^[[:space:]]*$' | tail -12)
+  [ -n "$visible" ] || { printf 'unknown'; return 0; }
+  if printf '%s' "$visible" | fm_busy_lines_match "$harness"; then
+    printf 'busy'
+  else
+    printf 'idle'
+  fi
 }
 
 # fm_backend_herdr_send_text_submit: type <text> into <target> once (raw,
 # unsubmitted, via send_literal), then submit with a named Enter key, retried
-# (Enter only, never retyped) until herdr's NATIVE agent-state (agent get)
-# confirms a real turn started. Verified hazard (herdr-verification-p2.md
-# "slash/$ autocomplete popup"): a `/`- or `$`-prefixed send opens a
-# completion popup within ~0.1s, exactly like tmux's claude/codex popups, so
-# the caller's <settle> before the first Enter matters here the same way it
-# does for tmux.
+# (Enter only, never retyped) until native agent-state, a cleared composer, or
+# fm_composer_queued_enter_verdict confirms delivery. Verified hazard
+# (herdr-verification-p2.md "slash/$ autocomplete popup"): a `/`- or
+# `$`-prefixed send opens a completion popup within ~0.1s, exactly like tmux's
+# claude/codex popups, so the caller's <settle> before the first Enter matters
+# here the same way it does for tmux.
 #
-# Confirmation signal (rewritten for the 2026-07-07 incident below;
-# superseded a composer-content read that itself replaced a delta-based check
-# for the 2026-07-03 incident): when the target is legibly idle before Enter,
+# Confirmation signal: when the target is legibly idle before Enter,
 # submission is confirmed by fm_backend_herdr_wait_for_working observing a
-# submit-active agent_status after Enter, NOT by reading the composer's own
-# row. This makes the normal confirmation path cross-agent: it is the same
-# semantic signal regardless of what text a harness's idle composer happens
-# to display.
+# submit-active agent_status after Enter. Live Claude on Herdr 0.8.0 can
+# keep agent_status idle for a whole landed turn, so an idle native result
+# falls through to the shared composer verdict: empty is positive delivery,
+# proven pending retries Enter, and retries-exhausted pending plus a
+# generating busy signal is a queued Enter via
+# fm_composer_queued_enter_verdict (bin/fm-composer-lib.sh).
 #
 # Incident (2026-07-07, followed up on 2026-07-08): a redelivery loop in the
 # away-mode daemon. Root cause: composer-content submit confirmation was too
 # sensitive to harness rendering details. Real claude/codex use bare prompt
 # rows, and real codex adds dynamic idle suggestions after `›`; the later
-# ANSI-aware composer classifier now handles the pre-injection guard for that
-# Codex shape, but idle-baseline submit confirmation deliberately stays on
-# native agent-state so delivery does not depend on composer text. Composer
-# content is retained for other callers (the away-mode daemon's PRE-injection
-# empty-box guard, still dispatched via fm_backend_composer_state /
-# fm_backend_herdr_composer_state) and for submit attempts whose pre-Enter
-# agent-state baseline is not legibly idle.
+# ANSI-aware composer classifier now handles that Codex shape, and idle-baseline
+# submit confirmation still prefers native agent-state so a faint idle tip
+# cannot block a landed send. Composer content is consulted only after native
+# state stays idle, as the empty/pending owner, and for submit attempts whose
+# pre-Enter agent-state baseline is not legibly idle.
 #
 # This also still correctly handles the earlier 2026-07-03 incident (a
 # slash-command popup selection/placeholder-fill on the FIRST Enter is not a
 # genuine submission) without any popup-specific logic at all: filling a
 # composer placeholder never starts a turn, so agent_status simply never
-# reports "working" for that Enter, and the retry loop below sends a second
-# Enter exactly as it did before - the fix generalizes instead of special-
-# casing the popup shape.
+# reports "working" for that Enter, the composer stays pending, and the retry
+# loop below sends a second Enter exactly as it did before - the fix
+# generalizes instead of special-casing the popup shape.
 #
 # Failure-mode analysis (the two directions the caller-facing contract must
 # not get wrong - see docs/herdr-backend.md "Native agent-state submit
@@ -3167,69 +2831,127 @@ fm_backend_herdr_agent_busy() {  # <target>
 #     across herdr's per-attempt confirmation budget (not once at the end), so a
 #     transition landing partway through a window is still caught before this
 #     loop gives up and sends a needless extra Enter.
-#   - Instant round-trip (a turn starts AND returns to idle between two
-#     polls): unavoidable in the absolute, but bounded by how tightly polls
-#     are packed into the budget; real claude/codex measured first-working
-#     at 90-490ms, comfortably inside a several-hundred-ms, multiply-sampled
-#     window, so this has not been observed in practice. On the (unobserved)
-#     residual chance it happens, the verdict is "pending" and the caller
-#     never retypes - only re-sends Enter, which lands on an already-empty
-#     composer and is a no-op, not a duplicate delivery of <text> (see
-#     fm-send.sh/fm-supervise-daemon.sh: retyping only happens if a caller
-#     re-invokes this function from scratch with the same text after seeing
-#     an error, which is a human/escalation decision, not an automatic
-#     retry).
+#   - Instant round-trip or a native status that never leaves idle: bounded by
+#     the composer fallback. A cleared composer is delivery; a proven-pending
+#     composer on an idle pane is a swallow; extra Enter on an already-empty
+#     composer is a no-op, not a duplicate delivery of <text>.
+# Fallback path, for a harness whose native agent-state is never legibly idle
+# (measured live: herdr reports a cursor pane `blocked` in every state - idle,
+# mid-turn, and after - so the idle-baseline path above is structurally
+# unreachable for it). That harness always lands in the composer branch, and
+# cursor's mid-turn composer row renders its own placeholder beside a
+# right-aligned `ctrl+c to stop`, so the content verdict is `pending` on a
+# composer that holds no user text at all and every steer reported delivery
+# unconfirmed on a message that had actually landed.
+# The escape is the SAME semantic signal the idle-baseline path uses, read from
+# the pane's verified busy footer instead of native agent-state, and it is the
+# rendered-footer twin of the tmux submit core's turn-started confirmation
+# (bin/fm-tmux-lib.sh): an idle-to-busy transition ACROSS our Enter is proof the
+# harness accepted the submission. The baseline is taken before the first Enter
+# and only when the native baseline was not legibly idle, so the idle-baseline
+# path still never reads pane content until native stays idle. A pane already
+# mid-turn cannot use a rendered-footer transition as proof of this Enter;
+# only the separate retries-exhausted, proven-pending queued-Enter verdict can
+# confirm delivery from its native working state.
+# Queued-while-busy Enter (OpenCode 1.18.4, and any harness that keeps typed
+# text visible until the current turn ends): after the retry budget, a proven
+# pending composer plus native agent_status=working is delivered, not swallowed.
+# blocked is not working, so a Cursor pane that is blocked in every state does
+# not receive this conversion. On an idle native baseline, a rendered busy
+# footer may supply the same generating signal because live Claude never leaves
+# idle. The policy is fm_composer_queued_enter_verdict; this adapter only
+# supplies the busy primitive.
 # Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
 # submit vocabulary. Empty means confirmed submitted for every backend; how
-# each backend confirms it is an internal decision, and herdr's is no longer
-# literally "the composer read empty".
+# each backend confirms it is an internal decision.
+#
+# fm_backend_herdr_queued_enter_busy: delivery-busy for the shared queued-Enter
+# conversion. Native agent_status=working is generating; blocked is not (a
+# permission prompt, or Cursor's always-blocked native state, is not a queued
+# mid-turn). When <allow-rendered> is 1, an idle native baseline may also take
+# the pane's rendered busy footer, because live Claude keeps agent_status idle
+# through a whole turn.
+fm_backend_herdr_queued_enter_busy() {  # <target> <allow-rendered>
+  local target=$1 allow_rendered=${2:-0} raw
+  raw=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  case "$raw" in
+    working) printf 'busy'; return 0 ;;
+  esac
+  if [ "$allow_rendered" = 1 ]; then
+    fm_backend_herdr_rendered_busy_state "$target"
+  else
+    printf 'idle'
+  fi
+}
+
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
-  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep submit_state=""
+  local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
+  local raw_status footer_baseline='' allow_rendered=0 enter_sent=0
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
-  baseline=$(fm_backend_herdr_classify_submit_agent_status \
-    "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")")
+  raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
+  baseline=$(fm_backend_herdr_classify_submit_agent_status "$raw_status")
   confirm_sleep=$(fm_backend_herdr_submit_confirm_budget "$sleep_s")
+  # Typing never starts a turn, so a footer read taken after the literal send
+  # and before the first Enter is still a pre-submission baseline.
+  if [ "$baseline" = idle ]; then
+    allow_rendered=1
+  else
+    footer_baseline=$(fm_backend_herdr_rendered_busy_state "$target")
+  fi
   while :; do
-    fm_backend_herdr_send_key "$target" Enter || true
+    if fm_backend_herdr_send_key "$target" Enter; then
+      enter_sent=1
+    elif [ "$enter_sent" -eq 0 ]; then
+      i=$((i + 1))
+      if [ "$i" -ge "$retries" ]; then
+        printf 'send-failed'
+        return 0
+      fi
+      sleep "$sleep_s"
+      continue
+    fi
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+      case "$verdict" in
+        busy) printf 'empty'; return 0 ;;
+        unknown) printf 'unknown'; return 0 ;;
+      esac
+      # Native stayed idle. Composer empty is positive delivery (a landed
+      # Claude turn that never flipped agent_status). Proven pending retries.
+      verdict=$(fm_backend_herdr_composer_state "$target")
+      case "$verdict" in
+        empty) printf 'empty'; return 0 ;;
+        pending|pending-unproven) ;;
+        *) printf '%s' "$verdict"; return 0 ;;
+      esac
     else
       sleep "$sleep_s"
-      verdict=$(fm_backend_herdr_composer_state "$target" confirm)
+      verdict=$(fm_backend_herdr_composer_state "$target")
+      if [ "$verdict" = pending ] && [ "$raw_status" != working ] \
+        && [ "$footer_baseline" = idle ] \
+        && [ "$(fm_backend_herdr_rendered_busy_state "$target")" = busy ]; then
+        verdict=busy
+      fi
+      case "$verdict" in
+        busy) printf 'empty'; return 0 ;;
+        empty) printf 'empty'; return 0 ;;
+        unknown) printf 'unknown'; return 0 ;;
+      esac
     fi
-    case "$verdict" in
-      busy) printf 'empty'; return 0 ;;
-      empty) printf 'empty'; return 0 ;;
-      unknown) printf 'unknown'; return 0 ;;
-      pending) submit_state=pending ;;
-    esac
     i=$((i + 1))
-    [ "$i" -lt "$retries" ] || break
+    if [ "$i" -ge "$retries" ]; then
+      if [ "$enter_sent" -eq 0 ]; then
+        printf 'send-failed'
+      else
+        fm_composer_queued_enter_verdict "$verdict" \
+          "$(fm_backend_herdr_queued_enter_busy "$target" "$allow_rendered")"
+      fi
+      return 0
+    fi
   done
-  # Enter-retry budget spent with the submit still unconfirmed. Mirror the tmux
-  # submit core's busy-queued Enter exception (opencode 1.18.4, docs/herdr-backend.md
-  # "OpenCode busy-queue"): while opencode is mid-turn it accepts the Enter and
-  # queues it for after the turn, but keeps the typed text visible, so the
-  # composer-read path alone false-negatives (observed live 2026-08-03 against a
-  # busy Pi-hosted opencode worker: fm-send reported verdict=unknown three times
-  # for text the worker had already queued, and the retries duplicated it). The
-  # confirm-mode read above is the other half of that fix; this is the part that
-  # covers a composer still visibly holding the queued text. Once the budget is
-  # spent, a PROVEN pending composer on an agent that is STILL genuinely working means the Enter
-  # was accepted and queued - report empty (delivered) so the caller does not
-  # re-send. An idle agent keeps pending as a genuine swallow. Only proven
-  # composer-pending earns this conversion: the native agent-state path already
-  # turns a busy mid-turn into "busy" inside wait_for_working, and an unproven or
-  # unreadable composer never drops to delivered silently.
-  if [ "$submit_state" = pending ] && fm_backend_herdr_agent_busy "$target"; then
-    printf 'empty'
-  else
-    printf 'pending'
-  fi
-  return 0
 }
 
 # fm_backend_herdr_kill: remove the task's pane, best-effort (mirrors
@@ -3395,28 +3117,18 @@ fm_backend_herdr_busy_state() {  # <target>
 #             text). Returned the INSTANT it is seen, without waiting out the
 #             rest of the budget.
 #   idle    - the target was legibly read at least once and never reported
-#             "busy" across the whole window - a genuine "not (yet)
-#             submitted" signal, not a read failure. The caller retries
-#             Enter on this verdict.
+#             "busy" across the whole window. This is readable but
+#             inconclusive: native state can remain idle for a landed turn,
+#             so the caller falls through to composer confirmation.
 #   unknown - EVERY poll in the window failed to read the target at all (a
 #             hard I/O failure - pane gone, socket error - not a timing
 #             race). The caller must not keep retrying Enter against a target
 #             it cannot even read.
 #
 # <polls> spread across <budget-seconds> (rather than one check at the end)
-# is what makes this robust against a SLOW transition: a caller now gets
-# several samples across that window instead of a single one, so a transition
-# that lands partway through is not missed just because it had not landed by
-# the FIRST sample.
-# Empirical evidence (docs/herdr-backend.md "Native agent-state submit
-# confirmation"): real claude and codex observed first-working at 90-490ms
-# after Enter, so a several-hundred-ms budget sampled repeatedly reliably
-# catches it. The remaining, inherent gap - a turn so fast it starts AND
-# returns to idle between two samples - is bounded by how tightly <polls> is
-# packed into <budget-seconds>; nothing observed in real testing has come
-# close to that, but it is a residual risk, not a mathematical impossibility
-# (see the doc section for the full characterization and the failure-mode
-# analysis for both directions this must guard).
+# lets the fast path catch a native transition that lands partway through the
+# window. A whole-window idle result remains inconclusive and is resolved by
+# the caller's shared composer fallback.
 # FM_BACKEND_HERDR_SUBMIT_POLLS (default 6): how many samples
 # fm_backend_herdr_send_text_submit spreads across each Enter attempt's
 # confirmation budget. Overridable for tests (a value of 1

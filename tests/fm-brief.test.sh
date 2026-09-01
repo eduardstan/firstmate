@@ -212,12 +212,6 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
-    assert_grep "Never add a co-author trailer naming an AI model or assistant" "$brief" \
-      "$id: brief missing the AI co-author trailer ban"
-    assert_grep "never add an AI-attribution line" "$brief" \
-      "$id: brief AI-attribution ban does not cover the pull request body and comments"
-    assert_grep "to the pull request body or any pull request comment" "$brief" \
-      "$id: brief missing the pull request body and comment coverage of the AI ban"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -273,7 +267,7 @@ test_ship_mode_is_explicit_not_registry() {
   pass "fm-brief.sh: the explicit ship mode wins over the registered posture"
 }
 
-# yolo is firstmate's approval authority and never reaches the worker, and a scout
+# yolo is firstmate's merge authority and never reaches the worker, and a scout
 # or charter carries no delivery contract. Each must refuse rather than accept and
 # discard the flag, which would look recorded but change nothing.
 test_delivery_flags_are_refused_where_they_do_not_apply() {
@@ -351,62 +345,43 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must keep direct requirements and exclude generic scaffold boilerplate from --intent"
   assert_grep "exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific" "$brief" \
     "no-mistakes DOD must exclude non-task-specific scaffold boilerplate from --intent"
-  # The apostrophe in "firstmate's authority check" is now structurally safe
-  # (no `$(...)` wrapper around the heredoc), so it renders verbatim instead of
-  # being reworded or escaped away. test_no_heredoc_in_command_substitution
-  # guards the structure that makes it safe.
-  assert_grep "firstmate's authority check" "$brief" \
+  # Apostrophe prose in the DOD is structurally safe (no `$(...)` wrapper around
+  # the heredoc), so it renders verbatim instead of being reworded or escaped
+  # away. test_no_heredoc_in_command_substitution guards the structure that makes
+  # it safe.
+  assert_grep "carrying only each requirement's current accepted form" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
-  pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
+
+  # The --yes ban is a fleet-wide prohibition, not a preference, and it must not
+  # claim an enforcement the tool does not provide: this is instruction only.
+  assert_grep "NEVER pass \`--yes\` (or \`-y\`) to \`no-mistakes axi run\` or \`no-mistakes axi respond\`. It is banned fleet-wide." "$brief" \
+    "no-mistakes DOD must state the --yes ban as a prohibition"
+  assert_grep "answering your own ask-user finding is a hard rule violation" "$brief" \
+    "no-mistakes DOD must say why --yes is banned"
+  assert_no_grep "Avoid \`--yes\`" "$brief" \
+    "no-mistakes DOD still states the --yes ban as a preference"
+  assert_no_grep "no-mistakes refuses" "$brief" \
+    "no-mistakes DOD must not claim the tool itself refuses --yes"
+  pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose and bans --yes outright"
 }
 
-# A pipeline-driving worker hands off to no-mistakes, its own turn ends, and the
-# idle window reads as a possible wedge until the pause is declared. The
-# no-mistakes DOD must declare that hand-off as the paused external wait and
-# re-declare it after every gate, because each returned gate ends another turn.
-# Faster paths, scouts, and secondmates have no pipeline and must not carry it.
-test_no_mistakes_pipeline_handoff_declares_pause() {
+# The generated ship instructions must carry the repository-wide no-AI-credit
+# rule into project work while leaving human co-author trailers valid.
+test_ship_brief_coauthor_trailer_rule() {
   local home id brief
-  home="$TMP_ROOT/pipeline-handoff-home"
-  write_registry "$home"
-  id="brief-pipeline-handoff-e1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" no-registry-proj --mode no-mistakes >/dev/null 2>&1
+  home="$TMP_ROOT/coauthor-rule-home"
+  mkdir -p "$home/data"
+  id="brief-coauthor-rule-c1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "ship brief with co-author rule should scaffold"
   brief="$home/data/$id/brief.md"
-  assert_grep "Handing off to the pipeline is exactly the declared external wait \`paused:\` describes" "$brief" \
-    "no-mistakes DOD must declare the pipeline hand-off as the paused external wait"
-  assert_grep "append \`paused: waiting on the no-mistakes run\`" "$brief" \
-    "no-mistakes DOD must give the exact paused declaration for a run hand-off"
-  assert_grep "Re-declare it after EVERY gate you answer" "$brief" \
-    "no-mistakes DOD must re-declare the pause after every gate, not only at the start"
-  assert_grep "each returned gate ends another of your turns and leaves the pane idle again" "$brief" \
-    "no-mistakes DOD must explain why the re-declaration is per-gate"
-
-  # The configured pause verb must render in the hand-off text too.
-  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
-    "$ROOT/bin/fm-brief.sh" pipeline-handoff-awaiting no-registry-proj --mode no-mistakes >/dev/null 2>&1
-  brief="$home/data/pipeline-handoff-awaiting/brief.md"
-  assert_grep "declared external wait \`awaiting:\` describes" "$brief" \
-    "custom pause verb did not render in the pipeline hand-off declaration"
-  assert_grep "append \`awaiting: waiting on the no-mistakes run\`" "$brief" \
-    "custom pause verb did not render in the hand-off example"
-  assert_no_grep "append \`paused: waiting on the no-mistakes run\`" "$brief" \
-    "custom pause verb kept the default paused example in the hand-off text"
-
-  # Faster paths have no pipeline: the hand-off contract must not leak in.
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-direct direct-proj --mode direct-PR >/dev/null 2>&1
-  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-direct/brief.md" \
-    "direct-PR brief must not instruct a pipeline hand-off pause"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-local local-proj --mode local-only >/dev/null 2>&1
-  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-local/brief.md" \
-    "local-only brief must not instruct a pipeline hand-off pause"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" pipeline-handoff-scout no-registry-proj --scout >/dev/null 2>&1
-  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-scout/brief.md" \
-    "scout brief must not instruct a pipeline hand-off pause"
-  FM_HOME="$home" FM_SECONDMATE_CHARTER=x "$ROOT/bin/fm-brief.sh" pipeline-handoff-sm --secondmate --no-projects >/dev/null 2>&1
-  assert_no_grep "Handing off to the pipeline" "$home/data/pipeline-handoff-sm/brief.md" \
-    "secondmate charter must not instruct a pipeline hand-off pause"
-
-  pass "fm-brief.sh: pipeline hand-off declares the pause and re-declares it after each gate"
+  assert_present "$brief" "co-author-rule brief was not scaffolded"
+  # shellcheck disable=SC2016  # single quotes keep the literal backticks in the expected prose
+  assert_grep 'Never add a co-author trailer naming an AI model or assistant (e.g. `Co-authored-by: Claude ...`) to any commit.' "$brief" \
+    "ship brief must forbid AI co-author trailers"
+  assert_grep 'Human co-author trailers stay allowed.' "$brief" \
+    "ship brief must preserve the human co-author exception"
+  pass "fm-brief.sh: ship briefs forbid AI co-author trailers but allow human co-authors"
 }
 
 test_ship_project_memory_wording() {
@@ -494,6 +469,41 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
   pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
+# Regression (issue #2575): AGENTS.md section 11 and this script's own help tell
+# firstmate to replace EVERY `{TASK}` placeholder. The unguarded Herdr gate used
+# to quote `{TASK}` in its own prose, so that documented global replace spliced
+# the whole task body into the middle of the gate's sentence - silently
+# destroying the one contract that exists precisely because the scaffold cannot
+# see the task text. The placeholder must exist only at the genuine fill site,
+# so the documented fill leaves the gate intact and the body appears once.
+test_documented_global_replace_leaves_the_herdr_gate_intact() {
+  local home id brief kind count content filled body
+  home="$TMP_ROOT/task-fill-site-home"
+  mkdir -p "$home/data"
+  body='Restart the herdr session, then profile it'
+  for kind in ship scout; do
+    id="brief-fill-site-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    count=$(grep -c -F '{TASK}' "$brief")
+    [ "$count" = 1 ] \
+      || fail "$kind brief must carry exactly one {TASK} fill site, found $count"
+    content=$(cat "$brief")
+    filled=${content//'{TASK}'/$body}
+    count=$(printf '%s\n' "$filled" | grep -c -F "$body")
+    [ "$count" = 1 ] \
+      || fail "$kind brief: the documented global {TASK} replace duplicated the task body $count times"
+    printf '%s\n' "$filled" | grep -qF 'this scaffold cannot inspect the task text' \
+      || fail "$kind brief: the Herdr safety gate did not survive the documented global replace"
+  done
+  pass "fm-brief.sh: the documented {TASK} fill cannot corrupt the Herdr safety gate"
+}
+
 test_secondmate_no_projects_charter() {
   local home brief status
   home="$TMP_ROOT/no-projects-home"
@@ -574,8 +584,12 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost detailed document pointers"
   assert_grep 'Report only true captain-relevant outcomes or a declared external wait' "$brief" \
     "secondmate charter lost declared external waits"
-  assert_grep 'a captain decision, a real blocker, a failure, or work ready for review' "$brief" \
-    "secondmate charter lost decisions, blockers, failures, or ready outcomes"
+  assert_grep 'a captain decision, a real blocker, a failure, work ready for review, or work you landed' "$brief" \
+    "secondmate charter lost decisions, blockers, failures, ready outcomes, or landed work"
+  # Under standing merge authority nothing is ever "ready for review", so the
+  # landed merge is the trigger a charter without this line silently omits.
+  assert_grep 'a merge you performed yourself under standing merge authority and one the captain merged on the forge' "$brief" \
+    "secondmate charter did not name a landed merge as a reporting trigger"
   assert_grep 'States: working, needs-decision, blocked, paused, done, failed.' "$brief" \
     "secondmate charter changed the preserved status vocabulary"
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
@@ -733,49 +747,16 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     "$ROOT/bin/fm-brief.sh" sample-investigation sample --scout >/dev/null 2>&1
   scout="$home/data/sample-investigation/brief.md"
-  assert_grep "$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md" "$scout" \
-    "scout brief did not load the unresolved-decision policy before done"
+  assert_grep "$ROOT/.agents/skills/captain-hold-lifecycle/SKILL.md" "$scout" \
+    "scout brief did not load the captain-call policy before done"
   assert_grep "pass its shared completion gate for the report and any visual review" "$scout" \
     "scout brief did not cross-reference visual-review completion"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='sample reviews' \
     "$ROOT/bin/fm-brief.sh" sample-mate --secondmate --no-projects >/dev/null 2>&1
   charter="$home/data/sample-mate/brief.md"
-  assert_grep "load \`decision-hold-lifecycle\`" "$charter" \
-    "secondmate charter did not load the shared decision policy for detailed investigations"
+  assert_grep "load \`captain-hold-lifecycle\`" "$charter" \
+    "secondmate charter did not load the shared captain-call policy for detailed investigations"
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
-}
-
-test_prime_agent_section_is_explicit_and_root_safe() {
-  local home prime scout charter child_line kernel_line
-  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded in expected brief prose.
-  child_line='Children created with `rlm(...)` reply to their parent through `agent_message`'
-  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded in expected brief prose.
-  kernel_line='Python state and `%cd` persist'
-  home="$TMP_ROOT/prime-agent-section-home"
-  mkdir -p "$home/data"
-
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" prime-ship firstmate --mode local-only --prime-agent >/dev/null 2>&1
-  prime="$home/data/prime-ship/brief.md"
-  assert_grep "# Prime Agent runtime" "$prime"     "Prime Agent ship brief missing its runtime section"
-  assert_grep "root session with no parent" "$prime"     "Prime Agent section must explain that the worker has no parent"
-  assert_grep "$child_line" "$prime" \
-    "Prime Agent section must assign agent_message to child replies"
-  assert_grep "root worker reports through its status file as normal" "$prime"     "Prime Agent section must route root reporting through the status file"
-  assert_grep "$kernel_line" "$prime" \
-    "Prime Agent section must preserve the persistent-kernel guidance"
-  assert_grep "Compaction is not a signal to wrap up" "$prime"     "Prime Agent section must reject compaction as a completion signal"
-
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" prime-scout firstmate --scout --prime-agent >/dev/null 2>&1
-  scout="$home/data/prime-scout/brief.md"
-  assert_grep "# Prime Agent runtime" "$scout"     "Prime Agent scout brief missing its runtime section"
-
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" ordinary firstmate --mode local-only >/dev/null 2>&1
-  assert_no_grep "# Prime Agent runtime" "$home/data/ordinary/brief.md"     "ordinary brief unexpectedly carried the Prime Agent section"
-
-  if FM_HOME="$home" "$ROOT/bin/fm-brief.sh" prime-charter --secondmate --no-projects --prime-agent >/dev/null 2>&1; then
-    fail "--prime-agent must not apply to secondmate charters"
-  fi
-  pass "fm-brief.sh: explicit --prime-agent renders root-safe guidance only for crewmate briefs"
 }
 
 # Scout and secondmate paths still scaffold well-formed briefs.
@@ -787,8 +768,8 @@ test_scout_and_secondmate_scaffold() {
   assert_present "$brief" "scout brief was not scaffolded"
   assert_grep "SCOUT task" "$brief" "scout brief must declare itself a scout task"
   assert_grep "report.md" "$brief" "scout brief must point at the report deliverable"
-  assert_no_grep "AI-attribution" "$brief" \
-    "scout brief must omit the ship-only AI-attribution ban"
+  assert_grep "you may host the Lavish review loop yourself" "$brief" \
+    "scout brief must mention the option to host a Lavish review loop"
 
   FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     FM_HOME="$BRIEF_HOME" "$ROOT/bin/fm-brief.sh" brief-sm-q6 --secondmate alpha >/dev/null 2>&1 \
@@ -809,16 +790,16 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
-test_no_mistakes_pipeline_handoff_declares_pause
+test_ship_brief_coauthor_trailer_rule
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
+test_documented_global_replace_leaves_the_herdr_gate_intact
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
-test_prime_agent_section_is_explicit_and_root_safe
 test_scout_and_secondmate_scaffold
