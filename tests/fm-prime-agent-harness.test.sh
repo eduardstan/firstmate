@@ -121,7 +121,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh prime-agent
+  fm_fake_exit0 "$fakebin" treehouse gh-axi gh prime-agent pi
   printf '%s\n' "$fakebin"
 }
 
