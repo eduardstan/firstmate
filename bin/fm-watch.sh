@@ -4,7 +4,8 @@
 # and keeps blocking; it queues and exits only for actionable wakes.
 # The no-verb signal and stale path is absorb-only-when-provably-working: a wake
 # is absorbed only when the crew shows POSITIVE evidence it is still working (an
-# actively-running no-mistakes step, or a backend busy signal), and surfaced
+# actively-running no-mistakes step, a backend busy signal, or a live child of the
+# recorded pane process), and surfaced
 # otherwise, so a crew that finishes (or stops and waits) without a current
 # working signal is never silently swallowed. A declared external-wait pause is
 # the separate idle absorb case and re-surfaces only on its long bounded cadence,
@@ -16,11 +17,12 @@
 #                          is not provably working, unless afk is active
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
-#                          run-step or busy pane outranks even a captain-relevant log
-#                          line, since the crew's own log gets no new entry once
-#                          firstmate hands it to a no-mistakes validation. A declared
+#                          run-step, busy pane, or live pane child outranks even a
+#                          captain-relevant log line, since the crew's own log gets no
+#                          new entry once firstmate hands it to a no-mistakes validation. A declared
 #                          external-wait pause is absorbed instead with its own long
-#                          re-surface cadence, never as a wedge. Only when neither
+#                          re-surface cadence, never as a wedge. A valid PR poll with
+#                          a checks-green terminal status uses the same pause cadence. Only when neither
 #                          absorb class applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
@@ -82,6 +84,10 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# ONE owner of "is this process a verified harness?" - the pane-activity probe
+# below must recognize a harness the same way the session lock does.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -233,6 +239,100 @@ window_harness() {
   meta=$(fm_backend_meta_for_window "$w" "$STATE" 2>/dev/null || true)
   [ -n "$meta" ] || return 0
   grep '^harness=' "$meta" | cut -d= -f2- || true
+}
+
+# pane_process_is_harness: true when a pane descendant is the agent harness
+# itself rather than worker-spawned work. The harness sits under every pane, so
+# counting it as activity would mute every alarm for that window; command-name
+# equality cannot decide it, because Claude Code's native installer names the
+# executable by version and macOS reports a full path in `comm`. The shared
+# session-lock evidence (basename, path component, argv[0], bare interpreter)
+# decides, widened by the window's own recorded harness so an adapter outside
+# the lock-eligible list - muse - is still recognized as its pane's harness.
+# Over-recognition here can only surface an extra alarm, never silence one.
+pane_process_is_harness() {  # <comm> <args> <recorded-harness>
+  local comm=$1 args=$2 name=$3 argv0
+  fm_harness_process_matches "$comm" "$args" && return 0
+  [ -n "$name" ] || return 1
+  argv0=${args%% *}
+  case "/$comm/" in */"$name"/*) return 0 ;; esac
+  case "/$argv0/" in */"$name"/*) return 0 ;; esac
+  return 1
+}
+
+# window_has_live_child: 0 iff the recorded tmux pane process currently owns a
+# live descendant that is not the pane's own harness. This is a stale-pane
+# activity signal, not a worker state verdict: a long child command can leave
+# the pane unchanged while it runs, but its disappearance must immediately
+# return the pane to the ordinary stale classifier. Only descendants of the
+# exact recorded pane pid count, so an unrelated process elsewhere on the host
+# cannot suppress a wedge.
+#
+# Descendants, NOT the pane tty's foreground process group, is the scope that
+# can answer this question at all: every verified harness starts its tool
+# subprocesses in a new session (a Claude Code tool child reports sid == its own
+# pid and no controlling terminal), so a worker-owned child never appears on the
+# pane tty and a foreground-group read would report activity for no worker on
+# any host. Parentage survives that detach, so the descendant walk still sees
+# it. The widening this costs - a leftover the worker left running in the
+# background also reads as activity - is bounded upstream rather than here: the
+# pane keeps accruing BUSY_TURN_MAX_SECS with no completed turn, so
+# busy_turn_over_age still routes it into wedge_timer_check.
+#
+# The process table is read at most once per supervision cycle and shared by
+# every window: the answer for one cycle is a single point-in-time snapshot of
+# the host anyway, and the poll loop clears PANE_PROC_TABLE before each cycle so
+# a child that starts or exits is seen on the very next poll.
+window_has_live_child() {  # <window>
+  local w=$1 backend pane_pid harness comm args
+  backend=$(window_backend "$w")
+  [ "$backend" = tmux ] || return 1
+  harness=$(window_harness "$w")
+  pane_pid=$(tmux display-message -p -t "$w" '#{pane_pid}' 2>/dev/null || true)
+  case "$pane_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pane_pid" -gt 0 ] || return 1
+  [ -n "${PANE_PROC_TABLE:-}" ] \
+    || PANE_PROC_TABLE=$(LC_ALL=C ps -eo pid=,ppid=,stat=,comm=,args= 2>/dev/null)
+  while IFS=$'\t' read -r comm args; do
+    [ -n "$comm" ] || continue
+    pane_process_is_harness "$comm" "$args" "$harness" && continue
+    return 0
+  done < <(printf '%s\n' "$PANE_PROC_TABLE" | awk \
+    -v root="$pane_pid" '
+    {
+      pid = $1
+      ppid = $2
+      state = $3
+      if (pid ~ /^[0-9]+$/ && ppid ~ /^[0-9]+$/ && state !~ /^Z/) {
+        parent[pid] = ppid
+        command[pid] = $4
+        line = ""
+        for (i = 5; i <= NF; i++) line = line (i > 5 ? " " : "") $i
+        arguments[pid] = line
+        rows++
+      }
+    }
+    # The walk is bounded by the number of recorded rows, which no simple
+    # parent chain can exceed. A snapshot is not guaranteed to be a tree: macOS
+    # reports kernel_task as pid 0 with ppid 0, and pid reuse between the reads
+    # of one ps pass can splice a cycle on any platform. An unbounded walk over
+    # either one never returns and takes the whole supervision loop with it.
+    # Exhausting the bound means the chain never reached the pane, so the pid is
+    # not counted as a descendant: this probe fails toward surfacing an alarm,
+    # never toward muting one.
+    END {
+      for (pid in parent) {
+        ancestor = pid
+        hops = 0
+        while (ancestor != root && (ancestor in parent) && hops < rows) {
+          ancestor = parent[ancestor]
+          hops++
+        }
+        if (ancestor == root && pid != root) print command[pid] "\t" arguments[pid]
+      }
+    }
+  ')
+  return 1
 }
 
 window_label() {
@@ -409,6 +509,21 @@ pause_state_class() {  # <window> <task>
     *) rm -f "$recheck_file" ;;
   esac
   printf '%s' "$class"
+}
+
+# task_waiting_for_merge: 0 only for a task that BOTH declared it is finished
+# and still owns a valid, armed PR poll. A finished worker is deliberately idle
+# on the forge, so it uses the same bounded pause cadence as any other declared
+# external wait. Both halves are required, and each closes a different hole: a
+# poll is armed as soon as the PR exists, so poll validity alone would also
+# exempt a worker that later went `blocked:` or `needs-decision:` and is
+# genuinely actionable, while an incomplete or tampered poll never hides a
+# finished-looking pane from the normal stale alarm.
+task_waiting_for_merge() {  # <task>
+  local task=$1
+  [ -n "$task" ] || return 1
+  [ "$(status_line_verb "$(last_status_line "$STATE/$task.status")")" = "done" ] || return 1
+  fm_pr_poll_artifacts_valid "$STATE" "$task" "$SCRIPT_DIR/fm-pr-poll.sh" >/dev/null 2>&1
 }
 
 surface_nonterminal_stale() {  # <window> <hash>
@@ -763,6 +878,7 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
 fi
 
 while :; do
+  PANE_PROC_TABLE=
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
   # down so the rightful singleton continues alone. The EXIT trap's release
@@ -936,7 +1052,8 @@ EOF
     key=${key//\//_}
     key=${key//./_}
     last=$(last_status_line "$STATE/$task.status")
-    if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ]; then
+    if ! status_is_paused_or_captain_held "$last" && [ -e "$STATE/.paused-$key" ] \
+      && ! task_waiting_for_merge "$task"; then
       clear_pause_tracking "$w"
     fi
     if [ "$kind" = secondmate ] && ! status_is_paused "$last"; then
@@ -957,7 +1074,9 @@ EOF
     # harness renders its busy indicator) so busy-looking strings in displayed
     # content cannot suppress stale detection. Read once per window per poll and
     # reused below so a busy verdict is consistent within one cycle.
-    if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
+    child_now=1
+    window_has_live_child "$w" && child_now=0
+    if [ "$child_now" -eq 0 ] || window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
@@ -992,7 +1111,9 @@ EOF
           # authoritative source fm-crew-state.sh itself already prioritizes
           # over the log) a chance to override before trusting the log.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
+            if task_waiting_for_merge "$task"; then
+              handle_paused_stale "$w" "$task" "$h"
+            elif crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
@@ -1003,6 +1124,18 @@ EOF
               mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
               wake "stale: $w"
             fi
+          elif [ -e "$pf" ] && task_waiting_for_merge "$task"; then
+            # Steady state of a finished worker waiting on the forge: the pane
+            # hash stops changing, so without this the absorb decided on the
+            # hash's first sight would be permanent and a forge wait that
+            # silently stopped progressing could rot invisibly. Route it through
+            # the same declared-pause handler the paused sibling path uses, so
+            # the wait re-surfaces once per PAUSE_RESURFACE_SECS as a recheck
+            # rather than a wedge. When the exemption stops holding - the poll
+            # goes invalid, or the status leaves `done:` - clear_pause_tracking
+            # at the top of this loop drops the recorded hash and the very next
+            # poll takes the ordinary first-sight path.
+            handle_paused_stale "$w" "$task" "$h"
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
             # wedge timer is running for it) - keep treating it that way
