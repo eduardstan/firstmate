@@ -167,6 +167,15 @@ prime_turnend_seen() {  # <file>
   printf '%s' "$(seen_sig "$f")" > "$(dirname "$f")/.seen-$base"
 }
 
+arm_merge_poll() {  # <state-dir> <id>
+  local state=$1 id=$2
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1/bin/fm-pr-lib.sh"
+    fm_pr_poll_prepare "$2" "$3" github https://github.com/o/r/pull/3 github.com o/r 3 "$1/bin/fm-pr-poll.sh"
+    fm_pr_poll_publish_prepared
+  ' _ "$ROOT" "$state" "$id"
+}
+
 record_pi_busy() {  # <state-dir> <id>
   local state=$1 id=$2 gen
   gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$id")
@@ -174,7 +183,361 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+# Give TERM a generous shutdown window, then guarantee that test cleanup cannot hang.
+reap() {
+  local pid=$1 i=0 state
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null; do
+    state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    case "$state" in
+      ''|Z*) break ;;
+    esac
+    if [ "$i" -ge 50 ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wait "$pid" 2>/dev/null || true
+}
+
+# start_pane <dir> <child-path>: a pane emulation for the watcher's pane-activity
+# probe, which scopes activity to descendants of the recorded pane pid. The pane
+# root holds itself open on a FIFO it opened read-write - so nothing ever blocks
+# on an absent reader or writer - while one child runs beneath it. That child is
+# the process the probe must see, exactly as a worker's tool subprocess is a
+# child of its harness.
+#
+# Writes the pane pid to <dir>/pane.pid and the child pid to <dir>/child.pid.
+# Both the pane root's wait and every wait below are bounded, so no phase of a
+# supervision test can hang indefinitely.
+start_pane() {  # <dir> <child-path>
+  local dir=$1 child=$2
+  mkdir -p "$(dirname "$child")"
+  cp "$(command -v sleep)" "$child" || return 1
+  mkfifo "$dir/hold" || return 1
+  (
+    exec 3<> "$dir/hold"
+    "$child" 300 &
+    printf '%s\n' "$!" > "$dir/child.pid"
+    read -t 300 -u 3 -r _ || true
+  ) &
+  printf '%s\n' "$!" > "$dir/pane.pid"
+  for _ in $(seq 1 60); do
+    [ -s "$dir/child.pid" ] && break
+    sleep 0.1
+  done
+  [ -s "$dir/child.pid" ]
+}
+
+# The pane root is blocked, so it never reaps the child it started: a killed
+# child lingers as a zombie. The watcher's probe ignores zombies, so the fixture
+# must judge exit the same way rather than by bare `kill -0`, which a zombie
+# still answers.
+kill_pane_child() {  # <dir>
+  local child
+  child=$(cat "$1/child.pid" 2>/dev/null || true)
+  [ -n "$child" ] || return 0
+  kill "$child" 2>/dev/null || true
+  for _ in $(seq 1 60); do
+    is_live_non_zombie "$child" || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+stop_pane() {  # <dir>
+  local dir=$1 pane
+  kill_pane_child "$dir" || true
+  pane=$(cat "$dir/pane.pid" 2>/dev/null || true)
+  [ -n "$pane" ] && reap "$pane"
+  return 0
+}
+
+test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case merge-wait); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-merge"
+  printf 'done: PR https://github.com/o/r/pull/3 checks green\n' > "$state/merge.status"
+  printf 'window=%s\nkind=ship\npr=https://github.com/o/r/pull/3\n' "$window" > "$state/merge.meta"
+  chmod 600 "$state/merge.meta"
+  arm_merge_poll "$state" merge || fail "valid merge poll fixture could not be armed"
+  printf 'finished, awaiting merge\n' > "$capture_file"
+  sig=$(seen_sig "$state/merge.status"); printf '%s' "$sig" > "$state/.seen-merge_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "finished, awaiting merge")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  : > "$state/.paused-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"
+    fail "a valid merge wait produced a stale alarm: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a valid merge wait printed a stale alarm: $(cat "$out")"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "merge wait did not retain its bounded pause marker"; }
+  reap "$pid"
+  # This fixture tests merge-wait classification, not restart recovery.
+  # The first watcher writes a downtime marker on its intentional stop, so clear
+  # that marker before starting the independent second watcher.
+  rm -f "$state/.watcher-down"
+
+  # Steady state: the pane hash never changes again, so the absorb decided on
+  # the hash's first sight must still come back on its long declared cadence.
+  touch -t 200001010000 "$state/merge.status"
+  sig=$(seen_sig "$state/merge.status"); printf '%s' "$sig" > "$state/.seen-merge_status"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; fail "an unchanged merge wait never rechecked on its declared cadence"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "the merge-wait recheck printed no wake: $(cat "$out")"
+  grep -F "declared pause" "$out" >/dev/null || fail "the merge-wait recheck was not a declared-pause recheck: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "the merge-wait recheck was mislabeled as a wedge escalation"
+
+  # Handle the durable stale wake before the independent invalid-poll scenario.
+  # Otherwise restart recovery correctly re-surfaces that still-unacknowledged row.
+  ack_stopped_cycle "$state" >/dev/null || fail "the merge-wait stale wake could not be acknowledged"
+  rm -f "$state/.watcher-down"
+  rm -f "$state/merge.check.sh" "$state/merge.pr-poll" "$state/merge.pr-poll-registration"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; fail "an invalid merge poll did not restore stale detection"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "invalid merge poll did not surface the stale pane"
+  grep -F "possible wedge" "$out" >/dev/null && fail "invalid merge poll was mislabeled as a wedge escalation"
+  pass "a valid merge wait rechecks on its declared cadence, while an invalid poll restores stale detection"
+}
+
+test_merge_wait_exemption_requires_a_finished_status() {
+  local dir state fakebin out capture_file window key pane_hash sig pid
+  dir=$(make_case merge-wait-actionable); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-merge-blocked"
+  # The poll is armed as soon as the PR exists, so a still-valid poll outlives
+  # the finished status: CI failed, the worker declared itself blocked, and that
+  # worker is actionable now rather than waiting on the forge.
+  printf 'blocked: CI failed on the pull request\n' > "$state/merge.status"
+  printf 'window=%s\nkind=ship\npr=https://github.com/o/r/pull/3\n' "$window" > "$state/merge.meta"
+  chmod 600 "$state/merge.meta"
+  arm_merge_poll "$state" merge || fail "valid merge poll fixture could not be armed"
+  printf 'blocked, awaiting a decision\n' > "$capture_file"
+  sig=$(seen_sig "$state/merge.status"); printf '%s' "$sig" > "$state/.seen-merge_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "blocked, awaiting a decision")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; fail "an armed poll on a blocked worker suppressed the stale alarm: $(cat "$out")"; }
+  grep -F "stale: $window" "$out" >/dev/null || fail "a blocked worker with an armed poll was not surfaced: $(cat "$out")"
+  [ ! -e "$state/.paused-$key" ] || fail "a blocked worker with an armed poll was pause-tracked"
+  pass "the merge-wait exemption needs a finished status, not just a valid armed poll"
+}
+
+test_pane_probe_terminates_on_a_cyclic_process_table() {
+  local dir state fakebin window table verdict rc
+  dir=$(make_case pane-probe-cycle); state="$dir/state"; fakebin="$dir/fakebin"
+  window="test:fm-cycle"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/cycle.meta"
+
+  # A process-table snapshot is not guaranteed to be a tree. macOS reports
+  # kernel_task as pid 0 with ppid 0, and pid reuse across one ps pass can
+  # splice a cycle anywhere. The probe must still answer, because a probe that
+  # never returns takes the entire supervision loop down with it - strictly
+  # worse than the false alarms this whole change removes.
+  table=$(printf '%s\n' \
+    "0 0 S kernel_task kernel_task" \
+    "1 0 S init /sbin/init" \
+    "555 1 S bash -bash" \
+    "777 555 S benchmark /tmp/benchmark --run")
+  # shellcheck disable=SC2016 # $1/$2 are the bash -c positional args below.
+  verdict=$(timeout 20 env PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
+    FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_PANE_PID=555 PANE_PROC_TABLE="$table" \
+    bash -c '. "$1/bin/fm-watch.sh"; window_has_live_child "$2" && printf live || printf none' \
+    _ "$ROOT" "$window")
+  rc=$?
+  [ "$rc" -ne 124 ] || fail "the pane-activity probe hung on a cyclic process table"
+  [ "$verdict" = live ] || fail "the probe lost a real descendant on a cyclic table (verdict: ${verdict:-<none>}, rc=$rc)"
+  pass "the pane-activity probe terminates on a cyclic process table and still finds the live child"
+}
+
+test_live_worker_child_suppresses_stale_until_child_exits() {
+  local dir state fakebin out capture_file window key pane_hash sig pid pane_pid
+  dir=$(make_case live-worker-child); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-child"
+  printf 'working: benchmark child\n' > "$state/child.status"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/child.meta"
+  printf 'idle\n' > "$capture_file"
+  sig=$(seen_sig "$state/child.status"); printf '%s' "$sig" > "$state/.seen-child_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+
+  start_pane "$dir" "$dir/bin/benchmark" || fail "pane fixture with a live worker child did not start"
+  pane_pid=$(cat "$dir/pane.pid")
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · benchmark child' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; stop_pane "$dir"
+    fail "live worker child did not suppress stale alarm: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; stop_pane "$dir"; fail "live worker child printed a stale alarm: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; stop_pane "$dir"; fail "live worker child enqueued a stale wake"; }
+
+  kill_pane_child "$dir" || { reap "$pid"; stop_pane "$dir"; fail "pane child fixture would not exit"; }
+  wait_for_exit "$pid" 40 || {
+    reap "$pid"; stop_pane "$dir"
+    fail "worker did not escalate after its child exited"
+  }
+  stop_pane "$dir"
+  grep -F "stale: $window" "$out" >/dev/null || fail "child exit did not restore stale detection"
+  grep -F "possible wedge" "$out" >/dev/null || fail "child exit stale wake omitted wedge evidence"
+  pass "a live worker child suppresses stale noise, then child exit restores wedge escalation"
+}
+
+test_live_worker_child_still_hits_the_no_completed_turn_ceiling() {
+  local dir state fakebin out capture_file window key pane_hash sig pid pane_pid
+  dir=$(make_case child-turn-age); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-child-ceiling"
+  printf 'working: one very long tool call\n' > "$state/wedged.status"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/wedged.meta"
+  printf 'idle\n' > "$capture_file"
+  sig=$(seen_sig "$state/wedged.status"); printf '%s' "$sig" > "$state/.seen-wedged_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  # No completed turn was ever recorded for this task: age the spawn record.
+  touch -t 200001010000 "$state/wedged.meta"
+
+  # A worker child that hangs and never exits - and equally a leftover the
+  # worker left running behind it - must not become an unbounded silence. The
+  # immediate wake is quieted, but the no-completed-turn ceiling still accrues.
+  start_pane "$dir" "$dir/bin/hung-tool" || fail "pane fixture with a hung worker child did not start"
+  pane_pid=$(cat "$dir/pane.pid")
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · long tool call' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; stop_pane "$dir"
+    fail "a live worker child escalated before the wedge threshold: $(cat "$out")"
+  fi
+  [ -s "$state/.stale-since-$key" ] || { reap "$pid"; stop_pane "$dir"; fail "a live worker child past the turn-age bound started no wedge timer"; }
+  reap "$pid"
+
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · long tool call' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_WATCH_HANDLING_SUCCESSOR=1 FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; stop_pane "$dir"; fail "a hung worker child never reached the no-completed-turn ceiling"; }
+  stop_pane "$dir"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the ceiling did not print the stale wake: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the ceiling did not flag a possible wedge: $(cat "$out")"
+  pass "a worker child that never exits still hits the no-completed-turn ceiling"
+}
+
+test_pane_harness_process_is_not_child_activity() {
+  local dir state fakebin out capture_file window key pane_hash sig pid pane_pid
+  dir=$(make_case pane-harness); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-harness"
+  printf 'working: long silence\n' > "$state/harness.status"
+  printf 'window=%s\nkind=ship\nharness=claude\n' "$window" > "$state/harness.meta"
+  printf 'idle\n' > "$capture_file"
+  sig=$(seen_sig "$state/harness.status"); printf '%s' "$sig" > "$state/.seen-harness_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+
+  # The pane's only descendant is the harness itself, installed the way Claude
+  # Code's native installer does it: a version-named executable whose command
+  # name identifies nothing and whose install path carries the identity. An idle
+  # harness is not work, or every alarm for this window is muted for its life.
+  start_pane "$dir" "$dir/claude/versions/2.1.220" || fail "pane harness fixture did not start"
+  pane_pid=$(cat "$dir/pane.pid")
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · long silence' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; stop_pane "$dir"; fail "an idle pane harness muted the stale alarm: $(cat "$out")"; }
+  stop_pane "$dir"
+  grep -F "stale: $window" "$out" >/dev/null || fail "idle harness suppressed stale detection: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "idle harness suppressed wedge escalation: $(cat "$out")"
+  pass "an idle pane harness process is not counted as worker child activity"
+}
+
+test_recorded_harness_outside_the_lock_list_is_not_child_activity() {
+  local dir state fakebin out capture_file window key pane_hash sig pid pane_pid
+  dir=$(make_case pane-harness-muse); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-muse"
+  printf 'working: long silence\n' > "$state/muse.status"
+  printf 'window=%s\nkind=ship\nharness=muse\n' "$window" > "$state/muse.meta"
+  printf 'idle\n' > "$capture_file"
+  sig=$(seen_sig "$state/muse.status"); printf '%s' "$sig" > "$state/.seen-muse_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+
+  # muse is deliberately absent from the session-lock harness list, so only the
+  # window's own recorded `harness=` can recognize this pane's idle agent.
+  start_pane "$dir" "$dir/muse/bin/muse-runner" || fail "pane harness fixture did not start"
+  pane_pid=$(cat "$dir/pane.pid")
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_PANE_PID="$pane_pid" FM_FAKE_CREW_STATE='state: unknown · source: none · long silence' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || { reap "$pid"; stop_pane "$dir"; fail "an idle muse harness muted the stale alarm: $(cat "$out")"; }
+  stop_pane "$dir"
+  grep -F "stale: $window" "$out" >/dev/null || fail "idle muse harness suppressed stale detection: $(cat "$out")"
+  pass "a pane harness known only from the recorded harness= is not worker child activity"
+}
+
+test_reap_kills_term_ignoring_child() {
+  local pid start elapsed
+  ( trap '' TERM; while :; do :; done ) &
+  pid=$!
+  start=$(date +%s)
+  reap "$pid"
+  elapsed=$(( $(date +%s) - start ))
+  kill -0 "$pid" 2>/dev/null && fail "reap left a TERM-ignoring child alive"
+  [ "$elapsed" -ge 4 ] || fail "reap did not exercise its SIGKILL timeout (elapsed ${elapsed}s)"
+  pass "reap bounds TERM cleanup with a SIGKILL fallback"
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -3844,6 +4207,13 @@ test_routine_appends_after_a_classified_event_stay_absorbed
 test_unreadable_status_reports_once_per_file_state
 test_permission_recovery_surfaces_preserved_status
 test_terminal_stale_surfaced
+test_merge_wait_uses_pause_cadence_and_loses_exemption_when_poll_invalid
+test_merge_wait_exemption_requires_a_finished_status
+test_pane_probe_terminates_on_a_cyclic_process_table
+test_live_worker_child_suppresses_stale_until_child_exits
+test_live_worker_child_still_hits_the_no_completed_turn_ceiling
+test_pane_harness_process_is_not_child_activity
+test_recorded_harness_outside_the_lock_list_is_not_child_activity
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated
 test_wedge_escalation_marks_demand_deep_inspection_after_threshold
