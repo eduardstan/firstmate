@@ -195,7 +195,16 @@
 #   identity is owned by the parent home that holds its task metadata, while the
 #   pane export happens on the remote host (bin/fm-remote-secondmate-control.sh).
 #   Local spawns never pass it and resolve their own carrier exactly as before.
+#   Every worker launch receives a nice increment of 10 by default, so workers
+#   and their children yield CPU to interactive work. Set FM_SPAWN_NICE=0 for
+#   normal inherited priority, or use any integer from 0 through 19.
 set -eu
+
+SPAWN_NICE=${FM_SPAWN_NICE:-10}
+case "$SPAWN_NICE" in
+  0|[1-9]|1[0-9]) ;;
+  *) echo "error: FM_SPAWN_NICE must be an integer from 0 through 19" >&2; exit 1 ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -2917,6 +2926,20 @@ fi
 if [ -z "$SPAWN_TRACEPARENT" ] && [ "$RELAUNCH" -eq 1 ]; then
   LAUNCH="unset TRACEPARENT; $LAUNCH"
 fi
+
+# Apply scheduling priority once, after all launch construction, so every backend
+# receives the same worker command without duplicating policy in backend adapters.
+# Renicing the launch shell preserves the caller's command bytes and shell syntax,
+# while the worker and every child it starts inherit the lower priority.
+spawn_nice_launch() {
+  local command=$1
+  if [ "$SPAWN_NICE" -eq 0 ]; then
+    printf '%s' "$command"
+  else
+    printf 'renice -n %s -p $$ >/dev/null 2>&1 || exit 1; %s' "$SPAWN_NICE" "$command"
+  fi
+}
+LAUNCH=$(spawn_nice_launch "$LAUNCH")
 
 spawn_record_traceparent() {
   local meta="$STATE/$ID.meta" tmp status=0

@@ -113,7 +113,7 @@ phase_seed() {
 phase_spawn() {
   : > "$LOG"
   PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/parent-config" \
-    FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
+    FM_SPAWN_NICE=0 FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
     "$ROOT/bin/fm-spawn.sh" design "$SUB" codex --secondmate >/dev/null \
     || fail "secondmate spawn failed"
 
@@ -199,7 +199,7 @@ phase_recovery() {
   # Simulate a restart: drop the live meta, then respawn from the registry +
   # persistent home (no explicit home argument).
   rm -f "$HOME_DIR/state/design.meta"
-  PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
+  PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_SPAWN_NICE=0 FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
     "$ROOT/bin/fm-spawn.sh" design "echo relaunch" --secondmate >/dev/null 2>&1 \
     || fail "recovery respawn failed"
   local meta="$HOME_DIR/state/design.meta"

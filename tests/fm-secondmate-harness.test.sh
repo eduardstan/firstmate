@@ -620,7 +620,7 @@ spawn_secondmate_capture() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$world/home" \
     FM_STATE_OVERRIDE="$world/home/state" FM_DATA_OVERRIDE="$world/home/data" \
     FM_PROJECTS_OVERRIDE="$world/home/projects" FM_CONFIG_OVERRIDE="$world/home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_LAUNCH_LOG="$launchlog" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_NICE=0 FM_FAKE_LAUNCH_LOG="$launchlog" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$home" "$@" --secondmate
 }
 
