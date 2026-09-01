@@ -2929,14 +2929,14 @@ fi
 
 # Apply scheduling priority once, after all launch construction, so every backend
 # receives the same worker command without duplicating policy in backend adapters.
-# The shell wrapper evaluates the caller's command as-is, including shell syntax,
-# while the worker and every child it starts inherit the wrapper's nice value.
+# Renicing the launch shell preserves the caller's command bytes and shell syntax,
+# while the worker and every child it starts inherit the lower priority.
 spawn_nice_launch() {
   local command=$1
   if [ "$SPAWN_NICE" -eq 0 ]; then
     printf '%s' "$command"
   else
-    printf 'nice -n %s sh -c %s' "$SPAWN_NICE" "$(shell_quote "$command")"
+    printf 'renice -n %s -p $$ >/dev/null 2>&1 || exit 1; %s' "$SPAWN_NICE" "$command"
   fi
 }
 LAUNCH=$(spawn_nice_launch "$LAUNCH")

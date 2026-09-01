@@ -368,8 +368,8 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   assert_contains "$out" "spawned $id harness=custom-agent" "spawn did not report raw command harness"
   assert_meta_profile "$HOME_DIR/state/$id.meta" custom-agent default default
   launch=$(cat "$LAUNCH_LOG")
-  [ "$launch" = "nice -n 10 sh -c 'custom-agent --flag'" ] \
-    || fail "raw launch command was not wrapped without changing its payload"$'\n'"actual: $launch"
+  [ "$launch" = 'renice -n 10 -p $$ >/dev/null 2>&1 || exit 1; custom-agent --flag' ] \
+    || fail "raw launch command was not prefixed without changing its payload"$'\n'"actual: $launch"
   pass "active crew-dispatch profile allows the raw launch-command escape hatch under the default nice increment"
 }
 
