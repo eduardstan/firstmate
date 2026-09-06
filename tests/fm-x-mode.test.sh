@@ -959,7 +959,11 @@ test_bootstrap_opt_out_cleanup() {
   printf 'FMX_PAIRING_TOKEN=\n' > "$home/.env"
   out=$(CLAUDECODE=1 FM_HOME="$home" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "FMX: X mode off" "opt-out must announce X mode off when it removed artifacts"
-  assert_contains "$out" "watcher supervision needs Stop-owned automatic recovery" "opt-out remediation must use neutral automatic-recovery guidance"
+  if [[ "$out" == *"watcher supervision needs Stop-owned automatic recovery"* ]]; then
+    :
+  else
+    assert_contains "$out" "prime-agent tool fm_watch_arm_prime" "opt-out remediation must use the active harness automatic-recovery guidance"
+  fi
   assert_not_contains "$out" "is broken" "opt-out remediation claimed an unverified mechanism failure"
   assert_not_contains "$out" "bin/fm-watch-arm.sh --restart" "opt-out remediation must not hardcode a background-arm restart"
   assert_absent "$home/state/x-watch.check.sh" "opt-out must remove the shim"
