@@ -389,6 +389,7 @@ test_ship_brief_coauthor_trailer_rule() {
   assert_grep 'Human co-author trailers stay allowed.' "$brief" \
     "ship brief must preserve the human co-author exception"
   pass "fm-brief.sh: ship briefs forbid AI co-author trailers but allow human co-authors"
+}
 
 test_ask_user_escalation_format() {
   local home id brief mode other_id other_brief
