@@ -18,6 +18,7 @@
 #      protocol, so its control mechanics are verified while a secondmate launch
 #      on it is refused.
 set -u
+unset PI_CODING_AGENT PRIME_AGENT_CODING_AGENT_DIR PRIME_AGENT_INTERNAL_DAEMON_WORKER FM_PI_HARNESS
 
 # shellcheck source=tests/fixtures.sh
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
