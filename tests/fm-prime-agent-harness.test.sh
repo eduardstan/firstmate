@@ -134,7 +134,14 @@ make_case() {  # <name> -> case_dir|home|proj|wt|fakebin|id
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
   id="prime-$name-x1"
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
-  printf 'brief\n' > "$home/data/$id/brief.md"
+  cat > "$home/data/$id/brief.md" <<'EOF'
+# Task
+## Captain's intent
+Exercise Prime Agent launch behavior.
+
+## Firstmate spec
+Preserve the Prime Agent launch contract.
+EOF
   fm_git_worktree "$proj" "$wt" "fm/$id"
   touch "$home/state/.last-watcher-beat"
   printf '%s|%s|%s|%s|%s|%s\n' "$case_dir" "$home" "$proj" "$wt" "$fakebin" "$id"
