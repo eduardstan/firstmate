@@ -1502,3 +1502,50 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 6. `bin/fm-control.sh <id> exit` stopped the agent and `bin/fm-teardown.sh` returned the worktree and closed the item.
 
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the primary evidence; the worker path above is refreshed by repeating the scout dispatch after any omp upgrade.
+
+## Prime Agent (prime-agent)
+
+prime-agent runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#prime-agent-prime-agent-native-delivery-2026-09-08) owns the primary evidence.
+The evidence below was produced on 2026-09-08 against prime-agent 0.9.1 (`/home/eduard/.local/bin/prime-agent`, Node bundle) on Linux x86_64 through the Herdr backend with the `openai-codex/gpt-5.6-luna` model, building on the August 2026 adapter verification on 0.7.1 and 0.7.2.
+
+### Process identity and markers
+
+`ps -o comm=` reports the bare name `prime-agent` for the agent process, its detached daemon supervisor, and worker processes; `prime-agent-helper` and decoy process names never match.
+Prime Agent publishes `PI_CODING_AGENT=true` (sharing the Pi family marker) and sets `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` and `PRIME_AGENT_CODING_AGENT_DIR` in tool subprocesses and daemon workers.
+`FM_PI_HARNESS=prime-agent` is Firstmate's explicit launch marker to disambiguate Prime Agent from Pi; an explicit `FM_PI_HARNESS=pi` or `pi-signed` marker overrides stale Prime daemon markers, while `prime-agent` is detected when `FM_PI_HARNESS=prime-agent` or daemon worker markers are present.
+`tests/fm-prime-agent-harness.test.sh` and `tests/fm-tmux-agent-liveness.test.sh` pin detection splitting prime-agent from Pi in both directions and verify that only the exact `prime-agent` process name classifies alive.
+
+### Composer
+
+Under Herdr the idle screen displayed a bare `>` prompt followed by placeholder ghost text:
+
+```text
+>   Try "refactor @<filepath>"
+```
+
+The shared classifier identifies the placeholder styling and classifies the idle pane `empty`.
+When input text is typed into the composer (e.g. `>  inspecting tests`), the classifier classifies the composer `pending`.
+`tests/fm-backend-herdr.test.sh` pins the bare `>` prompt requiring both the live prime-agent process and native identity, placeholder ghost styling detection, pending composer text classification, and agent state liveness.
+
+### Busy state and lifecycle
+
+| Fact | Observed |
+| --- | --- |
+| Semantic source | Herdr native agent reporter (`agent=prime-agent`, `agent_status=working` during turns and `idle` when settled); `fm-spawn.sh` writes only turn-end extension `state/<id>.prime-ext.ts` which touches the turn-end marker on `turn_end` without seeding an uncleared busy record |
+| Rendered busy row | Braille spinner with status and elapsed time (`⠼ Thinking · 1s`, `⠦ Waiting · 10s · ↑ 193 tokens`, `⠙ Writing code · 58s`) |
+| Interrupt | `bin/fm-control.sh <id> interrupt` delivered an abort signal (`verified=agent-alive cancel=unconfirmed`), the composer returned to empty, and prime-agent reported `Operation aborted` |
+| Exit | `bin/fm-control.sh <id> exit` typed `/quit`; Herdr then reported the agent state `dead` |
+| Relaunch | `bin/fm-control.sh <id> relaunch --note "..."` relaunched into the recorded endpoint and worktree, resumed execution, and delivered the progress note |
+| Daemon session retirement | Prime Agent runs root sessions in detached daemon workers under one per-user supervisor; `bin/fm-teardown.sh` retires workers by cwd via `fm_prime_agent_stop_sessions_under` before process cleanup rather than calling `prime-agent shutdown` |
+
+### End-to-end
+
+All four roles were verified live on 0.9.1 on Herdr with `openai-codex/gpt-5.6-luna`:
+
+1. Crewmate: spawned with `bin/fm-spawn.sh --mode direct-PR --yolo off` on a throwaway branch; the worker committed code changes, appended a `done:` status event, and was torn down cleanly.
+2. Scout: spawned with `bin/fm-spawn.sh --scout`; the worker wrote deliverable `data/<task-id>/report.md`, appended `done: report written`, and was torn down cleanly.
+3. Local secondmate: seeded with `bin/fm-home-seed.sh <id> <home> --no-projects` and spawned with `--secondmate`; the secondmate exhibited idle charter behavior without generating unprompted work, received a steer via `bin/fm-send.sh`, acknowledged the inbox message, delivered a correlated status line to the parent channel (`done: corr=...`), and was torn down cleanly with its detached daemon session stopped.
+4. Primary: run against a temporary home with copied configuration; `bin/fm-session-start.sh` emitted the Prime supervision protocol (`Mode: prime-agent extension background wake.`), and the watcher extension auto-armed via `fm_watch_arm_prime` and started its background arm child.
+
+`bin/fm-test-run.sh --family live-harness-optin` verified the opt-in harness test suite (total 25 tests, 0 failed, 21 skipped by gate).
+

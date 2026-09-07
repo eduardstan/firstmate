@@ -1,6 +1,6 @@
 # Prime Agent
 
-Verified for crewmate and scout work and LOCAL secondmate work on 2026-08-08 with Prime Agent 0.7.1, with exit, interrupt, and control kinds re-verified on 2026-08-17 with 0.7.2.
+Verified for crewmate, scout, local secondmate, and primary work on 2026-09-08 with Prime Agent 0.9.1 on Linux through Herdr, building on earlier verification with 0.7.1 and 0.7.2 in August 2026.
 Remote secondmates are not verified for this adapter and the remote spawn allowlist refuses `prime-agent`.
 The executable owners remain `../../../bin/fm-harness.sh`, `../../../bin/fm-spawn.sh`, `../../../bin/fm-control-lib.sh`, and `../../../bin/fm-prime-agent-lib.sh`.
 
@@ -14,7 +14,7 @@ The executable owners remain `../../../bin/fm-harness.sh`, `../../../bin/fm-spaw
 | Provider | `--provider <provider>` is supported by the Prime Agent launch path and is recorded independently from harness identity. |
 | Autonomy | Prime Agent has no permission gate, so no `--yolo` flag is needed; Firstmate's separate `--autonomous-gate` options own bounded completion runs. |
 | Trust | Project-local extensions auto-load without a trust gate; an unexercised first-run onboarding screen may still be controlled by Prime Agent's own settings. |
-| Control kinds | The verified adapter supports crewmates, scouts, and LOCAL secondmates, while remote secondmates remain refused. |
+| Control kinds | The verified adapter supports crewmates, scouts, LOCAL secondmates, and primary sessions, while remote secondmates remain refused. |
 | Marker | `PI_CODING_AGENT=true` establishes only the Pi family; `PRIME_AGENT_CODING_AGENT_DIR`, `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1`, and `FM_PI_HARNESS=prime-agent` disambiguate Prime Agent. |
 | Effort flag | `--thinking <low\|medium\|high\|xhigh\|max>`; all five shared values are emitted by `fm-spawn.sh` and were accepted by the verified Prime Agent CLI. |
 | Skill invocation | `/skill:<skill>`, for example `/skill:no-mistakes`; the bare `/<skill>` form is not a Prime Agent command. |
