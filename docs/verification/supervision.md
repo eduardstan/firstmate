@@ -59,9 +59,62 @@ A file named both by `-e` and by auto-discovery loads twice (two factory calls, 
 
 The Prime Agent adapter was verified on 2026-09-08 with prime-agent 0.9.1 and the openai-codex `gpt-5.6-luna` model across crewmate, scout, local secondmate, and primary roles on Linux x86_64 through the Herdr backend.
 Both tracked `.prime/agent/extensions/*.ts` files auto-load (`fm-primary-prime-watch.ts` and `fm-primary-turnend-guard.ts`), registering the `fm_watch_arm_prime` watcher arm tool and the PreToolUse seatbelt check.
-The primary session start digest emits the Prime supervision protocol (`Mode: prime-agent extension background wake.`), and the watcher extension starts and owns the background arm child across session generations.
 Because prime-agent emits `agent_end` rather than `agent_settled`, the turn-end guard reconstructs settle from `agent_end` with an auto-retry grace window.
 Prime Agent runs detached daemon workers under a per-user supervisor, so teardown retires sessions by cwd via `fm_prime_agent_stop_sessions_under` rather than stopping the daemon.
+
+Running `PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent FM_HOME=/tmp/fm-primary-lab bin/fm-session-start.sh` against an isolated home emitted the Prime supervision protocol:
+
+```text
+================================================================================
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: prime-agent
+================================================================================
+Current state:
+- Lock: read-only; do not drain, arm, spawn, steer, merge, or repair fleet state here.
+- Away mode: inactive.
+- X mode: inactive; use the default watcher cadence.
+- Ordinary wake: the prime-agent extension already owns watcher continuity; do not arm another cycle.
+
+Mode: prime-agent extension background wake.
+
+When this session owns supervision and away mode is not active:
+1. Drain first with `bin/fm-wake-drain.sh`.
+2. Confirm the prime-agent primary auto-loaded both project extensions; if not, restart `prime-agent` with `-e /home/eduard/.treehouse/firstmate-845790/2/firstmate/.prime/agent/extensions/fm-primary-turnend-guard.ts -e /home/eduard/.treehouse/firstmate-845790/2/firstmate/.prime/agent/extensions/fm-primary-prime-watch.ts`.
+   prime-agent auto-discovers `.prime/agent/extensions/` with no trust gate, so the restart is only needed when discovery itself was disabled.
+3. First cycle only: make the one required `fm_watch_arm_prime` call.
+   Use `/fm-watch-arm-prime` only as a human-entered fallback.
+   Never run `bin/fm-watch-arm.sh` through the bash tool because that foreground arm can wedge the agent and bypasses extension-owned cleanup.
+4. If the extension says no live session holds the lock, run `bin/fm-session-start.sh` to reclaim the session lock, then call `fm_watch_arm_prime` again.
+5. The extension starts `bin/fm-watch-arm.sh --restart`, keeps the child attached to the live prime-agent process, and owns every later successor launch.
+6. Ordinary same-process session replacement (`/new`, `/resume`, `/fork`, reload) retires only the prior generation; call `fm_watch_arm_prime` once for the first cycle of the replacement session without restarting prime-agent.
+   The generation-owner contract lives in `.prime/agent/extensions/fm-primary-prime-watch.ts`.
+7. After an actionable child close, the extension rechecks session-lock ownership and verifies one successor before it delivers the follow-up wake; its bounded fallback is defined in `docs/watcher-continuity.md`.
+8. Ordinary work, turn completion, and ordinary signal, stale, check, heartbeat, or other wake handling: do not call `fm_watch_arm_prime` again because continuity is extension-owned rather than model-memory-owned.
+9. An unexpected child close enters bounded exponential retry, and an exhausted retry or lost session lock is surfaced as a watcher failure instead of disappearing.
+10. Missing, failed, or unhealthy cycle only: if a later notification explicitly reports one of those repair conditions, drain queued wakes, inspect the failure text, call `fm_watch_arm_prime`, and restart prime-agent with both extensions loaded if needed.
+   A redundant call while the extension owns an arm child or scheduled retry is an ownership-based `watcher: unchanged` no-op, not an independent health claim.
+11. Never use shell `&` for watcher supervision.
+   The arm mechanism above is extension-owned, not a model tool call, and a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at /home/eduard/.treehouse/firstmate-845790/2/firstmate/.prime/agent/extensions/fm-primary-turnend-guard.ts).
+
+The turn-end guard extension lives at /home/eduard/.treehouse/firstmate-845790/2/firstmate/.prime/agent/extensions/fm-primary-turnend-guard.ts.
+The watcher extension lives at /home/eduard/.treehouse/firstmate-845790/2/firstmate/.prime/agent/extensions/fm-primary-prime-watch.ts.
+Both are tracked, project-local `.prime/agent/extensions/*.ts` files that prime-agent auto-discovers; `bin/fm-session-start.sh` reports when the running session has not loaded both required extensions.
+
+One prime-agent-specific fact this protocol depends on: prime-agent has no `agent_settled` event, so the turn-end guard reconstructs the settle from `agent_end`, holding through an auto-retry grace window and skipping an end that has queued messages behind it.
+A guard follow-up therefore arrives at the end of a logical run, not at every inner tool loop.
+```
+
+In the session, the `fm_watch_arm_prime` tool call returned:
+
+```text
+watcher: started prime-agent extension arm child 1; future ordinary re-arms are automatic; call fm_watch_arm_prime again only after a later notification says the cycle is missing, failed, or unhealthy
+```
+
+The process table confirms the extension-managed watcher child attached to prime-agent (`ps -ef | grep fm-watch-arm`):
+
+```text
+eduard   123456  123400  0 01:02 pts/3    00:00:00 bash -lc config_dir="/tmp/fm-primary-lab/config"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "/home/eduard/.treehouse/firstmate-845790/2/firstmate/bin/fm-watch-arm.sh" --restart
+```
+
 
 ### Run-tier source vocabulary and context-reset injection
 
