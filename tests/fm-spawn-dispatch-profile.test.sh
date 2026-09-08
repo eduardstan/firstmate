@@ -131,7 +131,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
+  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
@@ -150,10 +150,10 @@ test_prime_agent_launch_establishes_its_harness_marker() {
   status=$?
   expect_code 0 "$status" "prime-agent spawn should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  case "$launch" in
-    "FM_PI_HARNESS=prime-agent "*) ;;
-    *) fail "prime-agent launch did not establish FM_PI_HARNESS=prime-agent"$'\n'"actual: $launch" ;;
-  esac
+  assert_contains "$launch" "FM_PI_HARNESS=prime-agent env -u CLAUDECODE -u GROK_AGENT prime-agent" \
+    "prime-agent launch did not establish FM_PI_HARNESS=prime-agent for its own command"
+  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI" \
+    "prime-agent launch kept inherited cursor/gemini identity markers"
   assert_contains "$launch" "--model 'openai-codex/gpt-5.6-luna'" \
     "prime-agent launch dropped the selected model"
   assert_contains "$launch" "-e '$HOME_DIR/state/$id.prime-ext.ts'" \
@@ -161,6 +161,25 @@ test_prime_agent_launch_establishes_its_harness_marker() {
   [ -s "$HOME_DIR/state/$id.prime-ext.ts" ] \
     || fail "prime-agent spawn did not write its turn-end extension"
   pass "a prime-agent launch establishes the harness marker its own detection needs"
+}
+
+# A prime-agent secondmate has no primary supervision protocol yet, so the spawn
+# must refuse by name rather than fall through to the raw-launch escape hatch.
+test_prime_agent_secondmate_is_refused() {
+  local rec id out status
+  id=profile-prime-agent-sm-z1d
+  rec=$(make_spawn_case profile-prime-agent-sm prime-agent "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" prime-agent --secondmate)
+  status=$?
+  [ "$status" -ne 0 ] || fail "prime-agent was accepted as a secondmate harness"
+  assert_contains "$out" "crewmate/scout adapter only" \
+    "prime-agent secondmate refusal did not explain the boundary"
+  case "$out" in
+    *"unknown harness"*) fail "prime-agent secondmate refusal claimed the harness is unknown: $out" ;;
+  esac
+  pass "a prime-agent secondmate spawn is refused by name, not as an unknown harness"
 }
 
 test_non_cursor_launch_clears_inherited_cursor_markers() {
@@ -174,7 +193,7 @@ test_non_cursor_launch_clears_inherited_cursor_markers() {
   status=$?
   expect_code 0 "$status" "claude spawn under Cursor markers should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER" \
+  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI" \
     "non-cursor launch must clear both inherited Cursor identity markers"
   pass "non-cursor launches clear inherited Cursor identity markers"
 }
@@ -846,7 +865,7 @@ test_claude_forwards_firstmate_config_dir_when_set() {
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}'" \
+  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}'" \
     "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
   pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
 }
@@ -1233,6 +1252,7 @@ SH
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
 test_prime_agent_launch_establishes_its_harness_marker
+test_prime_agent_secondmate_is_refused
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
