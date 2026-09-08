@@ -7,7 +7,9 @@ Launch, supervision, control, and teardown behavior land in the following adapte
 
 Prime Agent exports `PI_CODING_AGENT=true`, the same Pi-family marker used by Pi and Pi-signed.
 Its own `PRIME_AGENT_CODING_AGENT_DIR`, `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1`, and launch-boundary `FM_PI_HARNESS=prime-agent` markers disambiguate it when paired with the Pi-family marker.
-`../../../bin/fm-harness.sh` checks Prime Agent markers before `CLAUDECODE` and the unmarked Pi result.
+`../../../bin/fm-harness.sh` checks Prime Agent markers before `CLAUDECODE` and the unmarked Pi result, and after the cursor, gemini, rovo, and omp marker arms.
+Those four therefore keep their identity when one of them is started by hand inside a Prime Agent session.
+grok is deliberately not among them: `GROK_AGENT=1` is already tested after the unmarked Pi result, so a grok session started inside any Pi-family session has always resolved to that family, and reordering it belongs outside this slice.
 An explicit `FM_PI_HARNESS=pi` or `FM_PI_HARNESS=pi-signed` remains authoritative when stale Prime Agent markers are inherited.
 A Prime Agent marker without `PI_CODING_AGENT=true` is ignored, so it cannot relabel a Claude or unrelated process.
 The ancestry fallback matches the exact `prime-agent` process name.
