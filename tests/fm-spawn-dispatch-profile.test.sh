@@ -136,6 +136,33 @@ test_no_profile_keeps_claude_profile_defaults() {
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
 
+# A prime-agent crewmate is the launch boundary that establishes the identity
+# marker bin/fm-harness.sh keys on, so the rendered launch must carry it; the
+# worker would otherwise resolve as plain Pi.
+test_prime_agent_launch_establishes_its_harness_marker() {
+  local rec id out status launch
+  id=profile-prime-agent-z1c
+  rec=$(make_spawn_case profile-prime-agent prime-agent "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model openai-codex/gpt-5.6-luna)
+  status=$?
+  expect_code 0 "$status" "prime-agent spawn should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  case "$launch" in
+    "FM_PI_HARNESS=prime-agent "*) ;;
+    *) fail "prime-agent launch did not establish FM_PI_HARNESS=prime-agent"$'\n'"actual: $launch" ;;
+  esac
+  assert_contains "$launch" "--model 'openai-codex/gpt-5.6-luna'" \
+    "prime-agent launch dropped the selected model"
+  assert_contains "$launch" "-e '$HOME_DIR/state/$id.prime-ext.ts'" \
+    "prime-agent launch did not load its turn-end extension"
+  [ -s "$HOME_DIR/state/$id.prime-ext.ts" ] \
+    || fail "prime-agent spawn did not write its turn-end extension"
+  pass "a prime-agent launch establishes the harness marker its own detection needs"
+}
+
 test_non_cursor_launch_clears_inherited_cursor_markers() {
   local rec id out status launch
   id=profile-claude-cursor-markers-z1b
@@ -1205,6 +1232,7 @@ SH
 
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
+test_prime_agent_launch_establishes_its_harness_marker
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
