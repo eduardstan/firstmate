@@ -50,6 +50,36 @@ make_named_shells() {  # <dir> -> echoes <bindir>
   printf '%s' "$dir"
 }
 
+# A ps shim whose only named ancestor is <comm>: pid 4242 answers with that
+# name, every other pid answers as a plain shell parented to it, and 4242's own
+# parent is pid 1, so the walk terminates. Fabricating the chain keeps the
+# ancestry cases independent of whatever really launched the suite.
+make_ps_ancestor() {  # <dir> <comm> -> echoes <bindir>
+  local dir=$1 comm=$2 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+set -u
+field=
+pid=
+prev=
+for arg in "\$@"; do
+  [ "\$prev" = -o ] && field=\$arg
+  [ "\$prev" = -p ] && pid=\$arg
+  prev=\$arg
+done
+case "\$field:\$pid" in
+  comm=:4242) printf '/opt/prime-agent/bin/%s\n' '$comm' ;;
+  comm=:*) printf '/bin/bash\n' ;;
+  ppid=:4242) printf '1\n' ;;
+  ppid=:*) printf '4242\n' ;;
+  args=:*) printf 'bash\n' ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  printf '%s' "$fakebin"
+}
+
 test_detection_splits_the_pi_family() {
   local out
 
@@ -121,20 +151,19 @@ test_ancestry_identifies_prime_agent_without_markers() {
   out=$(scrubbed PATH="$bin:$BASE_PATH" "$bin/prime-agent" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = prime-agent ] || fail "a markerless process named prime-agent detected '$out'"
 
-  # Reparent the decoy's child before detection so an ambient Prime Agent
-  # process cannot supply a real outer ancestor after the fixture marker is
-  # scrubbed. The child writes its result before the polling shell reads it.
-  local decoy_out="$TMP_ROOT/decoy.out"
-  : > "$decoy_out"
-  # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  scrubbed PATH="$bin:$BASE_PATH" "$bin/prime-agent-helper" -c '("$1" >"$2") &' _ \
-    "$HARNESS" "$decoy_out"
-  for _ in $(seq 1 100); do
-    [ -s "$decoy_out" ] && break
-    sleep 0.05
-  done
-  out=$(cat "$decoy_out")
+  # The decoy runs against a fabricated chain rather than a real one: a real
+  # outer ancestor cannot be isolated from an ambient Prime Agent session, and
+  # backgrounding the decoy to escape it reparents the child away before the
+  # walk ever sees the name under test. The same chain carrying the exact name
+  # is asserted too, so the decoy verdict cannot come from a chain the walk
+  # never reached.
+  local psbin
+  psbin=$(make_ps_ancestor "$TMP_ROOT/decoy-helper" prime-agent-helper)
+  out=$(detect PATH="$psbin:$BASE_PATH")
   [ "$out" != prime-agent ] || fail "prime-agent-helper merely starts with prime-agent and must not detect as prime-agent"
+  psbin=$(make_ps_ancestor "$TMP_ROOT/decoy-anchor" prime-agent)
+  out=$(detect PATH="$psbin:$BASE_PATH")
+  [ "$out" = prime-agent ] || fail "the fabricated prime-agent ancestor detected '$out', so the decoy above proves nothing"
 
   # omp needs a real omp ancestor for its own marker, so the precedence check
   # that env markers alone cannot make belongs here.
