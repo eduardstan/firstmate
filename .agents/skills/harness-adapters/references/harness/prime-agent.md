@@ -12,6 +12,9 @@ Those four therefore keep their identity when one of them is started by hand ins
 grok is deliberately not among them: `GROK_AGENT=1` is already tested after the unmarked Pi result, so a grok session started inside any Pi-family session has always resolved to that family, and reordering it belongs outside this slice.
 An explicit `FM_PI_HARNESS=pi` or `FM_PI_HARNESS=pi-signed` remains authoritative when stale Prime Agent markers are inherited.
 A Prime Agent marker without `PI_CODING_AGENT=true` is ignored, so it cannot relabel a Claude or unrelated process.
+`PRIME_AGENT_CODING_AGENT_DIR` is a session-wide inherited path, so the ambiguity with Claude runs both ways: a resident Prime Agent worker under a Claude supervisor carries `CLAUDECODE=1`, and a Claude pane opened by hand inside a Prime Agent session carries the Prime Agent markers.
+When `CLAUDECODE=1` is present the Prime Agent markers are therefore a precedence override rather than evidence, the same boundary `FM_OMP_HARNESS=omp` uses: the verdict is `prime-agent` only when a `prime-agent` process sits within eight parents, and otherwise falls through to `claude`.
+With `CLAUDECODE` absent the markers stand alone and no ancestry is required.
 The ancestry fallback matches the exact `prime-agent` process name.
 Prime Agent does not clear the markers it exports, so `../../../bin/fm-spawn.sh` clears `PRIME_AGENT_CODING_AGENT_DIR` and `PRIME_AGENT_INTERNAL_DAEMON_WORKER` at the launch boundary alongside the cursor and gemini markers: a worker launched from a multiplexer that stored a Prime Agent environment keeps its own identity.
 
