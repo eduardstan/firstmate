@@ -89,20 +89,24 @@ detect_own() {
     echo omp
     return
   fi
-  # prime-agent and Pi export the same PI_CODING_AGENT marker, so a Prime Agent
-  # marker is what splits the two. It is tested BEFORE the CLAUDECODE fast path
-  # and the unmarked Pi result below, for cursor's reason above: Prime Agent
-  # does not clear an inherited CLAUDECODE, so a resident Prime Agent worker
-  # under a claude supervisor carries both. Unlike cursor's and gemini's, this
-  # ambiguity runs BOTH ways: PRIME_AGENT_CODING_AGENT_DIR is a session-wide
-  # inherited path, so a claude pane opened by hand inside a Prime Agent
-  # session - or from a multiplexer server that stored that environment, the
-  # hazard the muse note below forbids ignoring - carries the same pair while
-  # being claude. When CLAUDECODE=1 is also present the markers are therefore
-  # a PRECEDENCE override rather than evidence, exactly as FM_OMP_HARNESS is
-  # for omp above: they win only when a real prime-agent process is in the
-  # ancestry. With CLAUDECODE absent no other harness claims the pane, so the
-  # markers stand alone. It sits BELOW gemini, rovo, and omp
+  # prime-agent and Pi export the same PI_CODING_AGENT marker, so only the
+  # Firstmate-OWNED launch marker FM_PI_HARNESS=prime-agent splits the two,
+  # exactly as FM_PI_HARNESS=pi-signed splits the signed wrapper below. Prime
+  # Agent's own PRIME_AGENT_CODING_AGENT_DIR and PRIME_AGENT_INTERNAL_DAEMON_WORKER
+  # are deliberately NOT read here: they are session-wide inherited values, so a
+  # claude pane opened by hand inside a Prime Agent session - or one started from
+  # a multiplexer server that stored that environment, the hazard the muse note
+  # below forbids ignoring - carries them while being claude, and an unmarked
+  # Prime Agent session is Pi-family either way. Ambient auto-detection of a
+  # Prime Agent primary lands with the launch and supervision slices.
+  # The marker is tested BEFORE the CLAUDECODE fast path and the unmarked Pi
+  # result below, for cursor's reason above: Prime Agent does not clear an
+  # inherited CLAUDECODE, so a resident Prime Agent worker under a claude
+  # supervisor carries both. Because the marker can itself leak into a claude
+  # pane of the same session, it is a PRECEDENCE override rather than evidence
+  # whenever CLAUDECODE=1 is present, exactly as FM_OMP_HARNESS is for omp
+  # above: it wins only when a real prime-agent process is in the ancestry.
+  # It sits BELOW gemini, rovo, and omp
   # deliberately: those harnesses do not scrub the environment they inherit
   # either, so a gemini/rovo/omp session started by hand inside a Prime Agent
   # session carries the Pi-family and PRIME_AGENT_* markers too, and their own
@@ -111,11 +115,7 @@ detect_own() {
   # inside any Pi-family session has always resolved to that family, and
   # reordering it is a separate change.
   if [ "${PI_CODING_AGENT:-}" = "true" ] \
-    && [ "${FM_PI_HARNESS:-}" != pi ] \
-    && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
-    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
-      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
-      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; } \
+    && [ "${FM_PI_HARNESS:-}" = prime-agent ] \
     && { [ "${CLAUDECODE:-}" != "1" ] || ancestry_names prime-agent; }; then
     echo prime-agent
     return
