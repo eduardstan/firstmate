@@ -269,6 +269,8 @@
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
 #                  written by this script; outside the worktree to avoid pi's trust gate)
+#     __PRIMEEXT__ absolute path to state/<task-id>.prime-ext.ts (prime-agent turn-end
+#                  extension, written by this script; outside the worktree like __PIEXT__)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OMPBIN__   quoted concrete omp executable path resolved from PATH
@@ -1520,6 +1522,22 @@ launch_template() {
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
+    # prime-agent (Prime Agent): a Pi fork, so the same single-positional brief
+    # and -e extension shape as pi, and the same one-positional rule - extra
+    # positionals become separate queued messages. It has no permission system
+    # and no project-trust store (verified: no trust file, and its extension API
+    # exposes no project_trust event, unlike pi 0.83.0), so no autonomy flag and
+    # no post-launch dialog keystroke are needed. `env -u CLAUDECODE -u GROK_AGENT`
+    # is the same foreign-marker clear muse needs; FM_PI_HARNESS must survive it,
+    # so the marker is prepended as an assignment outside this env call, and
+    # PI_CODING_AGENT is prime-agent's own export and is not cleared either.
+    # A prime-agent SECONDMATE needs the primary supervision extensions that land
+    # with the rest of secondmate support, so it has no template yet and aborts
+    # the spawn here rather than launching a secondmate that cannot be supervised.
+    prime-agent)
+      if [ "$kind" = secondmate ]; then return 1; fi
+      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
     # the launch boundary and documented in the header above: foreign markers
@@ -1716,6 +1734,9 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
 fi
 
 case "$HARNESS" in
+  prime-agent)
+    LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
+    ;;
   pi|pi-signed)
     PI_BIN=$(resolve_pi_executable "$HARNESS") || {
       echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
@@ -1902,7 +1923,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+    claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -1942,6 +1963,17 @@ effort_flag_for_harness() {
           "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$harness" "$model" "$effort" || return 1
           printf -- '--codex-effort %s ' "$(shell_quote ultra)"
           ;;
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    prime-agent)
+      # prime-agent 0.9.1 --thinking accepts off|minimal|low|medium|high|xhigh|max,
+      # so the whole shared vocabulary maps straight across; off and minimal sit
+      # below it and stay unreachable. The flag IS applied, but the EFFECTIVE
+      # level is then clamped to the selected model's supported set by the shared
+      # pi-ai clampThinkingLevel, which walks UP to the next supported level
+      # first - that is model capability, not a dropped flag.
+      case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
@@ -3441,6 +3473,23 @@ export const FmBusyState = async () => {
 EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
       ;;
+    prime-agent)
+      # prime-agent's crew wake is a turn-end NOTIFICATION only, deliberately
+      # with no busy-state wiring. Nothing is armed for the same reason muse and
+      # standalone Kimi are not: a seeded busy record needs a writer that can
+      # clear it. Written OUTSIDE the worktree like the Pi extension, so the
+      # project stays clean. Cleaned by teardown.
+      cat > "$STATE/$ID.prime-ext.ts" <<EOF
+// Firstmate crew turn-end notification for prime-agent; written by fm-spawn.
+// "turn_end" fires at every completed turn boundary and is a wake NOTIFICATION
+// for the watcher, never current-state truth. prime-agent exposes no
+// agent_settled event at all, so no settle-based state is derived here.
+import { execFile } from "node:child_process";
+export default function (pi: any) {
+  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+}
+EOF
+      ;;
     pi|pi-signed)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
       # loaded from inside the project (verified live), but an explicit -e path
@@ -3860,6 +3909,7 @@ fi
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
+sq_primeext=$(shell_quote "$STATE/$ID.prime-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
@@ -3881,6 +3931,7 @@ fi
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
