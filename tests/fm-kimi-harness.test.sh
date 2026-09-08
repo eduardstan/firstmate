@@ -553,14 +553,10 @@ SH
     -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
     PATH="$fakebin:$BASE_PATH" FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh")
   [ "$out" = kimi ] || fail "kimi ancestry detection returned '$out'"
-<<<<<<< HEAD
   # Kimi publishes no identity marker, so an inherited CLAUDECODE used to rename
   # it outright. A structural kimi ancestor now outranks that marker;
   # tests/fm-harness-precedence.test.sh owns the general boundary.
   out=$(env -u PI_CODING_AGENT -u FM_PI_HARNESS -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
-=======
-  out=$(env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
->>>>>>> 8db48a12 (no-mistakes(review): clear Prime Agent markers once in shared test lib)
     CLAUDECODE=1 PATH="$fakebin:$BASE_PATH" FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh")
   [ "$out" = kimi ] || fail "an inherited CLAUDECODE renamed markerless kimi, got '$out'"
   pass "fm-harness: markerless kimi keeps its ancestry identity under an inherited marker"

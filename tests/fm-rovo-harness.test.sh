@@ -388,7 +388,6 @@ SH
     PATH="$fakebin:$BASE_PATH" FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh")
   [ "$out" = rovo ] || fail "rovo's ROVODEV_CLI marker did not outrank an inherited CLAUDECODE, got '$out'"
 
-<<<<<<< HEAD
   # CLAUDECODE alone, with no rovo marker, is a marker-layer question, not an
   # ancestry one: blind the walk so the rovo-resolving fake ps above (needed
   # for the markerless-ancestry and marker+ancestry cases) cannot also decide
@@ -398,10 +397,6 @@ SH
   fm_fake_blind_ancestry "$blind_fakebin"
   out=$(env -u PI_CODING_AGENT -u FM_PI_HARNESS -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
     CLAUDECODE=1 PATH="$blind_fakebin:$BASE_PATH" FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh")
-=======
-  out=$(env -u CURSOR_AGENT -u CURSOR_INVOKED_AS \
-    CLAUDECODE=1 PATH="$fakebin:$BASE_PATH" FM_CONFIG_OVERRIDE="$cfg" "$ROOT/bin/fm-harness.sh")
->>>>>>> 8db48a12 (no-mistakes(review): clear Prime Agent markers once in shared test lib)
   [ "$out" = claude ] || fail "verified env-marker precedence changed, got '$out'"
   pass "fm-harness: rovo's markers outrank an inherited CLAUDECODE, and markerless ancestry still resolves rovo"
 }
