@@ -365,6 +365,71 @@ test_handoff_records_the_receiving_caller_start() {
   pass "the bounded-acquire handoff records the receiving caller start token before exiting"
 }
 
+# A /proc entry that exists but does not parse must stay a hard compute failure.
+# Falling through to the ps fallback would answer in the other identity format,
+# and a caller holding a recorded /proc-format identity reads that as a mismatch
+# and evicts a live holder, where a compute failure is conservative.
+test_unparseable_proc_entry_fails_instead_of_answering_in_ps_format() {
+  local dir proc_root no_proc pid rc out
+  dir=$(make_case proc-parse-hard-fail)
+  proc_root="$dir/proc"
+  no_proc="$dir/no-proc"
+  pid=$$
+  mkdir -p "$proc_root/$pid" "$no_proc"
+  printf 'not a stat line\n' > "$proc_root/$pid/stat"
+  printf 'bash\0' > "$proc_root/$pid/cmdline"
+
+  rc=0
+  out=$(FM_PROC_ROOT_OVERRIDE="$proc_root" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid" 2>/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an unparseable /proc entry still produced an identity: $out"
+  rc=0
+  out=$(FM_PROC_ROOT_OVERRIDE="$proc_root" bash -c '. "$1"; fm_pid_start_token "$2"' _ "$LIB" "$pid" 2>/dev/null) || rc=$?
+  [ "$rc" -ne 0 ] || fail "an unparseable /proc entry still produced a start token: $out"
+
+  # An ABSENT /proc entry is a different fact and must still fall back to ps.
+  out=$(FM_PROC_ROOT_OVERRIDE="$no_proc" bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$pid" 2>/dev/null) \
+    || fail "an absent /proc entry stopped falling back to the portable identity"
+  [ -n "$out" ] || fail "the portable identity fallback returned nothing"
+  pass "an unreadable /proc parse fails hard while an absent /proc still falls back"
+}
+
+# One transient start-token failure must not poison the process: a later lock
+# taken by the same process still records its start token, or that process spends
+# its whole life recording locks that only pid-only proof can defend.
+test_transient_start_token_failure_does_not_poison_later_locks() {
+  local dir state fakebin no_proc first second
+  dir=$(make_case start-token-transient)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  no_proc="$dir/no-proc"
+  first="$state/.first.lock"
+  second="$state/.second.lock"
+  mkdir -p "$fakebin" "$no_proc"
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+[ ! -e "\$FM_FAKE_PS_FAIL" ] || exit 1
+exec $(command -v ps) "\$@"
+SH
+  chmod +x "$fakebin/ps"
+  : > "$dir/ps.fail"
+
+  # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
+  PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" FM_FAKE_PS_FAIL="$dir/ps.fail" \
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_lock_try_acquire "$2" || exit 1
+      rm -f "$FM_FAKE_PS_FAIL"
+      fm_lock_try_acquire "$3" || exit 1
+    ' _ "$LIB" "$first" "$second" \
+    || fail "the transient-token fixture could not take its locks"
+
+  [ ! -s "$first/pid-start" ] \
+    || fail "the fixture recorded a start token while the token computation was failing"
+  [ -s "$second/pid-start" ] \
+    || fail "a transient start-token failure suppressed the token for every later lock"
+  pass "a transient start-token failure is not cached for the life of the process"
+}
+
 test_lock_stale_steal_single_winner_under_concurrency() {
   local dir state lockdir dead marker i pids pid wins
   dir=$(make_case lock-stale-concurrency)
@@ -1243,6 +1308,8 @@ test_lock_steals_dead_pid_lock
 test_lock_records_owner_start_and_refuses_that_holder
 test_lock_steals_reused_pid_lock
 test_handoff_records_the_receiving_caller_start
+test_unparseable_proc_entry_fails_instead_of_answering_in_ps_format
+test_transient_start_token_failure_does_not_poison_later_locks
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock

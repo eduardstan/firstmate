@@ -70,18 +70,23 @@ fm_pid_alive() {
 # (observed as WSL2 btime drift) and would evict a live watcher.
 # Git Bash/MSYS exposes these compatible files but its Cygwin ps rejects the
 # portable fallback's -o fields, so capability detection must not key on uname.
+# Exit 1 means this platform has no readable /proc entry for the pid, so a caller
+# may fall back to ps; exit 2 means /proc answered but could not be parsed, which
+# must stay a hard failure, because returning an identity in the ps format where
+# the /proc format was recorded reads as a mismatch rather than as a compute
+# failure, and mismatch evicts a live holder.
 _fm_proc_start_token() {  # <pid>; prints "<key>=<starttime-ticks>"
   local pid=$1 proc_root stat_line starttime identity_key
   local -a stat_fields
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ] || return 1
-  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 2
   # After the final comm delimiter, array index 19 is proc stat field 22.
   read -r -a stat_fields <<< "${stat_line##*)}"
-  [ "${#stat_fields[@]}" -ge 20 ] || return 1
+  [ "${#stat_fields[@]}" -ge 20 ] || return 2
   starttime=${stat_fields[19]}
   case "$starttime" in
-    ''|*[!0-9]*) return 1 ;;
+    ''|*[!0-9]*) return 2 ;;
   esac
   identity_key=proc-starttime
   [ "$_FM_UNAME" != Linux ] || identity_key=linux-starttime
@@ -96,14 +101,16 @@ _fm_proc_start_token() {  # <pid>; prints "<key>=<starttime-ticks>"
 # never mistaken for a recycled PID; fm_pid_identity below composes the same
 # start fact with that image for callers that must also pin the image.
 fm_pid_start_token() {  # <pid>
-  local pid=$1 out
+  local pid=$1 out rc=0
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  if out=$(_fm_proc_start_token "$pid"); then
+  out=$(_fm_proc_start_token "$pid") || rc=$?
+  if [ "$rc" -eq 0 ]; then
     printf '%s\n' "$out"
     return 0
   fi
+  [ "$rc" -eq 1 ] || return 1
   # Pin LC_ALL=C so lstart's date format is locale-invariant, for the same reason
   # fm_pid_identity does: the token is written under one locale and re-read under
   # the machine's ambient locale.
@@ -116,17 +123,19 @@ fm_pid_start_token() {  # <pid>
 # that must also detect a replaced image (the watcher lock, the auto-arm claim)
 # still gets a mismatch on a starttime tick collision.
 fm_pid_identity() {
-  local pid=$1 out proc_root start cmdline_hex
+  local pid=$1 out proc_root start cmdline_hex rc=0
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
-  if start=$(_fm_proc_start_token "$pid"); then
+  start=$(_fm_proc_start_token "$pid") || rc=$?
+  if [ "$rc" -eq 0 ]; then
     cmdline_hex=$(od -An -v -tx1 "$proc_root/$pid/cmdline" 2>/dev/null | tr -d '[:space:]') || return 1
     [ -n "$cmdline_hex" ] || return 1
     printf '%s cmdline-hex=%s\n' "$start" "$cmdline_hex"
     return 0
   fi
+  [ "$rc" -eq 1 ] || return 1
   # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
   # written under one locale but re-read under the machine's ambient locale, which
   # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
@@ -484,13 +493,21 @@ fm_lock_owner_dir() {
 FM_LOCK_SELF_START_PID=
 FM_LOCK_SELF_START=
 fm_lock_record_start() {  # <lockdir-or-ownerdir> <pid>
-  local dir=$1 pid=$2
-  if [ "$pid" != "$FM_LOCK_SELF_START_PID" ]; then
-    FM_LOCK_SELF_START_PID=$pid
-    FM_LOCK_SELF_START=$(fm_pid_start_token "$pid" 2>/dev/null || true)
+  local dir=$1 pid=$2 token=
+  if [ "$pid" = "$FM_LOCK_SELF_START_PID" ]; then
+    token=$FM_LOCK_SELF_START
   fi
-  [ -n "$FM_LOCK_SELF_START" ] || return 0
-  printf '%s\n' "$FM_LOCK_SELF_START" > "$dir/pid-start" 2>/dev/null || true
+  if [ -z "$token" ]; then
+    # Memoize only a successful computation: caching a transient failure would
+    # drop this process to pid-only proof for every lock it takes afterwards.
+    token=$(fm_pid_start_token "$pid" 2>/dev/null || true)
+    if [ -n "$token" ]; then
+      FM_LOCK_SELF_START_PID=$pid
+      FM_LOCK_SELF_START=$token
+    fi
+  fi
+  [ -n "$token" ] || return 0
+  printf '%s\n' "$token" > "$dir/pid-start" 2>/dev/null || true
 }
 
 # The reclaim predicate: an owner is GONE when its pid is dead, or when the live
@@ -1107,6 +1124,30 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
   fi
   fm_lock_record_start "$ownerdir" "$caller_pid"
   trap - TERM INT
+}
+
+# The bound every status-presentation-lock taker waits under, so the drain and
+# the teardown retire path cannot drift apart on the override or its default.
+fm_status_presentation_lock_timeout() {
+  local seconds=${FM_STATUS_PRESENTATION_LOCK_TIMEOUT:-10}
+  case "$seconds" in ''|*[!0-9]*|0) seconds=10 ;; esac
+  printf '%s\n' "$seconds"
+}
+
+# The one advisory a refused lock wait prints, wherever it is refused. The manual
+# clear it names covers the symlink AND its resolved owner directory - exactly
+# what fm_lock_remove_path removes - so an operator who runs it strands no
+# .owner.XXXXXX directory in the state directory. Callers own only their own
+# leading label.
+fm_lock_live_holder_advisory() {  # <lockdir> <holder-pid> <seconds>
+  local lockdir=$1 holder=$2 seconds=$3 ownerdir clear
+  clear="rm -rf $lockdir"
+  if [ -L "$lockdir" ]; then
+    ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
+    [ -z "$ownerdir" ] || clear="rm -rf $ownerdir $lockdir"
+  fi
+  printf 'lock remains held by live pid %s after %ss. If ps -p %s shows no firstmate process, clear it with %s.\n' \
+    "$holder" "$seconds" "$holder" "$clear"
 }
 
 # fm_lock_acquire_wait_bounded <lockdir> <positive-seconds>

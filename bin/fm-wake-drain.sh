@@ -38,8 +38,7 @@ ACK_REMOVED=0
 PRESENTED_MAX=0
 ACK_FINGERPRINTS=
 ACK_NOTICE_FINGERPRINTS=
-PRESENTATION_LOCK_TIMEOUT=${FM_STATUS_PRESENTATION_LOCK_TIMEOUT:-10}
-case "$PRESENTATION_LOCK_TIMEOUT" in ''|*[!0-9]*|0) PRESENTATION_LOCK_TIMEOUT=10 ;; esac
+PRESENTATION_LOCK_TIMEOUT=$(fm_status_presentation_lock_timeout)
 
 # --- per-actor consume (docs/watcher-continuity.md "Per-actor acknowledgement") --
 # main (FM_SUPERVISION_ACTOR unset or "main", via fm-lease-lib.sh's fm_lease_actor
@@ -586,8 +585,8 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     lock_rc=$?
     if [ "$lock_rc" -eq 124 ]; then
       holder_pid=${FM_LOCK_HELD_PID:-unknown}
-      printf 'STATUS PRESENTATION SKIPPED: lock remains held by live pid %s after %ss; retry on the next drain. If ps -p %s shows no firstmate process, clear it with rm -f %s.\n' \
-        "$holder_pid" "$PRESENTATION_LOCK_TIMEOUT" "$holder_pid" "$lock"
+      printf 'STATUS PRESENTATION SKIPPED: %s Retry on the next drain.\n' \
+        "$(fm_lock_live_holder_advisory "$lock" "$holder_pid" "$PRESENTATION_LOCK_TIMEOUT")"
     else
       printf 'wake drain: status presentation lock could not be acquired safely\n' >&2
     fi

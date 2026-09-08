@@ -14,6 +14,9 @@ set -u
 
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
+
 TMP_ROOT=$(fm_test_tmproot fm-wake-drain-unread-status-tests)
 
 # Establish the durable last-presentation cursor by draining once over a
@@ -23,6 +26,64 @@ prime_cursor() {  # <state> <status-file>
   printf 'note: bootstrap cursor line\n' > "$status"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>/dev/null \
     || fail "bootstrap drain failed while priming the unread cursor"
+}
+
+# Retiring a task takes the same status-presentation lock the drain takes, so a
+# holder that cannot be proven gone must produce the same loud refusal instead of
+# hanging a teardown forever. Callers treat the refusal as a hard error.
+test_retire_refuses_a_live_presentation_holder() {
+  local dir state lock holder out err rc i owner
+  dir=$(make_case retire-live-presentation-holder)
+  state="$dir/state"
+  lock="$state/.status-presentation-lock"
+  out="$dir/retire.out"
+  err="$dir/retire.err"
+  printf 'note: retire contention fixture\n' > "$state/held.status"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+    printf "ready\n" > "$3"
+    exec sleep 30
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$dir/holder.ready" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$dir/holder.ready" ] || { kill "$holder" 2>/dev/null || true; fail "presentation holder never acquired its lock"; }
+  owner=$(readlink "$lock" 2>/dev/null || true)
+
+  rc=0
+  # Bounded on purpose: an unbounded retire spins on the held lock forever, and
+  # this case must FAIL in seconds rather than hang the suite.
+  # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
+  fm_run_timed 20 env "FM_STATE_OVERRIDE=$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-classify-lib.sh"
+    status_retire_presentation_task "$STATE" held
+  ' _ "$ROOT" > "$out" 2> "$err" || rc=$?
+  [ "$rc" -ne 124 ] \
+    || { kill "$holder" 2>/dev/null || true; fail "retire never returned while the presentation lock was held"; }
+  [ "$rc" -ne 0 ] \
+    || { kill "$holder" 2>/dev/null || true; fail "retire reported success without holding the presentation lock"; }
+  grep -F "STATUS PRESENTATION RETIRE SKIPPED: lock remains held by live pid $holder" "$err" >/dev/null \
+    || { kill "$holder" 2>/dev/null || true; fail "the refused retire did not name the live holder: $(cat "$err")"; }
+  grep -F "clear it with rm -rf $owner $lock." "$err" >/dev/null \
+    || { kill "$holder" 2>/dev/null || true; fail "the refused retire did not name the manual clear: $(cat "$err")"; }
+  [ -f "$state/held.status" ] \
+    || { kill "$holder" 2>/dev/null || true; fail "a refused retire removed status state anyway"; }
+
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-classify-lib.sh"
+    status_retire_presentation_task "$STATE" held
+  ' _ "$ROOT" || fail "retire failed once the presentation lock was free"
+  [ ! -e "$state/held.status" ] || fail "an uncontended retire left the status file behind"
+  pass "a retire refuses a live presentation holder loudly instead of hanging"
 }
 
 test_incident_note_answer_buried_under_routine_note_surfaces_both() {
@@ -387,3 +448,4 @@ test_snapshot_failure_is_visible
 test_open_decisions_fold_is_unchanged
 test_empty_queue_does_not_swallow_later_signal_annotation
 test_routine_working_and_covered_done_stay_silent_on_the_empty_queue
+test_retire_refuses_a_live_presentation_holder

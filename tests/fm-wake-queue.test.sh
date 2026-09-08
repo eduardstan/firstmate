@@ -1692,7 +1692,7 @@ SH
 # mutation lock keeps its blocking all-or-nothing acknowledgement contract.
 test_live_presentation_holder_is_deadlined_without_weakening_ack() {
   local dir state status queue_out queue_err first_out first_err second_out second_err replay_out replay_err
-  local queue_holder presentation_holder ack_holder i start elapsed rc advisory_count
+  local queue_holder presentation_holder ack_holder i start elapsed rc advisory_count presentation_owner
   dir=$(make_case presentation-lock-deadline)
   state="$dir/state"
   status="$state/task.status"
@@ -1776,8 +1776,11 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
     "$first_out" || true)
   [ "$advisory_count" -eq 1 ] \
     || { kill "$presentation_holder" 2>/dev/null || true; fail "presentation deadline did not emit exactly one holder advisory"; }
+  presentation_owner=$(readlink "$state/.status-presentation-lock" 2>/dev/null || true)
+  [ -n "$presentation_owner" ] \
+    || { kill "$presentation_holder" 2>/dev/null || true; fail "the held presentation lock resolved to no owner directory"; }
   grep -F \
-    "If ps -p $presentation_holder shows no firstmate process, clear it with rm -f $state/.status-presentation-lock." \
+    "If ps -p $presentation_holder shows no firstmate process, clear it with rm -rf $presentation_owner $state/.status-presentation-lock." \
     "$first_out" >/dev/null \
     || { kill "$presentation_holder" 2>/dev/null || true; fail "the holder advisory did not name the manual clear command"; }
   if grep -v '^WAKE_ACK_REQUIRED:' "$first_err" | grep . >/dev/null; then
@@ -1835,6 +1838,55 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
     || fail "the intact wake could not be acknowledged after contention cleared"
   [ ! -s "$state/.wake-queue" ] || fail "acknowledged presentation fixture remained queued"
   pass "presentation lock waits are bounded and retriable without weakening acknowledgement atomicity"
+}
+
+# An owner directory written before start tokens were recorded keeps the weaker
+# pid-only proof, so a stranded one whose pid the operating system recycled still
+# needs the operator's manual clear. That printed command is the whole remedy, so
+# running exactly what it prints must leave nothing behind: no lock symlink and
+# no orphan owner directory in state/.
+test_printed_manual_clear_unwedges_and_strands_nothing() {
+  local dir state status lock owner impostor out err clear_cmd leftovers
+  dir=$(make_case presentation-lock-manual-clear)
+  state="$dir/state"
+  status="$state/task.status"
+  lock="$state/.status-presentation-lock"
+  owner="$lock.owner.legacy"
+  out="$dir/drain.out"
+  err="$dir/drain.err"
+
+  printf 'needs-decision [key=fixture]: manual clear must strand nothing\n' > "$status"
+  append_wake "$state" signal task.status "signal: $status" \
+    || fail "could not seed the manual-clear wake"
+
+  sleep 300 &
+  impostor=$!
+  mkdir "$owner" || { kill "$impostor" 2>/dev/null || true; fail "could not stage the legacy owner directory"; }
+  printf '%s\n' "$impostor" > "$owner/pid"
+  ln -s "$owner" "$lock" || { kill "$impostor" 2>/dev/null || true; fail "could not strand the presentation lock"; }
+
+  FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 \
+    "$DRAIN" > "$out" 2> "$err"
+  grep -F "STATUS PRESENTATION SKIPPED: lock remains held by live pid $impostor" "$out" >/dev/null \
+    || { kill "$impostor" 2>/dev/null || true; fail "a legacy stranded lock produced no holder advisory"; }
+  clear_cmd=$(sed -n 's/^.*clear it with //p' "$out" | head -1)
+  clear_cmd=${clear_cmd%%. *}
+  clear_cmd=${clear_cmd%.}
+  kill "$impostor" 2>/dev/null || true
+  wait "$impostor" 2>/dev/null || true
+  [ -n "$clear_cmd" ] || fail "the advisory printed no manual clear command"
+
+  bash -c "$clear_cmd" || fail "the printed manual clear command failed: $clear_cmd"
+  { [ ! -e "$lock" ] && [ ! -L "$lock" ]; } \
+    || fail "the printed manual clear left the lock in place"
+  leftovers=$(find "$state" -maxdepth 1 -name '.status-presentation-lock.owner.*' 2>/dev/null)
+  [ -z "$leftovers" ] || fail "the printed manual clear stranded an owner directory: $leftovers"
+
+  FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=2 \
+    "$DRAIN" > "$dir/after.out" 2> "$dir/after.err"
+  grep -F 'task.status: needs-decision [key=fixture]' "$dir/after.out" >/dev/null \
+    || fail "the drain still could not present after the printed manual clear"
+  pass "the printed manual clear unwedges the drain and strands no owner directory"
 }
 
 # The reported wedge (upstream #3966): the presentation lock's recorded owner is
@@ -1997,3 +2049,4 @@ test_branch_stale_ack_that_consumes_nothing_names_its_granted_wake
 test_recovery_ack_failure_is_reported
 test_interruption_before_and_after_raw_commit
 test_recycled_pid_presentation_lock_does_not_wedge_the_drain
+test_printed_manual_clear_unwedges_and_strands_nothing
