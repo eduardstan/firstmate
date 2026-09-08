@@ -4,7 +4,8 @@
 # Lock ownership contract: an owner directory records its pid AND that process's
 # start token (fm_lock_record_start), and the stale-owner steal treats an owner
 # as gone when the pid is dead or when the live pid's recomputed start token
-# DIFFERS from the recorded one, in either direction (fm_lock_owner_gone).
+# DIFFERS from the recorded one, in either direction, and only when both tokens
+# were computed in the same format (fm_lock_owner_gone).
 # Recording only the pid leaves a lock
 # permanently unreclaimable once the operating system recycles the owner's pid
 # onto an unrelated process, because kill -0 then succeeds forever. The recorded
@@ -82,7 +83,7 @@ _fm_proc_start_token() {  # <pid>; prints "<key>=<starttime-ticks>"
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ] || return 1
   stat_line=
-  read -r stat_line < "$proc_root/$pid/stat" 2>/dev/null || [ -n "$stat_line" ] || return 2
+  { read -r stat_line < "$proc_root/$pid/stat"; } 2>/dev/null || [ -n "$stat_line" ] || return 2
   # After the final comm delimiter, array index 19 is proc stat field 22.
   read -r -a stat_fields <<< "${stat_line##*)}"
   [ "${#stat_fields[@]}" -ge 20 ] || return 2
@@ -118,7 +119,7 @@ fm_pid_start_token() {  # <pid>
   # the machine's ambient locale.
   out=$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
-  printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
+  printf '%s\n' "${out#"${out%%[![:space:]]*}"}"
 }
 
 # The full identity: the start token above plus the process image, so a caller
@@ -143,7 +144,7 @@ fm_pid_identity() {
   # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
   out=$(LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
-  printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
+  printf '%s\n' "${out#"${out%%[![:space:]]*}"}"
 }
 
 fm_path_mtime() {
@@ -509,7 +510,7 @@ fm_lock_record_start() {  # <lockdir-or-ownerdir> <pid>
     fi
   fi
   [ -n "$token" ] || return 0
-  printf '%s\n' "$token" > "$dir/pid-start" 2>/dev/null || true
+  { printf '%s\n' "$token" > "$dir/pid-start"; } 2>/dev/null || true
 }
 
 # The reclaim predicate: an owner is GONE when its pid is dead, or when the start
@@ -517,17 +518,25 @@ fm_lock_record_start() {  # <lockdir-or-ownerdir> <pid>
 # comparison is equality, not ordering: any difference evicts, in either
 # direction. Pid reuse is the difference this exists to catch, but on the ps
 # lstart fallback a re-rendered date for an unchanged live holder would read as a
-# difference too, so nothing here may be relied on as an ordering guarantee. An
-# owner with no recorded start token, or whose token cannot be recomputed, is
-# treated as present - absent evidence never evicts a possibly live holder.
+# difference too, so nothing here may be relied on as an ordering guarantee.
+# Two tokens are comparable only in the same format: a token recorded through
+# /proc and recomputed through the ps fallback (or the reverse, when /proc stops
+# being readable for that pid) differs for a reason that says nothing about
+# reuse, so a format change reads as PRESENT. An owner with no recorded start
+# token, or whose token cannot be recomputed, is treated as present too - absent
+# or incomparable evidence never evicts a possibly live holder, because a false
+# present only costs a wait while a false gone steals a live holder's lock.
 # The reads stay fork-free: this runs on every 0.1s poll of fm_lock_acquire_wait.
 fm_lock_owner_gone() {  # <lockdir> <pid>
-  local lockdir=$1 pid=$2 recorded='' current
+  local lockdir=$1 pid=$2 recorded='' current recorded_key='' current_key=''
   fm_pid_alive "$pid" || return 0
-  read -r recorded < "$lockdir/pid-start" 2>/dev/null || true
+  { read -r recorded < "$lockdir/pid-start"; } 2>/dev/null || true
   [ -n "$recorded" ] || return 1
   current=$(fm_pid_start_token "$pid" 2>/dev/null) || return 1
   [ -n "$current" ] || return 1
+  case "$recorded" in *-starttime=*) recorded_key=${recorded%%=*} ;; esac
+  case "$current" in *-starttime=*) current_key=${current%%=*} ;; esac
+  [ "$recorded_key" = "$current_key" ] || return 1
   [ "$current" != "$recorded" ]
 }
 

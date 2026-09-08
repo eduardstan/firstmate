@@ -71,6 +71,7 @@ The presentation advisory also names the manual clear, because an operator who c
 That clear names the lock symlink and its resolved owner directory, so following it strands nothing in the state directory.
 The teardown retire path takes the same lock under the same bound and prints the same advisory before failing, so a retire refuses loudly instead of hanging.
 A holder counts as live only while the recorded owner's process start time still matches its recorded PID: every lock owner records that start token beside its PID, and an owner whose PID the operating system recycled onto an unrelated process is reclaimed rather than trusted, so a gone owner can never wedge every later drain behind its deadline.
+The two tokens are compared only when they were computed in the same format, so a token recorded through one source and recomputed through the other reads as a live holder rather than as reuse.
 An owner directory written by an older build records no start token and keeps the weaker PID-only liveness proof, which is exactly the behavior it had before.
 `bin/fm-wake-lib.sh`'s header owns that lock-ownership contract, including why the recorded fact is the start token rather than the full process identity the watcher lock records.
 Acknowledgement invocations and every other mutation-critical queue-lock acquire retain blocking semantics, so acknowledgement atomicity is unchanged.

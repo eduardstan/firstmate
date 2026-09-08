@@ -1935,7 +1935,8 @@ test_recycled_pid_presentation_lock_does_not_wedge_the_drain() {
   impostor=$!
   mkdir "$owner" || { kill "$impostor" 2>/dev/null || true; fail "could not stage the stranded owner directory"; }
   printf '%s\n' "$impostor" > "$owner/pid"
-  printf 'gone-owner-start-token\n' > "$owner/pid-start"
+  foreign_start_token "$impostor" > "$owner/pid-start" \
+    || { kill "$impostor" 2>/dev/null || true; fail "could not stage a comparable gone-owner token"; }
   ln -s "$owner" "$lock" || { kill "$impostor" 2>/dev/null || true; fail "could not strand the presentation lock"; }
 
   start=$(date +%s)
