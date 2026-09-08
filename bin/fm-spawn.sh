@@ -1662,6 +1662,10 @@ fi
 
 case "$HARNESS" in
   prime-agent)
+    command -v prime-agent >/dev/null 2>&1 || {
+      echo "error: prime-agent executable not found on PATH; install Prime Agent or select a different verified harness" >&2
+      exit 1
+    }
     LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
     ;;
   pi|pi-signed)

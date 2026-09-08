@@ -49,6 +49,7 @@ SH
   chmod +x "$fakebin/timeout" "$fakebin/cursor-agent"
   make_spawn_pi_probe "$fakebin" pi
   make_spawn_pi_probe "$fakebin" pi-signed
+  fm_fake_exit0 "$fakebin" prime-agent
   printf '%s\n' "$fakebin"
 }
 
@@ -161,6 +162,29 @@ test_prime_agent_launch_establishes_its_harness_marker() {
   [ -s "$HOME_DIR/state/$id.prime-ext.ts" ] \
     || fail "prime-agent spawn did not write its turn-end extension"
   pass "a prime-agent launch establishes the harness marker its own detection needs"
+}
+
+test_prime_agent_missing_binary_refuses_before_endpoint_or_metadata() {
+  local rec id out status
+  id=profile-prime-agent-missing-z1e
+  rec=$(make_spawn_case profile-prime-agent-missing prime-agent "$id")
+  read_case_record "$rec"
+  rm -f "$FAKEBIN_DIR/prime-agent"
+  : > "$LAUNCH_LOG"
+
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
+    FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKEBIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "a missing prime-agent executable should refuse the spawn"
+  assert_contains "$out" "prime-agent executable not found on PATH" \
+    "missing prime-agent refusal did not name the actionable requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" "missing prime-agent refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing prime-agent refusal typed a launch command"
+  pass "prime-agent refuses safely and actionably when the selected executable is unavailable"
 }
 
 # A prime-agent secondmate has no primary supervision protocol yet, so the spawn
@@ -1209,6 +1233,7 @@ test_pi_threads_model_and_max_effort
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
+test_prime_agent_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
 test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
