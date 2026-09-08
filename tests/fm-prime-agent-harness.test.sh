@@ -107,15 +107,17 @@ test_detection_splits_the_pi_family() {
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed PRIME_AGENT_INTERNAL_DAEMON_WORKER=1)
   [ "$out" = pi-signed ] || fail "explicit Pi-signed detection was relabelled '$out'"
 
-  # With CLAUDECODE also present the markers are ambiguous in both directions,
-  # so the ancestry decides. A resident Prime Agent worker inherits CLAUDECODE
-  # from its supervisor and has prime-agent in its chain; a claude pane opened
-  # by hand inside a Prime Agent session inherits the same markers and does not.
+  # With CLAUDECODE also present the marker is ambiguous in both directions, so
+  # the ancestry decides. A resident Prime Agent worker inherits CLAUDECODE from
+  # its supervisor and has prime-agent in its chain; a claude pane opened by hand
+  # inside a Prime Agent session inherits the same marker and does not. The
+  # decoy ancestor is named prime-agent-helper, so the anchored match is what
+  # keeps that pane claude rather than a prefix match on the chain.
   psbin=$(make_ps_ancestor "$TMP_ROOT/prime-worker" prime-agent)
   out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent CLAUDECODE=1)
   [ "$out" = prime-agent ] || fail "Prime Agent detection lost to inherited Claude marker"
 
-  psbin=$(make_ps_ancestor "$TMP_ROOT/claude-pane" login-shell)
+  psbin=$(make_ps_ancestor "$TMP_ROOT/claude-pane" prime-agent-helper)
   out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent CLAUDECODE=1)
   [ "$out" = claude ] || fail "a leaked Prime Agent launch marker relabelled a claude pane '$out'"
 
@@ -154,31 +156,28 @@ test_cursor_gemini_and_rovo_outrank_the_prime_agent_split() {
   pass "fm-harness: the cursor, gemini, and rovo markers outrank inherited Prime Agent markers"
 }
 
-# The marker layer is a fast path only: a Prime Agent hook or helper process can
-# carry no PI_CODING_AGENT at all, which is what the ancestry arm is for. It is
-# anchored, so a longer name that merely starts with prime-agent never claims
-# the identity.
-test_ancestry_identifies_prime_agent_without_markers() {
+# The launch marker is the only evidence. A real prime-agent ancestor carrying
+# no marker resolves exactly as it did before the adapter was registered, and
+# the ancestry walk is consulted only to corroborate the marker under an
+# inherited CLAUDECODE.
+test_ancestry_alone_does_not_select_prime_agent() {
   local bin out
   bin=$(make_named_shells "$TMP_ROOT/named")
 
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$(scrubbed PATH="$bin:$BASE_PATH" "$bin/prime-agent" -c '"$1"; :' _ "$HARNESS")
-  [ "$out" = prime-agent ] || fail "a markerless process named prime-agent detected '$out'"
+  out=$(scrubbed PI_CODING_AGENT=true PATH="$bin:$BASE_PATH" \
+    "$bin/prime-agent" -c '"$1"; :' _ "$HARNESS")
+  [ "$out" = pi ] || fail "a markerless prime-agent ancestor detected '$out', not pi"
 
-  # The decoy runs against a fabricated chain rather than a real one: a real
-  # outer ancestor cannot be isolated from an ambient Prime Agent session, and
-  # backgrounding the decoy to escape it reparents the child away before the
-  # walk ever sees the name under test. The same chain carrying the exact name
-  # is asserted too, so the decoy verdict cannot come from a chain the walk
-  # never reached.
-  local psbin
-  psbin=$(make_ps_ancestor "$TMP_ROOT/decoy-helper" prime-agent-helper)
-  out=$(detect PATH="$psbin:$BASE_PATH")
-  [ "$out" != prime-agent ] || fail "prime-agent-helper merely starts with prime-agent and must not detect as prime-agent"
-  psbin=$(make_ps_ancestor "$TMP_ROOT/decoy-anchor" prime-agent)
-  out=$(detect PATH="$psbin:$BASE_PATH")
-  [ "$out" = prime-agent ] || fail "the fabricated prime-agent ancestor detected '$out', so the decoy above proves nothing"
+  # shellcheck disable=SC2016 # the quoted body expands inside the named shell
+  out=$(scrubbed CLAUDECODE=1 PATH="$bin:$BASE_PATH" \
+    "$bin/prime-agent" -c '"$1"; :' _ "$HARNESS")
+  [ "$out" = claude ] || fail "a claude pane under a prime-agent ancestor detected '$out', not claude"
+
+  # shellcheck disable=SC2016 # the quoted body expands inside the named shell
+  out=$(scrubbed PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent PATH="$bin:$BASE_PATH" \
+    "$bin/prime-agent" -c '"$1"; :' _ "$HARNESS")
+  [ "$out" = prime-agent ] || fail "the launch marker under a prime-agent ancestor detected '$out'"
 
   # omp needs a real omp ancestor for its own marker, so the precedence check
   # that env markers alone cannot make belongs here.
@@ -187,9 +186,9 @@ test_ancestry_identifies_prime_agent_without_markers() {
     PATH="$bin:$BASE_PATH" "$bin/omp" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = omp ] || fail "an omp session started inside a Prime Agent session detected '$out', not omp"
 
-  pass "fm-harness: prime-agent is identified by anchored ancestry when no marker survives"
+  pass "fm-harness: a prime-agent ancestor alone never claims the identity; the launch marker does"
 }
 
 test_detection_splits_the_pi_family
 test_cursor_gemini_and_rovo_outrank_the_prime_agent_split
-test_ancestry_identifies_prime_agent_without_markers
+test_ancestry_alone_does_not_select_prime_agent
