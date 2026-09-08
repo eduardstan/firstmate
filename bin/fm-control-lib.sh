@@ -74,14 +74,16 @@ fm_control_harness_supported() {  # <harness>
 # harness= that way), which is why the spawn adapters match `claude*`, `muse*`,
 # and friends. This is the one place that prefix rule is stated. `pi` and
 # `pi-signed` are exact because a `pi*` prefix would swallow the signed adapter,
-# `omp` is exact because an `omp*` prefix would claim unrelated commands, and an
-# unrecognized value returns nonzero rather than being guessed into a family.
+# `omp` is exact because an `omp*` prefix would claim unrelated commands,
+# `prime-agent` is exact because a `prime-agent*` prefix would claim the Prime
+# Agent helper binary whose mechanics were never verified, and an unrecognized
+# value returns nonzero rather than being guessed into a family.
 fm_control_harness_family() {  # <recorded-harness>
   case "${1-}" in
     pi) printf 'pi' ;;
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
-    prime-agent*) printf 'prime-agent' ;;
+    prime-agent) printf 'prime-agent' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
