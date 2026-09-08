@@ -1089,14 +1089,18 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
   fi
   fm_current_pid current || { fm_lock_release "$lockdir"; return 1; }
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
-  # Drop this helper's identity BEFORE the pid changes hands: an owner record
-  # naming the caller's pid beside the helper's identity would read as a reused
-  # pid and be stolen out from under the caller it was just handed to. The
-  # identityless window is safe because the caller pid is verified live above,
-  # and the caller records its own identity once it observes the transfer.
+  if [ "$back" != "$current" ]; then
+    fm_lock_release "$lockdir"
+    return 1
+  fi
+  # Only once this helper is proven to be the recorded owner: drop its own start
+  # token BEFORE the pid changes hands, because an owner record naming the
+  # caller's pid beside the helper's token would read as a reused pid and be
+  # stolen out from under the caller it was just handed to. The tokenless window
+  # is safe because the caller pid is verified live above, and the caller records
+  # its own token once it observes the transfer.
   rm -f "$ownerdir/pid-start" 2>/dev/null || true
-  if [ "$back" != "$current" ] \
-    || ! printf '%s\n' "$caller_pid" > "$ownerdir/pid" 2>/dev/null \
+  if ! printf '%s\n' "$caller_pid" > "$ownerdir/pid" 2>/dev/null \
     || [ "$(cat "$ownerdir/pid" 2>/dev/null || true)" != "$caller_pid" ]; then
     fm_lock_release "$lockdir"
     return 1

@@ -1776,6 +1776,10 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
     "$first_out" || true)
   [ "$advisory_count" -eq 1 ] \
     || { kill "$presentation_holder" 2>/dev/null || true; fail "presentation deadline did not emit exactly one holder advisory"; }
+  grep -F \
+    "If ps -p $presentation_holder shows no firstmate process, clear it with rm -f $state/.status-presentation-lock." \
+    "$first_out" >/dev/null \
+    || { kill "$presentation_holder" 2>/dev/null || true; fail "the holder advisory did not name the manual clear command"; }
   if grep -v '^WAKE_ACK_REQUIRED:' "$first_err" | grep . >/dev/null; then
     kill "$presentation_holder" 2>/dev/null || true
     fail "presentation deadline leaked helper-process diagnostics"
@@ -1875,47 +1879,6 @@ test_recycled_pid_presentation_lock_does_not_wedge_the_drain() {
   grep -F 'WAKE_ACK_REQUIRED:' "$err" >/dev/null \
     || fail "the drain did not print its acknowledgement command"
   pass "a presentation lock whose owner pid was recycled is reclaimed instead of wedging the drain"
-}
-
-# The advisory a genuinely live holder produces must name the holder pid and the
-# manual clear, so an operator is never left guessing which process to inspect.
-test_live_presentation_holder_advisory_names_the_manual_clear() {
-  local dir state status lock holder out err i
-  dir=$(make_case presentation-lock-advisory)
-  state="$dir/state"
-  status="$state/task.status"
-  lock="$state/.status-presentation-lock"
-  out="$dir/drain.out"
-  err="$dir/drain.err"
-
-  printf 'needs-decision [key=fixture]: live holder advisory\n' > "$status"
-  append_wake "$state" signal task.status "signal: $status" \
-    || fail "could not seed the advisory wake"
-
-  FM_STATE_OVERRIDE="$state" bash -c '
-    . "$1"
-    fm_lock_acquire_wait "$2"
-    printf "ready\n" > "$3"
-    exec sleep 30
-  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$dir/holder.ready" &
-  holder=$!
-  i=0
-  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.ready" ]; do
-    sleep 0.05
-    i=$((i + 1))
-  done
-  [ -s "$dir/holder.ready" ] || { kill "$holder" 2>/dev/null || true; fail "presentation holder never acquired its lock"; }
-
-  FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=1 \
-    "$DRAIN" > "$out" 2> "$err"
-  kill "$holder" 2>/dev/null || true
-  wait "$holder" 2>/dev/null || true
-
-  grep -F "STATUS PRESENTATION SKIPPED: lock remains held by live pid $holder" "$out" >/dev/null \
-    || fail "the advisory did not name the live holder pid"
-  grep -F "If ps -p $holder shows no firstmate process, clear it with rm -f $lock." "$out" >/dev/null \
-    || fail "the advisory did not name the manual clear command"
-  pass "a live presentation holder is reported with its pid and the manual clear"
 }
 
 test_malformed_presentation_lock_reports_acquire_failure() {
@@ -2034,4 +1997,3 @@ test_branch_stale_ack_that_consumes_nothing_names_its_granted_wake
 test_recovery_ack_failure_is_reported
 test_interruption_before_and_after_raw_commit
 test_recycled_pid_presentation_lock_does_not_wedge_the_drain
-test_live_presentation_holder_advisory_names_the_manual_clear
