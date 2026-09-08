@@ -200,6 +200,8 @@ test_prime_agent_control_table() {
   [ "$(fm_control_harness_family prime-agent)" = prime-agent ] || fail "prime-agent harness family lookup failed"
   [ "$(fm_control_interrupt_key prime-agent)" = Escape ] || fail "prime-agent interrupt key is not Escape"
   [ "$(fm_control_interrupt_repeat prime-agent)" = 1 ] || fail "prime-agent interrupt repeat is not 1"
+  fm_control_interrupt_clear_key prime-agent >/dev/null \
+    || fail "prime-agent has no verified interrupt clear-key entry"
   [ -z "$(fm_control_interrupt_clear_key prime-agent)" ] || fail "prime-agent should need no interrupt clear key"
   [ "$(fm_control_interrupt_ack_source prime-agent)" = none ] || fail "prime-agent interrupt ack source is not none"
   [ "$(fm_control_exit_command prime-agent)" = /quit ] || fail "prime-agent exit command is not /quit"
