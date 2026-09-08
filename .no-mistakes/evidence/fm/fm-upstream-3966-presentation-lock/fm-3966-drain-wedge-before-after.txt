@@ -1,0 +1,85 @@
+==============================================================================
+upstream firstmate #3966 - status-presentation lock: a dead owner is not
+reclaimed, so every wake drain blocks until its timeout
+BEFORE = base 891dc51    AFTER = branch head bbd4dcd
+host: Linux 7.0.0-31-generic   date: 2026-09-08T06:18:20Z
+==============================================================================
+
+########## SCENARIO 1 - the reported wedge #########################
+# The presentation lock's recorded owner is gone, but the OS recycled its pid
+# onto an unrelated live process, so kill -0 answers forever.
+
+### [BEFORE-891dc51] checkout: /tmp/fm-3966-base
+### staged owner dir: pid pid-start   (recorded pid 1856275 is a LIVE unrelated process)
+### drain exit=0  wall=12s
+--- stdout ---
+1788848300	1	signal	task.status	signal: /tmp/fm-3966-run2/BEFORE-891dc51/state/task.status
+STATUS PRESENTATION SKIPPED: lock remains held by live pid 1856275 after 10s; retry on the next drain.
+--- stderr ---
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1856175.1788848301.nICRXQ
+
+### [AFTER-bbd4dcd] checkout: <worktree>
+### staged owner dir: pid pid-start   (recorded pid 1862134 is a LIVE unrelated process)
+### drain exit=0  wall=5s
+--- stdout ---
+1788848313	1	signal	task.status	signal: /tmp/fm-3966-run2/AFTER-bbd4dcd/state/task.status
+wake annotation: latest wake-EVENT observed at drain, not current state: task.status: needs-decision [key=fixture]: recycled owner must not wedge the drain
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+task [key=fixture] needs-decision: recycled owner must not wedge the drain
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+--- stderr ---
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1862020.1788848314.O0Ej3i
+
+########## SCENARIO 2 - the retire path (bin/fm-classify-lib.sh) ###########
+# status_retire_presentation_task takes the same lock through the previously
+# UNBOUNDED fm_lock_acquire_wait. Same stranded recycled-pid owner.
+
+### [BEFORE-891dc51] retire against a stranded lock whose owner pid 1864715 was recycled
+### retire NEVER RETURNED (killed by a 45s external timeout) - unbounded spin
+### held.status still present after retire? YES-not-retired
+--- stderr ---
+
+### [AFTER-bbd4dcd] retire against a stranded lock whose owner pid 1881831 was recycled
+### retire exit=0 wall=1s
+### held.status still present after retire? no-retired
+--- stderr ---
+
+########## SCENARIO 3 - an owner directory from an OLDER build #############
+# pid only, no start token: unprovable, so the operator gets a paste-ready
+# manual clear instead of a silent forever-wedge.
+
+### [BEFORE-891dc51] legacy stranded lock, owner pid 1882667 recycled onto a live process
+--- drain stdout ---
+1788848366	1	signal	task.status	signal: /tmp/fm-3966-run2/BEFORE-891dc51-manual-clear/state/task.status
+STATUS PRESENTATION SKIPPED: lock remains held by live pid 1882667 after 1s; retry on the next drain.
+### advisory printed NO manual clear command
+
+### [AFTER-bbd4dcd] legacy stranded lock, owner pid 1883938 recycled onto a live process
+--- drain stdout ---
+1788848369	1	signal	task.status	signal: /tmp/fm-3966-run2/AFTER-bbd4dcd-manual-clear/state/task.status
+STATUS PRESENTATION SKIPPED: lock remains held by live pid 1883938 after 1s. If ps -p 1883938 shows no firstmate process, clear it with rm -rf /tmp/fm-3966-run2/AFTER-bbd4dcd-manual-clear/state/.status-presentation-lock.owner.legacy /tmp/fm-3966-run2/AFTER-bbd4dcd-manual-clear/state/.status-presentation-lock. Retry on the next drain.
+### operator pastes exactly what the advisory printed:
+$ rm -rf /tmp/fm-3966-run2/AFTER-bbd4dcd-manual-clear/state/.status-presentation-lock.owner.legacy /tmp/fm-3966-run2/AFTER-bbd4dcd-manual-clear/state/.status-presentation-lock
+### exit=0
+### lock symlink left behind? no
+### owner directory stranded in state/? none
+### re-drain after the printed clear:
+1788848369	1	signal	task.status	signal: /tmp/fm-3966-run2/AFTER-bbd4dcd-manual-clear/state/task.status
+wake annotation: latest wake-EVENT observed at drain, not current state: task.status: needs-decision [key=fixture]: manual clear must strand nothing
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+task [key=fixture] needs-decision: manual clear must strand nothing
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+########## SCENARIO 4 - a GENUINELY live presentation holder ###############
+# The retire must not steal a live holder's lock, and must not go silent:
+# it names the holder every window, then completes once the holder exits.
+# holder pid 1897527 holds /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock -> .status-presentation-lock.owner.qVLCgK
+
+### retire exit=0 wall=13s (holder exits on its own after ~12s)
+### held.status retired? yes
+--- stderr (every wait window names the holder) ---
+STATUS PRESENTATION RETIRE WAITING: lock remains held by live pid 1897527 after 2s. If ps -p 1897527 shows no firstmate process, clear it with rm -rf /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.owner.qVLCgK /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.
+STATUS PRESENTATION RETIRE WAITING: lock remains held by live pid 1897527 after 2s. If ps -p 1897527 shows no firstmate process, clear it with rm -rf /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.owner.qVLCgK /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.
+STATUS PRESENTATION RETIRE WAITING: lock remains held by live pid 1897527 after 2s. If ps -p 1897527 shows no firstmate process, clear it with rm -rf /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.owner.qVLCgK /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.
+STATUS PRESENTATION RETIRE WAITING: lock remains held by live pid 1897527 after 2s. If ps -p 1897527 shows no firstmate process, clear it with rm -rf /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.owner.qVLCgK /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.
+STATUS PRESENTATION RETIRE WAITING: lock remains held by live pid 1897527 after 2s. If ps -p 1897527 shows no firstmate process, clear it with rm -rf /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.owner.qVLCgK /tmp/fm-3966-run2/live-holder/state/.status-presentation-lock.
