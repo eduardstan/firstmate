@@ -81,7 +81,7 @@ SH
 }
 
 test_detection_splits_the_pi_family() {
-  local out
+  local out psbin
 
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent)
   [ "$out" = prime-agent ] || fail "the Prime Agent launch marker selected '$out'"
@@ -104,9 +104,20 @@ test_detection_splits_the_pi_family() {
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=pi-signed PRIME_AGENT_INTERNAL_DAEMON_WORKER=1)
   [ "$out" = pi-signed ] || fail "explicit Pi-signed detection was relabelled '$out'"
 
-  # A resident Prime Agent worker can inherit CLAUDECODE from its supervisor.
-  out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x CLAUDECODE=1)
+  # With CLAUDECODE also present the markers are ambiguous in both directions,
+  # so the ancestry decides. A resident Prime Agent worker inherits CLAUDECODE
+  # from its supervisor and has prime-agent in its chain; a claude pane opened
+  # by hand inside a Prime Agent session inherits the same markers and does not.
+  psbin=$(make_ps_ancestor "$TMP_ROOT/prime-worker" prime-agent)
+  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x CLAUDECODE=1)
   [ "$out" = prime-agent ] || fail "Prime Agent detection lost to inherited Claude marker"
+
+  psbin=$(make_ps_ancestor "$TMP_ROOT/claude-pane" login-shell)
+  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x CLAUDECODE=1)
+  [ "$out" = claude ] || fail "a claude pane carrying leaked Prime Agent markers detected '$out'"
+
+  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent CLAUDECODE=1)
+  [ "$out" = claude ] || fail "a leaked Prime Agent launch marker relabelled a claude pane '$out'"
 
   # Prime-specific values are ignored without the Pi-family marker.
   out=$(detect CLAUDECODE=1 PRIME_AGENT_CODING_AGENT_DIR=/x)
