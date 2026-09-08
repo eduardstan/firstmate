@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 # Shared durable wake queue and portable lock helpers.
+#
+# Lock ownership contract: an owner directory records its pid AND that process's
+# start token (fm_lock_record_start), and the stale-owner steal treats an owner
+# as gone when the pid is dead or when the live pid started later than the
+# recorded owner did (fm_lock_owner_gone). Recording only the pid leaves a lock
+# permanently unreclaimable once the operating system recycles the owner's pid
+# onto an unrelated process, because kill -0 then succeeds forever. The recorded
+# fact is deliberately the start token and not the full fm_pid_identity: a holder
+# may legally replace its own process image while holding the lock, and only the
+# start time proves reuse. An owner with no recorded start token keeps the weaker
+# pid-only proof, so a lock written by an older build still behaves exactly as it
+# did before.
 
 FM_WAKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_WAKE_DEFAULT_ROOT="$(cd "$FM_WAKE_LIB_DIR/.." && pwd)"
@@ -53,33 +65,66 @@ fm_pid_alive() {
   kill -0 "$pid" 2>/dev/null
 }
 
-fm_pid_identity() {
-  local pid=$1 out proc_root stat_line starttime cmdline_hex identity_key
+# Prefer a Linux-compatible /proc when present: stat field 22 (starttime, clock ticks since boot) is
+# immune to the wall-clock steps that re-render the ps lstart fallback's date
+# (observed as WSL2 btime drift) and would evict a live watcher.
+# Git Bash/MSYS exposes these compatible files but its Cygwin ps rejects the
+# portable fallback's -o fields, so capability detection must not key on uname.
+_fm_proc_start_token() {  # <pid>; prints "<key>=<starttime-ticks>"
+  local pid=$1 proc_root stat_line starttime identity_key
   local -a stat_fields
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
+  [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ] || return 1
+  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
+  # After the final comm delimiter, array index 19 is proc stat field 22.
+  read -r -a stat_fields <<< "${stat_line##*)}"
+  [ "${#stat_fields[@]}" -ge 20 ] || return 1
+  starttime=${stat_fields[19]}
+  case "$starttime" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  identity_key=proc-starttime
+  [ "$_FM_UNAME" != Linux ] || identity_key=linux-starttime
+  printf '%s=%s\n' "$identity_key" "$starttime"
+}
+
+# The reuse-proving half of a process identity. A recycled PID necessarily starts
+# later, while exec keeps the start time and replaces only the process image -
+# including the exec bash performs for the last command of a subshell, which is
+# how an ordinary "( take the lock; run one thing ) &" holder changes image. Lock
+# reclaim needs exactly this half, so a holder that replaces its own image is
+# never mistaken for a recycled PID; fm_pid_identity below composes the same
+# start fact with that image for callers that must also pin the image.
+fm_pid_start_token() {  # <pid>
+  local pid=$1 out
+  case "$pid" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if out=$(_fm_proc_start_token "$pid"); then
+    printf '%s\n' "$out"
+    return 0
+  fi
+  # Pin LC_ALL=C so lstart's date format is locale-invariant, for the same reason
+  # fm_pid_identity does: the token is written under one locale and re-read under
+  # the machine's ambient locale.
+  out=$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
+}
+
+# The full identity: the start token above plus the process image, so a caller
+# that must also detect a replaced image (the watcher lock, the auto-arm claim)
+# still gets a mismatch on a starttime tick collision.
+fm_pid_identity() {
+  local pid=$1 out proc_root start cmdline_hex
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
-  # Prefer a Linux-compatible /proc when present: stat field 22 (starttime, clock ticks since boot) is
-  # immune to the wall-clock steps that re-render the ps lstart fallback's date
-  # (observed as WSL2 btime drift) and would evict a live watcher; combining the
-  # full NUL-separated cmdline keeps PID reuse a mismatch even on a tick collision.
-  # Git Bash/MSYS exposes these compatible files but its Cygwin ps rejects the
-  # portable fallback's -o fields, so capability detection must not key on uname.
-  if [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ]; then
-    stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 1
-    # After the final comm delimiter, array index 19 is proc stat field 22.
-    read -r -a stat_fields <<< "${stat_line##*)}"
-    [ "${#stat_fields[@]}" -ge 20 ] || return 1
-    starttime=${stat_fields[19]}
-    case "$starttime" in
-      ''|*[!0-9]*) return 1 ;;
-    esac
+  if start=$(_fm_proc_start_token "$pid"); then
     cmdline_hex=$(od -An -v -tx1 "$proc_root/$pid/cmdline" 2>/dev/null | tr -d '[:space:]') || return 1
     [ -n "$cmdline_hex" ] || return 1
-    identity_key=proc-starttime
-    [ "$_FM_UNAME" != Linux ] || identity_key=linux-starttime
-    printf '%s=%s cmdline-hex=%s\n' "$identity_key" "$starttime" "$cmdline_hex"
+    printf '%s cmdline-hex=%s\n' "$start" "$cmdline_hex"
     return 0
   fi
   # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
@@ -391,6 +436,7 @@ fm_lock_clean_known_files() {
     "$lockdir/pid" \
     "$lockdir/fm-home" \
     "$lockdir/pid-identity" \
+    "$lockdir/pid-start" \
     "$lockdir/role" \
     "$lockdir/watcher-path" \
     2>/dev/null || true
@@ -428,12 +474,46 @@ fm_lock_owner_dir() {
   mktemp -d "${lock_abs}.owner.XXXXXX" 2>/dev/null
 }
 
+# Every lock owner records its process start token beside its pid, so the
+# stale-owner steal below can prove a recorded owner is gone even after the
+# operating system recycled its pid onto an unrelated process. It records the
+# start token rather than the full identity because a lock holder may legally
+# replace its own process image while holding (see fm_pid_start_token). Best
+# effort by design: a platform that cannot compute a start token keeps the weaker
+# pid-only liveness proof rather than losing the ability to take the lock at all.
+FM_LOCK_SELF_START_PID=
+FM_LOCK_SELF_START=
+fm_lock_record_start() {  # <lockdir-or-ownerdir> <pid>
+  local dir=$1 pid=$2
+  if [ "$pid" != "$FM_LOCK_SELF_START_PID" ]; then
+    FM_LOCK_SELF_START_PID=$pid
+    FM_LOCK_SELF_START=$(fm_pid_start_token "$pid" 2>/dev/null || true)
+  fi
+  [ -n "$FM_LOCK_SELF_START" ] || return 0
+  printf '%s\n' "$FM_LOCK_SELF_START" > "$dir/pid-start" 2>/dev/null || true
+}
+
+# The reclaim predicate: an owner is GONE when its pid is dead, or when the live
+# pid started later than the recorded owner did (pid reuse). An owner with no
+# recorded start token, or whose token cannot be recomputed, is treated as
+# present - absent evidence never evicts a possibly live holder.
+fm_lock_owner_gone() {  # <lockdir> <pid>
+  local lockdir=$1 pid=$2 recorded current
+  fm_pid_alive "$pid" || return 0
+  recorded=$(cat "$lockdir/pid-start" 2>/dev/null || true)
+  [ -n "$recorded" ] || return 1
+  current=$(fm_pid_start_token "$pid" 2>/dev/null) || return 1
+  [ -n "$current" ] || return 1
+  [ "$current" != "$recorded" ]
+}
+
 fm_lock_prepare_owner() {
   local ownerdir=$1 mypid back
   fm_current_pid mypid || return 1
   printf '%s\n' "$mypid" > "$ownerdir/pid" 2>/dev/null || return 1
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
-  [ "$back" = "$mypid" ]
+  [ "$back" = "$mypid" ] || return 1
+  fm_lock_record_start "$ownerdir" "$mypid"
 }
 
 fm_lock_link_owner() {
@@ -564,7 +644,7 @@ fm_lock_recheck_stale_owner() {
   fi
   actual_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   [ "$actual_pid" = "$expected_pid" ] || return 1
-  if fm_pid_alive "$actual_pid"; then
+  if ! fm_lock_owner_gone "$lockdir" "$actual_pid"; then
     return 1
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$actual_pid"; then
@@ -910,7 +990,7 @@ fm_lock_try_acquire() {
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     return 1
   fi
-  if fm_pid_alive "$pid"; then
+  if ! fm_lock_owner_gone "$lockdir" "$pid"; then
     FM_LOCK_HELD_PID=$pid
     return 1
   fi
@@ -928,7 +1008,7 @@ fm_lock_try_acquire() {
   steal_owner=${FM_LOCK_OWNER_DIR:-}
 
   cur=$(cat "$lockdir/pid" 2>/dev/null || true)
-  if fm_pid_alive "$cur"; then
+  if ! fm_lock_owner_gone "$lockdir" "$cur"; then
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
@@ -1009,6 +1089,12 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
   fi
   fm_current_pid current || { fm_lock_release "$lockdir"; return 1; }
   back=$(cat "$ownerdir/pid" 2>/dev/null || true)
+  # Drop this helper's identity BEFORE the pid changes hands: an owner record
+  # naming the caller's pid beside the helper's identity would read as a reused
+  # pid and be stolen out from under the caller it was just handed to. The
+  # identityless window is safe because the caller pid is verified live above,
+  # and the caller records its own identity once it observes the transfer.
+  rm -f "$ownerdir/pid-start" 2>/dev/null || true
   if [ "$back" != "$current" ] \
     || ! printf '%s\n' "$caller_pid" > "$ownerdir/pid" 2>/dev/null \
     || [ "$(cat "$ownerdir/pid" 2>/dev/null || true)" != "$caller_pid" ]; then
@@ -1051,6 +1137,7 @@ fm_lock_acquire_wait_bounded() {
 
   owner_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
   if [ "$owner_pid" = "$caller_pid" ]; then
+    fm_lock_record_start "$lockdir" "$caller_pid"
     return 0
   fi
   [ "$rc" -ne 0 ] || rc=1
@@ -1065,7 +1152,7 @@ fm_lock_acquire_wait_bounded() {
     case "$owner_pid" in
       ''|*[!0-9]*|0) ;;
       *)
-        if [ "$owner_pid" -gt 0 ] 2>/dev/null && fm_pid_alive "$owner_pid"; then
+        if [ "$owner_pid" -gt 0 ] 2>/dev/null && ! fm_lock_owner_gone "$lockdir" "$owner_pid"; then
           FM_LOCK_HELD_PID=$owner_pid
           return 124
         fi

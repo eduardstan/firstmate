@@ -13,6 +13,9 @@ WATCH_ARM="$ROOT/bin/fm-watch-arm.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 LIB="$ROOT/bin/fm-wake-lib.sh"
 
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
+
 # An arm only reports its typed failure after wait_for_healthy_successor has
 # spent the whole confirmation budget, so cases that wait for that failure must
 # outlast the largest production default (30s on MSYS, 10s elsewhere - see
@@ -235,6 +238,85 @@ test_lock_steals_dead_pid_lock() {
   [ "$newpid" != "$dead" ] || fail "stale dead-pid lock was not replaced (still $dead)"
   [ -n "$newpid" ] || fail "reclaimed lock has no pid recorded"
   pass "dead-pid stale lock is reclaimed by a single acquirer"
+}
+
+# A lock holder must record its process start token beside its pid, and a
+# contender must still refuse a holder whose live pid still matches that token -
+# including one that replaced its own process image while holding.
+test_lock_records_owner_start_and_refuses_that_holder() {
+  local dir state lockdir holder ready recorded live_start out i
+  dir=$(make_case lock-start-recorded)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  ready="$dir/holder.ready"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+    printf "ready\n" > "$3"
+    exec sleep 30
+  ' _ "$LIB" "$lockdir" "$ready" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$ready" ] || { kill "$holder" 2>/dev/null || true; fail "lock holder never acquired its lock"; }
+
+  recorded=$(cat "$lockdir/pid-start" 2>/dev/null || true)
+  [ -n "$recorded" ] \
+    || { kill "$holder" 2>/dev/null || true; fail "acquired lock recorded no owner start token"; }
+  # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
+  live_start=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_pid_start_token "$(cat "$2/pid")"
+  ' _ "$LIB" "$lockdir" 2>/dev/null || true)
+  [ "$live_start" = "$recorded" ] \
+    || { kill "$holder" 2>/dev/null || true; fail "recorded start token does not describe the recorded pid"; }
+
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    if fm_lock_try_acquire "$2"; then rc=0; else rc=1; fi
+    printf "rc=%s held=%s\n" "$rc" "${FM_LOCK_HELD_PID:-}"
+  ' _ "$LIB" "$lockdir")
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  case "$out" in
+    *"rc=1"*) ;;
+    *) fail "a live holder that replaced its process image was evicted: $out" ;;
+  esac
+  pass "a lock owner records a verifiable start token and survives replacing its own process image"
+}
+
+# The reported wedge: the recorded owner is gone but its pid was recycled onto an
+# unrelated live process, so kill -0 answers forever. Without the recorded
+# identity there is nothing left to disprove the holder and the wait never ends.
+test_lock_steals_reused_pid_lock() {
+  local dir state lockdir impostor rc newpid
+  dir=$(make_case lock-reused-pid)
+  state="$dir/state"
+  lockdir="$state/.status-presentation-lock"
+  sleep 300 &
+  impostor=$!
+  mkdir "$lockdir"
+  printf '%s\n' "$impostor" > "$lockdir/pid"
+  printf 'gone-owner-start-token\n' > "$lockdir/pid-start"
+  rc=0
+  # Bounded on purpose: an unreclaimed lock makes fm_lock_acquire_wait spin
+  # forever, and this case must FAIL in seconds rather than hang the suite.
+  # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
+  newpid=$(fm_run_timed 5 env "FM_STATE_OVERRIDE=$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 7
+    cat "$2/pid"
+  ' _ "$LIB" "$lockdir") || rc=$?
+  kill "$impostor" 2>/dev/null || true
+  wait "$impostor" 2>/dev/null || true
+  [ "$rc" -ne 124 ] || fail "a recycled-pid lock was never reclaimed: the wait never returned"
+  [ "$rc" -eq 0 ] || fail "a recycled-pid lock was never reclaimed (rc=$rc)"
+  [ "$newpid" != "$impostor" ] || fail "recycled-pid lock was not replaced (still $impostor)"
+  [ -n "$newpid" ] || fail "reclaimed lock has no pid recorded"
+  pass "a lock whose owner pid was recycled onto an unrelated process is reclaimed"
 }
 
 test_lock_stale_steal_single_winner_under_concurrency() {
@@ -1112,6 +1194,8 @@ test_live_stale_watch_lock_is_actionable
 test_guard_warnings
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
+test_lock_records_owner_start_and_refuses_that_holder
+test_lock_steals_reused_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock

@@ -586,8 +586,8 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     lock_rc=$?
     if [ "$lock_rc" -eq 124 ]; then
       holder_pid=${FM_LOCK_HELD_PID:-unknown}
-      printf 'STATUS PRESENTATION SKIPPED: lock remains held by live pid %s after %ss; retry on the next drain.\n' \
-        "$holder_pid" "$PRESENTATION_LOCK_TIMEOUT"
+      printf 'STATUS PRESENTATION SKIPPED: lock remains held by live pid %s after %ss; retry on the next drain. If ps -p %s shows no firstmate process, clear it with rm -f %s.\n' \
+        "$holder_pid" "$PRESENTATION_LOCK_TIMEOUT" "$holder_pid" "$lock"
     else
       printf 'wake drain: status presentation lock could not be acquired safely\n' >&2
     fi
