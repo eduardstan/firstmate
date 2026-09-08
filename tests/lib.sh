@@ -63,6 +63,13 @@ unset FM_TASK_ID
 # against an ambient override sets TASKS_AXI_FILE itself.
 unset TASKS_AXI_FILE TASKS_AXI_BACKEND
 
+# Clear Prime Agent's identity markers. bin/fm-harness.sh detect_own tests them
+# ahead of the CLAUDECODE fast path, and a developer or CI shell running inside
+# a Prime Agent session leaks them into every child, so a case that pins
+# CLAUDECODE=1 would resolve prime-agent instead of claude. Cases that exercise
+# the prime-agent arm set these themselves.
+unset PRIME_AGENT_CODING_AGENT_DIR PRIME_AGENT_INTERNAL_DAEMON_WORKER
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
