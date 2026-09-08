@@ -65,7 +65,7 @@ An acknowledged episode does not freeze the generation, because the next downtim
 
 `bin/fm-wake-drain.sh` consumes the queue per actor, not per whole-queue cutoff, using `bin/fm-lease-lib.sh`'s existing `fm_lease_actor` identity (`FM_SUPERVISION_ACTOR`, unset or `main` for every non-Pi harness and Pi's own main session; `branch` only inside the Pi supervision branch's own bash tool calls, injected deterministically by the extension - never agent memory).
 Every presented row is claimed to exactly one actor under the durable queue lock.
-An ordinary presentation drain bounds both its initial queue-lock acquire and its later status-presentation-lock acquire at the deadline owned by the script header.
+An ordinary presentation drain bounds both its initial queue-lock acquire and its later status-presentation-lock acquire at the shared deadline owned by `bin/fm-wake-lib.sh`'s `fm_status_presentation_lock_timeout`.
 A live initial queue-lock holder produces one PID-naming advisory and skips the whole drain before any claim or mutation, while a live status-presentation-lock holder produces one such advisory after raw wake presentation and leaves status annotations, sections, and cursors retriable on the next drain.
 The presentation advisory also names the manual clear, because an operator who confirms the named PID is not a firstmate process has nothing else to act on.
 That clear names the lock symlink and its resolved owner directory, so following it strands nothing in the state directory.

@@ -1429,10 +1429,11 @@ fm_failure_episode_reset() {
 #
 #   - The CURRENT claim is the ledger's latest entry: line 1 is the classic
 #     "epoch=N owner_pid=P outcome=O updated_at=T" record, and line 2 is the
-#     claiming process's pid-identity, the same identity every other
-#     supervision lock in this repo records (fm_pid_identity above). The
-#     identity is MANDATORY: a claimant that cannot record it does not claim
-#     (continuity falls to the synchronous guard), and the identity is read
+#     claiming process's pid-identity, the same identity the watcher, afk
+#     launch, and away-mode daemon locks record (fm_pid_identity above; an
+#     ordinary lock owner records only its start half, see this file's
+#     header). The identity is MANDATORY: a claimant that cannot record it
+#     does not claim (continuity falls to the synchronous guard), and it is read
 #     from the ledger entry alone - never substituted from any lock - so a
 #     reused pid can never authenticate someone else's stale entry.
 #   - A claim is OPEN (fm_autoarm_claim_open) while its outcome is "arming",
