@@ -142,8 +142,9 @@
 #   a failed or inconclusive probe omits it so older Pi versions remain launchable.
 #   A missing selected executable refuses before endpoint creation, and pi-signed
 #   never falls back to pi.
-#   For prime-agent, fm-spawn checks the `prime-agent` executable is on PATH
-#   once and refuses before endpoint or metadata creation when it is absent.
+#   For prime-agent, fm-spawn resolves the `prime-agent` executable from PATH once
+#   and refuses before endpoint or metadata creation when it is absent, then
+#   launches that same concrete path.
 #   For omp (Oh My Pi), fm-spawn resolves the `omp` executable from PATH once and
 #   refuses when it is absent. Every omp launch clears the foreign harness
 #   markers (omp publishes none of its own), sets the Firstmate-owned
@@ -266,6 +267,7 @@
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
+#     __PRIMEBIN__  quoted concrete prime-agent executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
@@ -1537,7 +1539,7 @@ launch_template() {
     # with the rest of secondmate support, so the kind-specific refusal below
     # rejects it by name rather than letting this template stand one up.
     prime-agent)
-      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
@@ -1739,7 +1741,7 @@ fi
 
 case "$HARNESS" in
   prime-agent)
-    command -v prime-agent >/dev/null 2>&1 || {
+    PRIME_BIN=$(resolve_pi_executable prime-agent) || {
       echo "error: prime-agent executable not found on PATH; install Prime Agent or select a different verified harness" >&2
       exit 1
     }
@@ -3947,6 +3949,7 @@ LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
+  prime-agent) LAUNCH=${LAUNCH//__PRIMEBIN__/"$(shell_quote "$PRIME_BIN")"} ;;
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
   gemini) LAUNCH=${LAUNCH//__GEMINISETTINGS__/"$(shell_quote "$STATE_REAL/$ID.gemini-settings.json")"} ;;
   omp) LAUNCH=${LAUNCH//__OMPBIN__/"$(shell_quote "$OMP_BIN")"} ;;
