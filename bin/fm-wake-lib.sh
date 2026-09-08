@@ -1105,6 +1105,7 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
     fm_lock_release "$lockdir"
     return 1
   fi
+  fm_lock_record_start "$ownerdir" "$caller_pid"
   trap - TERM INT
 }
 

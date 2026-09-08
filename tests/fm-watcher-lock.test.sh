@@ -319,6 +319,52 @@ test_lock_steals_reused_pid_lock() {
   pass "a lock whose owner pid was recycled onto an unrelated process is reclaimed"
 }
 
+# A lock handed from the bounded-acquire helper to its waiting caller must carry
+# the caller's start token before the helper exits. If the record is only
+# restored by the surviving caller, a caller killed in that window leaves a lock
+# with a live pid and no token - pid-only proof again, which wedges every later
+# drain once the operating system recycles that pid (upstream #3966).
+test_handoff_records_the_receiving_caller_start() {
+  local dir state lockdir receiver impostor rc newpid
+  dir=$(make_case lock-handoff-start)
+  state="$dir/state"
+  lockdir="$state/.handoff.lock"
+
+  sleep 300 &
+  receiver=$!
+  # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    _fm_lock_acquire_wait_handoff "$2" "$3"
+  ' _ "$LIB" "$lockdir" "$receiver" \
+    || { kill "$receiver" 2>/dev/null || true; fail "the handoff helper did not transfer the lock"; }
+  [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$receiver" ] \
+    || { kill "$receiver" 2>/dev/null || true; fail "the handoff did not record the receiving caller pid"; }
+
+  # The receiver is gone and its pid landed on an unrelated live process. Only a
+  # start token recorded by the helper itself can disprove that impostor.
+  kill "$receiver" 2>/dev/null || true
+  wait "$receiver" 2>/dev/null || true
+  sleep 300 &
+  impostor=$!
+  printf '%s\n' "$impostor" > "$lockdir/pid"
+  rc=0
+  # Bounded on purpose: an unreclaimed lock spins forever, and this case must
+  # FAIL in seconds rather than hang the suite.
+  # shellcheck disable=SC2016 # Positional parameters expand in the child shell.
+  newpid=$(fm_run_timed 5 env "FM_STATE_OVERRIDE=$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 7
+    cat "$2/pid"
+  ' _ "$LIB" "$lockdir") || rc=$?
+  kill "$impostor" 2>/dev/null || true
+  wait "$impostor" 2>/dev/null || true
+  [ "$rc" -ne 124 ] || fail "a handed-off lock left tokenless was never reclaimed: the wait never returned"
+  [ "$rc" -eq 0 ] || fail "a handed-off lock left tokenless was never reclaimed (rc=$rc)"
+  [ "$newpid" != "$impostor" ] || fail "handed-off lock was not replaced (still $impostor)"
+  pass "the bounded-acquire handoff records the receiving caller start token before exiting"
+}
+
 test_lock_stale_steal_single_winner_under_concurrency() {
   local dir state lockdir dead marker i pids pid wins
   dir=$(make_case lock-stale-concurrency)
@@ -1196,6 +1242,7 @@ test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_records_owner_start_and_refuses_that_holder
 test_lock_steals_reused_pid_lock
+test_handoff_records_the_receiving_caller_start
 test_lock_stale_steal_single_winner_under_concurrency
 test_lock_live_steal_mutex_is_not_reclaimed
 test_lock_does_not_steal_live_lock
