@@ -1319,7 +1319,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+    ''|claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1457,10 +1457,9 @@ launch_template() {
     # so the marker is prepended as an assignment outside this env call, and
     # PI_CODING_AGENT is prime-agent's own export and is not cleared either.
     # A prime-agent SECONDMATE needs the primary supervision extensions that land
-    # with the rest of secondmate support, so it has no template yet and aborts
-    # the spawn here rather than launching a secondmate that cannot be supervised.
+    # with the rest of secondmate support, so the kind-specific refusal below
+    # rejects it by name rather than letting this template stand one up.
     prime-agent)
-      if [ "$kind" = secondmate ]; then return 1; fi
       printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
@@ -1634,8 +1633,11 @@ case "$ARG3" in
     ;;
 esac
 
-# muse and gemini are verified as CREWMATE/SCOUT adapters only. A secondmate is
-# a firstmate instance, so it needs a primary supervision protocol.
+# muse, gemini, and prime-agent are verified as CREWMATE/SCOUT adapters only. A
+# secondmate is a firstmate instance, so it needs a primary supervision protocol.
+# prime-agent has none yet: its crew wiring is a turn-end notification with no
+# agent_settled event, so the primary supervision extensions a secondmate arms
+# have nothing to bind to until that support lands.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
 # exit, so a gemini secondmate is refused rather than stood up on an unverified
@@ -1644,7 +1646,7 @@ esac
 # asyncRewake handlers that firstmate's primary turn-end supervision is built on
 # (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
 # secondmate whose supervision cycle could never be armed.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = prime-agent ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -3796,8 +3798,8 @@ case "$HARNESS" in
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER $LAUNCH"
+  claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|gemini|muse|rovo)
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
     ;;
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not

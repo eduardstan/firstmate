@@ -189,6 +189,32 @@ test_ancestry_alone_does_not_select_prime_agent() {
   pass "fm-harness: a prime-agent ancestor alone never claims the identity; the launch marker does"
 }
 
+# A spawnable worker must also be controllable: fm-control refuses every verb on
+# a harness with no verified mechanics, so the tables are asserted here against
+# Prime Agent's verified facts rather than left to the launch slice.
+test_prime_agent_control_table() {
+  local wiring
+  # shellcheck source=bin/fm-control-lib.sh
+  . "$ROOT/bin/fm-control-lib.sh"
+  fm_control_harness_supported prime-agent || fail "prime-agent is not a supported control harness"
+  [ "$(fm_control_harness_family prime-agent)" = prime-agent ] || fail "prime-agent harness family lookup failed"
+  [ "$(fm_control_interrupt_key prime-agent)" = Escape ] || fail "prime-agent interrupt key is not Escape"
+  [ "$(fm_control_interrupt_repeat prime-agent)" = 1 ] || fail "prime-agent interrupt repeat is not 1"
+  [ -z "$(fm_control_interrupt_clear_key prime-agent)" ] || fail "prime-agent should need no interrupt clear key"
+  [ "$(fm_control_interrupt_ack_source prime-agent)" = none ] || fail "prime-agent interrupt ack source is not none"
+  [ "$(fm_control_exit_command prime-agent)" = /quit ] || fail "prime-agent exit command is not /quit"
+  fm_control_harness_supports_kind prime-agent ship || fail "prime-agent should support ship tasks"
+  fm_control_harness_supports_kind prime-agent scout || fail "prime-agent should support scout tasks"
+  if fm_control_harness_supports_kind prime-agent secondmate; then
+    fail "prime-agent should never support secondmate tasks"
+  fi
+  wiring=$(fm_control_harness_wiring_paths prime-agent /wt /state t1)
+  [ "$wiring" = "/state/t1.prime-ext.ts" ] \
+    || fail "prime-agent wiring paths did not list its turn-end extension, got '$wiring'"
+  pass "fm-control-lib: prime-agent's lifecycle table matches its verified facts"
+}
+
 test_detection_splits_the_pi_family
 test_cursor_gemini_and_rovo_outrank_the_prime_agent_split
 test_ancestry_alone_does_not_select_prime_agent
+test_prime_agent_control_table
