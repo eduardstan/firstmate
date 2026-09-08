@@ -151,8 +151,10 @@ test_prime_agent_launch_establishes_its_harness_marker() {
   status=$?
   expect_code 0 "$status" "prime-agent spawn should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=prime-agent env -u CLAUDECODE -u GROK_AGENT prime-agent" \
-    "prime-agent launch did not establish FM_PI_HARNESS=prime-agent for its own command"
+  assert_contains "$launch" "FM_PI_HARNESS=prime-agent env -u CLAUDECODE -u GROK_AGENT '$FAKEBIN_DIR/prime-agent'" \
+    "prime-agent launch did not establish FM_PI_HARNESS=prime-agent with its resolved executable path"
+  assert_not_contains "$launch" "GROK_AGENT prime-agent " \
+    "prime-agent launch still asks the worker pane to resolve a bare executable"
   assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI" \
     "prime-agent launch kept inherited cursor/gemini identity markers"
   assert_contains "$launch" "--model 'openai-codex/gpt-5.6-luna'" \
