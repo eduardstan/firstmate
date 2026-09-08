@@ -126,8 +126,10 @@ harness_marker() {
   # claude pane opened by hand inside a Prime Agent session - or one started from
   # a multiplexer server that stored that environment, the hazard the muse note
   # below forbids ignoring - carries them while being claude, and an unmarked
-  # Prime Agent session is Pi-family either way. Ambient auto-detection of a
-  # Prime Agent primary lands with the launch and supervision slices.
+  # Prime Agent session is Pi-family either way. bin/fm-spawn.sh establishes the
+  # marker at every prime-agent worker launch boundary, so a firstmate-launched
+  # worker is identified; ambient auto-detection of a Prime Agent PRIMARY lands
+  # with the supervision slices that give that value a supervision model.
   # The marker is tested BEFORE the CLAUDECODE fast path and the unmarked Pi
   # result below, for cursor's reason above: Prime Agent does not clear an
   # inherited CLAUDECODE, so a resident Prime Agent worker under a claude
@@ -229,7 +231,6 @@ harness_process_verdict() {  # <pid>
     *opencode*) echo "comm opencode"; return ;;
     *grok*) echo "comm grok"; return ;;
     kimi) echo "comm kimi"; return ;;
-    prime-agent) echo "comm prime-agent"; return ;;
     rovo) echo "comm rovo"; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
