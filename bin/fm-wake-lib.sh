@@ -3,8 +3,9 @@
 #
 # Lock ownership contract: an owner directory records its pid AND that process's
 # start token (fm_lock_record_start), and the stale-owner steal treats an owner
-# as gone when the pid is dead or when the live pid started later than the
-# recorded owner did (fm_lock_owner_gone). Recording only the pid leaves a lock
+# as gone when the pid is dead or when the live pid's recomputed start token
+# DIFFERS from the recorded one, in either direction (fm_lock_owner_gone).
+# Recording only the pid leaves a lock
 # permanently unreclaimable once the operating system recycles the owner's pid
 # onto an unrelated process, because kill -0 then succeeds forever. The recorded
 # fact is deliberately the start token and not the full fm_pid_identity: a holder
@@ -80,7 +81,8 @@ _fm_proc_start_token() {  # <pid>; prints "<key>=<starttime-ticks>"
   local -a stat_fields
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   [ -r "$proc_root/$pid/stat" ] && [ -r "$proc_root/$pid/cmdline" ] || return 1
-  stat_line=$(cat "$proc_root/$pid/stat" 2>/dev/null) || return 2
+  stat_line=
+  read -r stat_line < "$proc_root/$pid/stat" 2>/dev/null || [ -n "$stat_line" ] || return 2
   # After the final comm delimiter, array index 19 is proc stat field 22.
   read -r -a stat_fields <<< "${stat_line##*)}"
   [ "${#stat_fields[@]}" -ge 20 ] || return 2
@@ -510,14 +512,19 @@ fm_lock_record_start() {  # <lockdir-or-ownerdir> <pid>
   printf '%s\n' "$token" > "$dir/pid-start" 2>/dev/null || true
 }
 
-# The reclaim predicate: an owner is GONE when its pid is dead, or when the live
-# pid started later than the recorded owner did (pid reuse). An owner with no
-# recorded start token, or whose token cannot be recomputed, is treated as
-# present - absent evidence never evicts a possibly live holder.
+# The reclaim predicate: an owner is GONE when its pid is dead, or when the start
+# token recomputed for that live pid DIFFERS from the recorded one. The
+# comparison is equality, not ordering: any difference evicts, in either
+# direction. Pid reuse is the difference this exists to catch, but on the ps
+# lstart fallback a re-rendered date for an unchanged live holder would read as a
+# difference too, so nothing here may be relied on as an ordering guarantee. An
+# owner with no recorded start token, or whose token cannot be recomputed, is
+# treated as present - absent evidence never evicts a possibly live holder.
+# The reads stay fork-free: this runs on every 0.1s poll of fm_lock_acquire_wait.
 fm_lock_owner_gone() {  # <lockdir> <pid>
-  local lockdir=$1 pid=$2 recorded current
+  local lockdir=$1 pid=$2 recorded='' current
   fm_pid_alive "$pid" || return 0
-  recorded=$(cat "$lockdir/pid-start" 2>/dev/null || true)
+  read -r recorded < "$lockdir/pid-start" 2>/dev/null || true
   [ -n "$recorded" ] || return 1
   current=$(fm_pid_start_token "$pid" 2>/dev/null) || return 1
   [ -n "$current" ] || return 1
@@ -1141,10 +1148,13 @@ fm_status_presentation_lock_timeout() {
 # leading label.
 fm_lock_live_holder_advisory() {  # <lockdir> <holder-pid> <seconds>
   local lockdir=$1 holder=$2 seconds=$3 ownerdir clear
-  clear="rm -rf $lockdir"
+  # Shell-quote every path: the command is printed to be pasted verbatim, and a
+  # home path carrying whitespace or a glob character would otherwise split into
+  # arguments that name something other than the lock.
+  printf -v clear 'rm -rf %q' "$lockdir"
   if [ -L "$lockdir" ]; then
     ownerdir=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
-    [ -z "$ownerdir" ] || clear="rm -rf $ownerdir $lockdir"
+    [ -z "$ownerdir" ] || printf -v clear 'rm -rf %q %q' "$ownerdir" "$lockdir"
   fi
   printf 'lock remains held by live pid %s after %ss. If ps -p %s shows no firstmate process, clear it with %s.\n' \
     "$holder" "$seconds" "$holder" "$clear"

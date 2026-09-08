@@ -1844,11 +1844,9 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
 # pid-only proof, so a stranded one whose pid the operating system recycled still
 # needs the operator's manual clear. That printed command is the whole remedy, so
 # running exactly what it prints must leave nothing behind: no lock symlink and
-# no orphan owner directory in state/.
-test_printed_manual_clear_unwedges_and_strands_nothing() {
-  local dir state status lock owner impostor out err clear_cmd leftovers
-  dir=$(make_case presentation-lock-manual-clear)
-  state="$dir/state"
+# no orphan owner directory in state/, whatever the home path looks like.
+exercise_printed_manual_clear() {  # <case-dir> <state-dir>
+  local dir=$1 state=$2 status lock owner impostor out err clear_cmd leftovers
   status="$state/task.status"
   lock="$state/.status-presentation-lock"
   owner="$lock.owner.legacy"
@@ -1886,7 +1884,32 @@ test_printed_manual_clear_unwedges_and_strands_nothing() {
     "$DRAIN" > "$dir/after.out" 2> "$dir/after.err"
   grep -F 'task.status: needs-decision [key=fixture]' "$dir/after.out" >/dev/null \
     || fail "the drain still could not present after the printed manual clear"
+}
+
+test_printed_manual_clear_unwedges_and_strands_nothing() {
+  local dir
+  dir=$(make_case presentation-lock-manual-clear)
+  exercise_printed_manual_clear "$dir" "$dir/state"
   pass "the printed manual clear unwedges the drain and strands no owner directory"
+}
+
+# The advisory prints a destructive command an operator pastes verbatim, and
+# nothing constrains a firstmate home path to shell-safe characters. On a home
+# whose path contains a space, an unquoted command would split into arguments
+# naming neighbours of the lock instead of the lock.
+test_printed_manual_clear_is_safe_on_a_home_path_with_a_space() {
+  local dir state decoy
+  dir=$(make_case presentation-lock-manual-clear-spaced)
+  state="$dir/my home/state"
+  decoy="$dir/my"
+  mkdir -p "$state" "$decoy" || fail "could not stage the spaced home fixture"
+  printf 'keep me\n' > "$decoy/sentinel"
+
+  exercise_printed_manual_clear "$dir" "$state"
+
+  [ -f "$decoy/sentinel" ] \
+    || fail "the printed manual clear deleted a neighbour of the spaced home path"
+  pass "the printed manual clear is safe to paste on a home path containing a space"
 }
 
 # The reported wedge (upstream #3966): the presentation lock's recorded owner is
@@ -2050,3 +2073,4 @@ test_recovery_ack_failure_is_reported
 test_interruption_before_and_after_raw_commit
 test_recycled_pid_presentation_lock_does_not_wedge_the_drain
 test_printed_manual_clear_unwedges_and_strands_nothing
+test_printed_manual_clear_is_safe_on_a_home_path_with_a_space
