@@ -1230,6 +1230,36 @@ fm_lock_acquire_wait_bounded() {
   return "$rc"
 }
 
+# The retire path's wait. A gone owner costs no wait at all, because the bounded
+# acquire below starts with an ordinary reclaiming try. A genuinely live holder is
+# waited out across a budget of that shared bound repeated _FM_LOCK_RETIRE_INTERVALS
+# times - minutes, not seconds - because a retire deletes durable records and its
+# caller has no next pass to retry on, unlike a presentation. The wait is never
+# silent: every window names the holder through the shared advisory. Only a holder
+# that stays unreclaimable for the whole budget fails, and a failure of the
+# bounding machinery itself falls back to the ordinary unbounded wait rather than
+# refusing work the unbounded wait would have completed.
+_FM_LOCK_RETIRE_INTERVALS=30
+fm_lock_acquire_wait_retire() {  # <lockdir>
+  local lockdir=$1 seconds i=0 rc
+  seconds=$(fm_status_presentation_lock_timeout)
+  while [ "$i" -lt "$_FM_LOCK_RETIRE_INTERVALS" ]; do
+    rc=0
+    fm_lock_acquire_wait_bounded "$lockdir" "$seconds" || rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    if [ "$rc" -ne 124 ]; then
+      fm_lock_acquire_wait "$lockdir"
+      return 0
+    fi
+    printf 'STATUS PRESENTATION RETIRE WAITING: %s\n' \
+      "$(fm_lock_live_holder_advisory "$lockdir" "${FM_LOCK_HELD_PID:-unknown}" "$seconds")" >&2
+    i=$((i + 1))
+  done
+  printf 'STATUS PRESENTATION RETIRE SKIPPED: %s\n' \
+    "$(fm_lock_live_holder_advisory "$lockdir" "${FM_LOCK_HELD_PID:-unknown}" "$seconds")" >&2
+  return 124
+}
+
 fm_lock_release() {
   local lockdir=$1 pid current ownerdir
   fm_current_pid current || return 1

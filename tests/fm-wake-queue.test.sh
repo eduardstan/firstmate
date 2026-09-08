@@ -1846,7 +1846,7 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack() {
 # running exactly what it prints must leave nothing behind: no lock symlink and
 # no orphan owner directory in state/, whatever the home path looks like.
 exercise_printed_manual_clear() {  # <case-dir> <state-dir>
-  local dir=$1 state=$2 status lock owner impostor out err clear_cmd leftovers
+  local dir=$1 state=$2 status lock owner impostor out err clear_cmd
   status="$state/task.status"
   lock="$state/.status-presentation-lock"
   owner="$lock.owner.legacy"
@@ -1877,8 +1877,10 @@ exercise_printed_manual_clear() {  # <case-dir> <state-dir>
   bash -c "$clear_cmd" || fail "the printed manual clear command failed: $clear_cmd"
   { [ ! -e "$lock" ] && [ ! -L "$lock" ]; } \
     || fail "the printed manual clear left the lock in place"
-  leftovers=$(find "$state" -maxdepth 1 -name '.status-presentation-lock.owner.*' 2>/dev/null)
-  [ -z "$leftovers" ] || fail "the printed manual clear stranded an owner directory: $leftovers"
+  # Anchored to the owner directory this fixture staged: the drain's own bounded
+  # acquire mints and discards .owner.XXXXXX names on the same path, and a helper
+  # killed at its deadline can leak one that has nothing to do with the advisory.
+  [ ! -e "$owner" ] || fail "the printed manual clear stranded the owner directory it named: $owner"
 
   FM_STATE_OVERRIDE="$state" FM_STATUS_PRESENTATION_LOCK_TIMEOUT=2 \
     "$DRAIN" > "$dir/after.out" 2> "$dir/after.err"

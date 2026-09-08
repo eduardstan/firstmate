@@ -1148,7 +1148,7 @@ status_presentation_marker_commit() {
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset backstop extra rc=0 found=0
-  local signal_marker heartbeat_marker daemon_marker lock_rc=0 lock_seconds
+  local signal_marker heartbeat_marker daemon_marker
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
@@ -1186,21 +1186,9 @@ EOF
     fi
   fi
 
-  # Bounded like the drain's presentation wait: a lock whose owner is gone but
-  # unprovable (an owner directory written before start tokens were recorded)
-  # must refuse loudly instead of hanging a teardown forever. The refusal is a
-  # hard failure, because callers retire real state behind this lock.
-  lock_seconds=$(fm_status_presentation_lock_timeout)
-  fm_lock_acquire_wait_bounded "$lock" "$lock_seconds" || lock_rc=$?
-  if [ "$lock_rc" -ne 0 ]; then
-    if [ "$lock_rc" -eq 124 ]; then
-      printf 'STATUS PRESENTATION RETIRE SKIPPED: %s\n' \
-        "$(fm_lock_live_holder_advisory "$lock" "${FM_LOCK_HELD_PID:-unknown}" "$lock_seconds")" >&2
-    else
-      printf 'status retire: status presentation lock could not be acquired safely\n' >&2
-    fi
-    return 1
-  fi
+  # Reclaim a gone owner immediately and wait a live one out; only an owner that
+  # stays unreclaimable for the whole budget refuses, loudly and by pid.
+  fm_lock_acquire_wait_retire "$lock" || return 1
   if [ -e "$manifest" ] || [ -L "$manifest" ]; then
     if [ ! -f "$manifest" ] || [ ! -r "$manifest" ] || [ -L "$manifest" ]; then
       rc=1
