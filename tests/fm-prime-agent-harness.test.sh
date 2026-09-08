@@ -44,7 +44,7 @@ detect() {  # <env assignment>...
 make_named_shells() {  # <dir> -> echoes <bindir>
   local dir=$1 name
   mkdir -p "$dir"
-  for name in prime-agent prime-agent-helper omp; do
+  for name in prime-agent omp; do
     ln -sf /bin/bash "$dir/$name"
   done
   printf '%s' "$dir"
@@ -86,11 +86,14 @@ test_detection_splits_the_pi_family() {
   out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent)
   [ "$out" = prime-agent ] || fail "the Prime Agent launch marker selected '$out'"
 
+  # Prime Agent's own values are session-wide and inherited, so they are not
+  # detection evidence in this slice: an unmarked Prime Agent session stays
+  # Pi-family exactly as it did before the adapter was registered.
   out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/home/x/.prime/agent)
-  [ "$out" = prime-agent ] || fail "the Prime Agent tool marker selected '$out'"
+  [ "$out" = pi ] || fail "an ambient Prime Agent tool value selected '$out', not pi"
 
   out=$(detect PI_CODING_AGENT=true PRIME_AGENT_INTERNAL_DAEMON_WORKER=1)
-  [ "$out" = prime-agent ] || fail "the Prime Agent daemon marker selected '$out'"
+  [ "$out" = pi ] || fail "an ambient Prime Agent daemon value selected '$out', not pi"
 
   # The same Pi-family marker without a Prime Agent signal must remain Pi.
   out=$(detect PI_CODING_AGENT=true)
@@ -109,31 +112,32 @@ test_detection_splits_the_pi_family() {
   # from its supervisor and has prime-agent in its chain; a claude pane opened
   # by hand inside a Prime Agent session inherits the same markers and does not.
   psbin=$(make_ps_ancestor "$TMP_ROOT/prime-worker" prime-agent)
-  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x CLAUDECODE=1)
+  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent CLAUDECODE=1)
   [ "$out" = prime-agent ] || fail "Prime Agent detection lost to inherited Claude marker"
 
   psbin=$(make_ps_ancestor "$TMP_ROOT/claude-pane" login-shell)
-  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x CLAUDECODE=1)
-  [ "$out" = claude ] || fail "a claude pane carrying leaked Prime Agent markers detected '$out'"
-
   out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent CLAUDECODE=1)
   [ "$out" = claude ] || fail "a leaked Prime Agent launch marker relabelled a claude pane '$out'"
+
+  out=$(detect PATH="$psbin:$BASE_PATH" PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x \
+    PRIME_AGENT_INTERNAL_DAEMON_WORKER=1 CLAUDECODE=1)
+  [ "$out" = claude ] || fail "an inherited Prime Agent environment relabelled a claude pane '$out'"
 
   # Prime-specific values are ignored without the Pi-family marker.
   out=$(detect CLAUDECODE=1 PRIME_AGENT_CODING_AGENT_DIR=/x)
   [ "$out" = claude ] || fail "a stale Prime Agent marker changed Claude detection to '$out'"
 
-  out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=)
-  [ "$out" = pi ] || fail "an empty Prime Agent marker changed Pi detection to '$out'"
+  out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=)
+  [ "$out" = pi ] || fail "an empty launch marker changed Pi detection to '$out'"
 
   pass "Prime Agent detection splits its Pi-family marker without relabelling Pi or Claude"
 }
 
 # cursor, gemini, and rovo do NOT scrub the environment they are started in, so
 # one of them launched by hand inside a Prime Agent session carries the
-# Pi-family and PRIME_AGENT_* markers alongside its own. Their markers are tested
-# above the Prime Agent split and must keep winning; the split itself outranks
-# the CLAUDECODE fast path only.
+# Pi-family and Prime Agent launch markers alongside its own. Their markers are
+# tested above the Prime Agent split and must keep winning; the split itself
+# outranks the CLAUDECODE fast path only.
 test_cursor_gemini_and_rovo_outrank_the_prime_agent_split() {
   local out case_ expected marker
   for case_ in \
@@ -144,7 +148,7 @@ test_cursor_gemini_and_rovo_outrank_the_prime_agent_split() {
     rovo:ROVODEV_CLI=1; do
     expected=${case_%%:*}
     marker=${case_#*:}
-    out=$(detect PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x "$marker")
+    out=$(detect PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent "$marker")
     [ "$out" = "$expected" ] || fail "$marker inside a Prime Agent session detected '$out', not '$expected'"
   done
   pass "fm-harness: the cursor, gemini, and rovo markers outrank inherited Prime Agent markers"
@@ -179,7 +183,7 @@ test_ancestry_identifies_prime_agent_without_markers() {
   # omp needs a real omp ancestor for its own marker, so the precedence check
   # that env markers alone cannot make belongs here.
   # shellcheck disable=SC2016 # the quoted body expands inside the named shell
-  out=$(scrubbed FM_OMP_HARNESS=omp PI_CODING_AGENT=true PRIME_AGENT_CODING_AGENT_DIR=/x \
+  out=$(scrubbed FM_OMP_HARNESS=omp PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent \
     PATH="$bin:$BASE_PATH" "$bin/omp" -c '"$1"; :' _ "$HARNESS")
   [ "$out" = omp ] || fail "an omp session started inside a Prime Agent session detected '$out', not omp"
 
