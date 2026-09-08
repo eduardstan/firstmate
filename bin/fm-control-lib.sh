@@ -75,14 +75,16 @@ fm_control_harness_supported() {  # <harness>
 # and friends. This is the one place that prefix rule is stated. `pi` and
 # `pi-signed` are exact because a `pi*` prefix would swallow the signed adapter,
 # `omp` is exact because an `omp*` prefix would claim unrelated commands, `agy`
-# is exact for the same reason on an even shorter name, and an
-# unrecognized value returns nonzero rather than being guessed into a family.
+# is exact for the same reason on an even shorter name, `prime-agent` is exact
+# because a `prime-agent*` prefix would claim the Prime Agent helper binary whose
+# mechanics were never verified, and an unrecognized value returns nonzero rather
+# than being guessed into a family.
 fm_control_harness_family() {  # <recorded-harness>
   case "${1-}" in
     pi) printf 'pi' ;;
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
-    prime-agent*) printf 'prime-agent' ;;
+    prime-agent) printf 'prime-agent' ;;
     agy) printf 'agy' ;;
     claude*) printf 'claude' ;;
     codex*) printf 'codex' ;;
