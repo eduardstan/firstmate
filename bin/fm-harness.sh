@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -81,6 +81,28 @@ harness_marker() {
   # child/tool processes this script runs as.
   [ "${CURSOR_AGENT:-}" = "1" ] && { echo cursor; return; }
   [ "${CURSOR_INVOKED_AS:-}" = "cursor-agent" ] && { echo cursor; return; }
+  # prime-agent and Pi export the same PI_CODING_AGENT marker.
+  # Check Prime markers first so a daemon supervisor cannot be relabeled.
+  if [ "${PI_CODING_AGENT:-}" = "true" ] \
+    && [ "${FM_PI_HARNESS:-}" != pi ] \
+    && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
+    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
+      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
+      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
+    echo prime-agent
+    return
+  fi
+  # prime-agent and Pi export the same PI_CODING_AGENT marker.
+  # Check Prime markers first so a daemon supervisor cannot be relabeled.
+  if [ "${PI_CODING_AGENT:-}" = "true" ] \
+    && [ "${FM_PI_HARNESS:-}" != pi ] \
+    && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
+    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
+      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
+      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
+    echo prime-agent
+    return
+  fi
   # Gemini is checked BEFORE claude for exactly cursor's reason above: the
   # Gemini CLI does NOT clear an inherited CLAUDECODE, so a gemini worker
   # launched from a claude primary carries BOTH markers and whichever is
@@ -198,6 +220,7 @@ harness_process_verdict() {  # <pid>
     *opencode*) echo "comm opencode"; return ;;
     *grok*) echo "comm grok"; return ;;
     kimi) echo "comm kimi"; return ;;
+    prime-agent) echo "comm prime-agent"; return ;;
     rovo) echo "comm rovo"; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
