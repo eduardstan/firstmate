@@ -91,7 +91,7 @@ detect_own() {
   # as omp, while the same variable leaking from an omp secondmate into that
   # home's claude worker (whose ancestry holds no omp) changes nothing. The
   # anchored ancestry arm below covers a plain hand-started `omp` by itself.
-  if [ "${FM_OMP_HARNESS:-}" = omp ] && ancestry_names_omp; then
+  if [ "${FM_OMP_HARNESS:-}" = omp ] && ancestry_names omp; then
     echo omp
     return
   fi
@@ -99,7 +99,16 @@ detect_own() {
   # marker is what splits the two. It is tested BEFORE the CLAUDECODE fast path
   # and the unmarked Pi result below, for cursor's reason above: Prime Agent
   # does not clear an inherited CLAUDECODE, so a resident Prime Agent worker
-  # under a claude supervisor carries both. It sits BELOW gemini, rovo, and omp
+  # under a claude supervisor carries both. Unlike cursor's and gemini's, this
+  # ambiguity runs BOTH ways: PRIME_AGENT_CODING_AGENT_DIR is a session-wide
+  # inherited path, so a claude pane opened by hand inside a Prime Agent
+  # session - or from a multiplexer server that stored that environment, the
+  # hazard the muse note below forbids ignoring - carries the same pair while
+  # being claude. When CLAUDECODE=1 is also present the markers are therefore
+  # a PRECEDENCE override rather than evidence, exactly as FM_OMP_HARNESS is
+  # for omp above: they win only when a real prime-agent process is in the
+  # ancestry. With CLAUDECODE absent no other harness claims the pane, so the
+  # markers stand alone. It sits BELOW gemini, rovo, and omp
   # deliberately: those harnesses do not scrub the environment they inherit
   # either, so a gemini/rovo/omp session started by hand inside a Prime Agent
   # session carries the Pi-family and PRIME_AGENT_* markers too, and their own
@@ -112,7 +121,8 @@ detect_own() {
     && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
     && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
       || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
-      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
+      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; } \
+    && { [ "${CLAUDECODE:-}" != "1" ] || ancestry_names prime-agent; }; then
     echo prime-agent
     return
   fi
@@ -212,14 +222,14 @@ detect_own() {
   echo unknown
 }
 
-# True when an exact `omp` process sits within eight parents of this one. The
-# same anchored match as the ancestry walk in detect_own, kept separate so the
-# marker precedence above can demand real process evidence.
-ancestry_names_omp() {
-  local pid=$$ comm
+# True when a process named exactly <name> sits within eight parents of this
+# one. The same anchored match as the ancestry walk in detect_own, kept separate
+# so the marker precedence above can demand real process evidence.
+ancestry_names() {  # <exact process name>
+  local want=$1 pid=$$ comm
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-    [ "$(basename -- "$comm")" = omp ] && return 0
+    [ "$(basename -- "$comm")" = "$want" ] && return 0
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
   done
