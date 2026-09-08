@@ -58,17 +58,6 @@ detect_own() {
   # CURSOR_AGENT=1 is set for the child/tool processes this script runs as.
   [ "${CURSOR_AGENT:-}" = "1" ] && { echo cursor; return; }
   [ "${CURSOR_INVOKED_AS:-}" = "cursor-agent" ] && { echo cursor; return; }
-  # prime-agent and Pi export the same PI_CODING_AGENT marker.
-  # Check Prime markers first so a daemon supervisor cannot be relabeled.
-  if [ "${PI_CODING_AGENT:-}" = "true" ] \
-    && [ "${FM_PI_HARNESS:-}" != pi ] \
-    && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
-    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
-      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
-      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
-    echo prime-agent
-    return
-  fi
   # Gemini is checked BEFORE claude for exactly cursor's reason above: the
   # Gemini CLI does NOT clear an inherited CLAUDECODE, so a gemini worker
   # launched from a claude primary carries BOTH markers and whichever is
@@ -104,6 +93,27 @@ detect_own() {
   # anchored ancestry arm below covers a plain hand-started `omp` by itself.
   if [ "${FM_OMP_HARNESS:-}" = omp ] && ancestry_names_omp; then
     echo omp
+    return
+  fi
+  # prime-agent and Pi export the same PI_CODING_AGENT marker, so a Prime Agent
+  # marker is what splits the two. It is tested BEFORE the CLAUDECODE fast path
+  # and the unmarked Pi result below, for cursor's reason above: Prime Agent
+  # does not clear an inherited CLAUDECODE, so a resident Prime Agent worker
+  # under a claude supervisor carries both. It sits BELOW gemini, rovo, and omp
+  # deliberately: those harnesses do not scrub the environment they inherit
+  # either, so a gemini/rovo/omp session started by hand inside a Prime Agent
+  # session carries the Pi-family and PRIME_AGENT_* markers too, and their own
+  # verified identity must keep winning. grok is deliberately NOT lifted with
+  # them: GROK_AGENT is tested after the unmarked Pi arm below already, so grok
+  # inside any Pi-family session has always resolved to that family, and
+  # reordering it is a separate change.
+  if [ "${PI_CODING_AGENT:-}" = "true" ] \
+    && [ "${FM_PI_HARNESS:-}" != pi ] \
+    && [ "${FM_PI_HARNESS:-}" != pi-signed ] \
+    && { [ -n "${PRIME_AGENT_CODING_AGENT_DIR:-}" ] \
+      || [ "${PRIME_AGENT_INTERNAL_DAEMON_WORKER:-}" = "1" ] \
+      || [ "${FM_PI_HARNESS:-}" = prime-agent ]; }; then
+    echo prime-agent
     return
   fi
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
