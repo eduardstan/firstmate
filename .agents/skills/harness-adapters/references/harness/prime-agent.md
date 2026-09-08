@@ -24,6 +24,7 @@ Detection was verified against Prime Agent 0.9.1 on Linux, with earlier checks a
 `../../../bin/fm-spawn.sh` launches a prime-agent crewmate or scout on the same single-positional brief and `-e` extension shape as Pi, establishing `FM_PI_HARNESS=prime-agent` so the worker identifies itself, passing `--model` and `--thinking`, and writing the turn-end notification extension to `state/<task-id>.prime-ext.ts` outside the worktree.
 `../../../bin/fm-teardown.sh` removes that extension with the rest of a task's wiring, and `fm_control_harness_wiring_paths` lists it so a relaunch onto another harness retires it.
 Control mechanics are Pi's, verified on Prime Agent 0.9.1: a single `Escape` cancels a turn, the composer is left empty afterwards so no clear key is needed, and `/quit` exits.
+`../../../bin/fm-spawn.sh --help` owns the executable-preflight mechanics: a missing `prime-agent` executable on PATH refuses before endpoint or metadata creation.
 
 ## Scope of this slice
 
