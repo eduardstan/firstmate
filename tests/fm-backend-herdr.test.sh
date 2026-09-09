@@ -3451,7 +3451,7 @@ test_composer_state_prime_agent_real_text_is_pending() {
 test_composer_state_prime_placeholder_requires_ghost_styling() {
   local dir log resp fb out
   dir="$TMP_ROOT/composer-prime-placeholder-styling"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  printf '> Try "review @<filepath> carefully"\n' > "$resp/1.out"
+  printf '\x1b[0m\x1b[48;2;44;44;49m >  \x1b[0m\x1b[38;2;224;222;244mTry "review @<filepath> carefully"\x1b[0m\n' > "$resp/1.out"
   prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
   printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
   fb=$(make_herdr_fakebin "$dir")
