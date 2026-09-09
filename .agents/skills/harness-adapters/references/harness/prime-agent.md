@@ -2,7 +2,7 @@
 
 This slice registers Prime Agent as a distinct Pi-family harness and covers detection, crewmate/scout launch, and control mechanics.
 Herdr pane classification has since landed too, owned by `../../../docs/herdr-backend.md`.
-Detached-daemon-session retirement and primary supervision land in the following adapter slices, so a secondmate launch is refused here.
+Detached-daemon-session retirement has since landed too, while primary supervision remains deferred, so a secondmate launch is refused here.
 
 ## Detection
 
