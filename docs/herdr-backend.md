@@ -253,7 +253,7 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 
 Herdr has no direct cursor-row primitive.
 The adapter is a thin capture: it hands a bounded ANSI tail plus Herdr's capability facts to the fleet-wide classifier in `bin/fm-composer-lib.sh`, which owns every shape - bordered boxes, bare agent-glyph rows (including muse's `⟩`, which the adapter's retired local pattern silently omitted), opencode's left bar, the Pi separator region this adapter pioneered, and the prime-agent `>` row.
-The Pi region is admitted only when native `agent get` identity is exactly Pi and state is idle, done, or blocked.
+The Pi region is admitted only when native `agent get` identity is exactly Pi and state is idle or done.
 A blocked Pi is parked on an interactive prompt, so its blank composer region is a menu's and not a free composer's; that state defers instead of proving emptiness.
 The prime-agent row is admitted only when Herdr's foreground-process capability and native identity both report prime-agent.
 The classifier also requires Prime Agent's open ANSI background surface at the glyph, so a plain `>` left by a shell remains unknown.
