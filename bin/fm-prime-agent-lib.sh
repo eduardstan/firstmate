@@ -25,9 +25,11 @@
 # `prime-agent status` is deliberately NOT consulted: it marks even a live
 # session's forkserver `stale`, so that word is not a health signal.
 #
-# Sourcing: set -u and set -e safe. Retirement is best-effort and a silent
-# no-op on failure, so a missing binary or an unreachable daemon can never fail
-# the teardown it is a courtesy inside of.
+# Sourcing: set -u and set -e safe. A missing binary is a silent no-op, while
+# an available binary whose sessions cannot be listed, validated, or stopped
+# returns FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED so teardown preserves the target.
+
+FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED=75
 
 FM_PRIME_AGENT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if ! declare -F fm_run_timed >/dev/null 2>&1 \
@@ -60,32 +62,79 @@ fm_prime_agent_cli() {  # <arg>...
   fi
 }
 
+fm_prime_agent_retirement_unconfirmed() {  # <directory> <reason>
+  printf 'error: prime-agent detached-session retirement unconfirmed for %s: %s; refusing removal\n' \
+    "$1" "$2" >&2
+  return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+}
+
 fm_prime_agent_session_ids_under() {  # <directory> [physical-directory]
-  local dir=$1 phys=${2:-$1} listing
-  listing=$(fm_prime_agent_cli list --json 2>/dev/null) || return 2
-  printf '%s\n' "$listing" \
-    | jq -r --arg dir "$dir" --arg phys "$phys" '
+  local dir=$1 phys=${2:-$1} listing matches ids rc bound
+  bound=${FM_PRIME_AGENT_CLI_TIMEOUT:-5}
+  case "$bound" in ''|*[!0-9]*|0*) bound=5 ;; esac
+  listing=$(fm_prime_agent_cli list --json 2>/dev/null) || {
+    rc=$?
+    if [ "$rc" -eq 124 ]; then
+      fm_prime_agent_retirement_unconfirmed "$phys" "prime-agent list --json timed out after ${bound}s"
+    else
+      fm_prime_agent_retirement_unconfirmed "$phys" "prime-agent list --json failed with exit $rc"
+    fi
+    return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+  }
+  matches=$(printf '%s\n' "$listing" \
+    | jq -c --arg dir "$dir" --arg phys "$phys" '
         def under($d): $d != "" and (. == $d or startswith($d + "/"));
         if (.sessions | type) == "array" then .sessions else error("sessions are missing") end
-        | map(select((.cwd // "") | (under($dir) or under($phys))))
-        | .[]
-        | if (((.id // null) | type) == "string" and (.id | length) > 0) then .id else error("session id is missing") end' 2>/dev/null
+        | map(select((.cwd // "") | (under($dir) or under($phys))))' 2>/dev/null) || {
+    rc=$?
+    fm_prime_agent_retirement_unconfirmed "$phys" \
+      "prime-agent list --json returned invalid JSON or session shape (jq exit $rc)"
+    return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+  }
+  ids=$(printf '%s\n' "$matches" \
+    | jq -r '
+        if all(.[];
+          ((.id // null) | type) == "string"
+          and (.id | test("^[A-Za-z0-9._][A-Za-z0-9._-]*$"))
+        ) then .[].id else error("invalid session id") end' 2>/dev/null) || {
+    rc=$?
+    fm_prime_agent_retirement_unconfirmed "$phys" \
+      "prime-agent list --json returned an invalid matching session id (jq exit $rc)"
+    return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+  }
+  printf '%s\n' "$ids"
 }
 
 # fm_prime_agent_stop_sessions_under <directory>
 # Stops each prime-agent session whose cwd is <directory> or inside it.
 # Prints one line per stopped session to stderr.
 fm_prime_agent_stop_sessions_under() {  # <directory>
-  local dir=$1 resolved ids id
+  local dir=$1 resolved ids id rc bound
   [ -n "$dir" ] || return 0
   command -v prime-agent >/dev/null 2>&1 || return 0
-  command -v jq >/dev/null 2>&1 || return 0
   resolved=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || resolved=$dir
-  ids=$(fm_prime_agent_session_ids_under "$dir" "$resolved") || return 0
+  command -v jq >/dev/null 2>&1 || {
+    fm_prime_agent_retirement_unconfirmed "$resolved" "jq is unavailable"
+    return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+  }
+  ids=$(fm_prime_agent_session_ids_under "$dir" "$resolved") \
+    || return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+  bound=${FM_PRIME_AGENT_CLI_TIMEOUT:-5}
+  case "$bound" in ''|*[!0-9]*|0*) bound=5 ;; esac
   while IFS= read -r id; do
-    case "$id" in ''|-*|*[!A-Za-z0-9._-]*) continue ;; esac
+    [ -n "$id" ] || continue
     echo "prime-agent: stopping detached session $id bound to $resolved" >&2
-    fm_prime_agent_cli stop "$id" >/dev/null 2>&1 || true
+    fm_prime_agent_cli stop "$id" >/dev/null 2>&1 || {
+      rc=$?
+      if [ "$rc" -eq 124 ]; then
+        fm_prime_agent_retirement_unconfirmed "$resolved" \
+          "prime-agent stop $id timed out after ${bound}s"
+      else
+        fm_prime_agent_retirement_unconfirmed "$resolved" \
+          "prime-agent stop $id failed with exit $rc"
+      fi
+      return "$FM_PRIME_AGENT_RETIREMENT_UNCONFIRMED"
+    }
   done <<EOF
 $ids
 EOF

@@ -2359,7 +2359,7 @@ remove_firstmate_home() {
   [ -n "$abs_home_path" ] || return 0
   # Every home removal passes here, so this retires any prime-agent worker
   # holding this home as its cwd (see bin/fm-prime-agent-lib.sh).
-  fm_prime_agent_stop_sessions_under "$abs_home_path"
+  fm_prime_agent_stop_sessions_under "$abs_home_path" || return $?
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
@@ -2913,7 +2913,7 @@ cleanup_firstmate_home_children() {
       fm_backend_remove_worktree "$child_backend" "$child_orca_worktree_id" || return 1
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
-      fm_prime_agent_stop_sessions_under "$child_wt"
+      fm_prime_agent_stop_sessions_under "$child_wt" || return $?
       rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" \
         "$child_wt/.opencode/plugins/fm-busy-state.js" \
         "$child_wt/.fm-grok-turnend" "$child_wt/.fm-kimi-turnend"
@@ -3099,7 +3099,7 @@ if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   # Retires this worktree's prime-agent workers before the generic reaper
   # below (see bin/fm-prime-agent-lib.sh).
-  fm_prime_agent_stop_sessions_under "$WT" || true
+  fm_prime_agent_stop_sessions_under "$WT" || exit $?
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
 

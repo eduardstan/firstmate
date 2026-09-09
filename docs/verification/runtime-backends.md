@@ -1542,8 +1542,10 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 
 ## Prime Agent (prime-agent)
 
-prime-agent runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#prime-agent-prime-agent-native-delivery-2026-09-08) owns the primary evidence.
-The evidence below was produced on 2026-09-08 against prime-agent 0.9.1 (`/home/eduard/.local/bin/prime-agent`, Node bundle) on Linux x86_64 through the Herdr backend with the `openai-codex/gpt-5.6-luna` model, building on the August 2026 adapter verification on 0.7.1 and 0.7.2.
+This three-slice upstream branch supports Prime Agent only for crewmate and scout roles and retires their detached daemon sessions during teardown.
+It refuses Prime Agent secondmates, has no Prime Agent primary supervision assets, and requires the explicit `FM_PI_HARNESS=prime-agent` launch marker paired with `PI_CODING_AGENT=true`; daemon markers alone are not detection evidence here.
+The evidence below is preserved from the full adapter on the fork, where prime-agent runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#prime-agent-prime-agent-native-delivery-2026-09-08) owns the fork-only primary evidence.
+That fork evidence was produced on 2026-09-08 against prime-agent 0.9.1 (`/home/eduard/.local/bin/prime-agent`, Node bundle) on Linux x86_64 through the Herdr backend with the `openai-codex/gpt-5.6-luna` model, building on the August 2026 adapter verification on 0.7.1 and 0.7.2.
 
 ### Process identity and markers
 

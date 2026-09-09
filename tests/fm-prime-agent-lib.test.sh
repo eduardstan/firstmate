@@ -8,10 +8,11 @@
 #      stopped. A sibling directory that merely shares a name prefix, and any
 #      other home's session, must survive - the daemon is fleet-wide, so a
 #      wrong selection would kill the captain's own work.
-#   2. Retirement is best effort. A missing prime-agent binary, a failing
-#      listing, and an unparseable listing are silent no-ops that return 0, so
-#      a cleanup courtesy can never fail the teardown around it.
-#   3. A session id that is not a plain token is never handed to the CLI.
+#   2. A missing prime-agent binary is a silent no-op, while every failure to
+#      list, validate, or stop an available daemon is reported as unconfirmed
+#      retirement so teardown can preserve the target.
+#   3. A session id that is not a plain token makes the whole retirement
+#      unconfirmed and is never handed to the CLI.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -19,35 +20,46 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot prime-agent-lib)
 
-# fake_prime_agent <dir> <list-stdout> [list-exit]
+# fake_prime_agent <dir> <list-stdout> [list-exit] [stop-exit]
+#                  [list-delay] [stop-delay]
 # Installs a `prime-agent` stub on PATH that answers `list --json` with the
 # given payload and appends every other invocation to <dir>/calls.
 fake_prime_agent() {
-  local dir=$1 listing=$2 list_exit=${3:-0} fakebin
+  local dir=$1 listing=$2 list_exit=${3:-0} stop_exit=${4:-0}
+  local list_delay=${5:-0} stop_delay=${6:-0} fakebin
   fakebin=$(fm_fakebin "$dir")
   printf '%s' "$listing" > "$dir/listing.json"
   cat > "$fakebin/prime-agent" <<SH
 #!/usr/bin/env bash
 if [ "\$1" = list ]; then
+  [ "$list_delay" = 0 ] || sleep "$list_delay"
   cat "$dir/listing.json"
   exit $list_exit
 fi
 printf '%s\n' "\$*" >> "$dir/calls"
-exit 0
+[ "$stop_delay" = 0 ] || sleep "$stop_delay"
+exit $stop_exit
 SH
   chmod +x "$fakebin/prime-agent"
   : > "$dir/calls"
   printf '%s\n' "$fakebin"
 }
 
-# stop_under <dir> <target> -> echoes the stub's recorded calls.
-stop_under() {
+# run_stop_under <dir> <target> <fakebin>
+run_stop_under() {
   local dir=$1 target=$2 fakebin=$3
-  PATH="$fakebin:$PATH" bash -c '
+  PATH="$fakebin:$PATH" FM_PRIME_AGENT_CLI_TIMEOUT="${FM_PRIME_AGENT_CLI_TIMEOUT:-5}" bash -c '
     set -u
     . "$1"
     fm_prime_agent_stop_sessions_under "$2"
-  ' _ "$ROOT/bin/fm-prime-agent-lib.sh" "$target" 2>/dev/null
+  ' _ "$ROOT/bin/fm-prime-agent-lib.sh" "$target" > "$dir/stop.out" 2> "$dir/stop.err"
+}
+
+# stop_under <dir> <target> -> echoes the stub's recorded calls.
+stop_under() {
+  local dir=$1 target=$2 fakebin=$3
+  run_stop_under "$dir" "$target" "$fakebin" \
+    || fail "expected retirement success, got: $(cat "$dir/stop.err")"
   cat "$dir/calls"
 }
 
@@ -118,38 +130,85 @@ test_missing_binary_is_a_silent_no_op() {
   pass "fm_prime_agent_stop_sessions_under: a missing prime-agent binary is a silent no-op"
 }
 
-test_unusable_listing_stops_nothing() {
-  local dir fakebin calls case_id
-  for case_id in failing unparseable shapeless; do
+test_listing_failure_is_unconfirmed() {
+  local dir fakebin rc
+  dir="$TMP_ROOT/listing-failure"; mkdir -p "$dir"
+  fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[$(session x "$dir")]}" 9)
+  run_stop_under "$dir" "$dir" "$fakebin"; rc=$?
+  expect_code 75 "$rc" "a failed listing must make retirement unconfirmed"
+  assert_grep "prime-agent list --json failed with exit 9" "$dir/stop.err" \
+    "listing failure did not report the concrete command status"
+  [ ! -s "$dir/calls" ] || fail "a failed listing still attempted a stop"
+  pass "fm_prime_agent_stop_sessions_under: a failed listing reports unconfirmed retirement"
+}
+
+test_invalid_listing_data_is_unconfirmed() {
+  local dir fakebin rc case_id
+  for case_id in unparseable shapeless; do
     dir="$TMP_ROOT/listing-$case_id"; mkdir -p "$dir"
     case "$case_id" in
-      failing) fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[$(session x "$dir")]}" 1) ;;
       unparseable) fakebin=$(fake_prime_agent "$dir" 'not json at all') ;;
       shapeless) fakebin=$(fake_prime_agent "$dir" '{"sessions":"not-an-array"}') ;;
     esac
-    calls=$(stop_under "$dir" "$dir" "$fakebin")
-    [ -z "$calls" ] || fail "an unusable listing ($case_id) must stop nothing, got: $calls"
+    run_stop_under "$dir" "$dir" "$fakebin"; rc=$?
+    expect_code 75 "$rc" "invalid listing data ($case_id) must make retirement unconfirmed"
+    assert_grep "invalid JSON or session shape" "$dir/stop.err" \
+      "invalid listing data ($case_id) did not report its validation failure"
+    [ ! -s "$dir/calls" ] || fail "invalid listing data ($case_id) still attempted a stop"
   done
-  pass "fm_prime_agent_stop_sessions_under: a failing, unparseable, or wrongly shaped listing stops nothing"
+  pass "fm_prime_agent_stop_sessions_under: invalid JSON and session shapes report unconfirmed retirement"
 }
 
-test_unsafe_session_id_is_never_passed_to_the_cli() {
-  local dir fakebin calls
-  dir="$TMP_ROOT/unsafe"; mkdir -p "$dir"
-  # A leading dash is the second half of the case: prime-agent would read
-  # `--all` as an option rather than as the session it must stop.
+test_unsafe_session_id_is_unconfirmed() {
+  local dir fakebin rc
+  dir="$TMP_ROOT/unsafe-id"; mkdir -p "$dir"
   fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[
-    $(session 'a b; rm -rf /' "$dir"),
-    $(session '--all' "$dir"),
-    $(session good-1 "$dir")
+    $(session good-1 "$dir"),
+    $(session '--all' "$dir")
   ]}")
-  calls=$(stop_under "$dir" "$dir" "$fakebin")
-  [ "$calls" = "stop good-1" ] || fail "expected only the plain-token id to reach the CLI, got: $calls"
-  pass "fm_prime_agent_stop_sessions_under: a session id that is not a plain token never reaches the CLI"
+  run_stop_under "$dir" "$dir" "$fakebin"; rc=$?
+  expect_code 75 "$rc" "an unsafe session id must make retirement unconfirmed"
+  assert_grep "invalid matching session id" "$dir/stop.err" \
+    "unsafe session id did not report its validation failure"
+  [ ! -s "$dir/calls" ] || fail "an unsafe id allowed a partial stop: $(cat "$dir/calls")"
+  pass "fm_prime_agent_stop_sessions_under: an unsafe session id refuses the whole retirement"
+}
+
+test_stop_failure_is_unconfirmed() {
+  local dir fakebin rc
+  dir="$TMP_ROOT/stop-failure"; mkdir -p "$dir"
+  fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[$(session stop-fail "$dir")]}" 0 17)
+  run_stop_under "$dir" "$dir" "$fakebin"; rc=$?
+  expect_code 75 "$rc" "a failed stop must make retirement unconfirmed"
+  assert_grep "prime-agent stop stop-fail failed with exit 17" "$dir/stop.err" \
+    "stop failure did not report the concrete command status"
+  [ "$(cat "$dir/calls")" = "stop stop-fail" ] || fail "stop failure did not drive the CLI"
+  pass "fm_prime_agent_stop_sessions_under: a failed stop reports unconfirmed retirement"
+}
+
+test_cli_timeouts_are_unconfirmed() {
+  local dir fakebin rc
+  dir="$TMP_ROOT/list-timeout"; mkdir -p "$dir"
+  fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[$(session slow-list "$dir")]}" 0 0 2)
+  FM_PRIME_AGENT_CLI_TIMEOUT=1 run_stop_under "$dir" "$dir" "$fakebin"; rc=$?
+  expect_code 75 "$rc" "a list timeout must make retirement unconfirmed"
+  assert_grep "prime-agent list --json timed out after 1s" "$dir/stop.err" \
+    "list timeout did not report the concrete deadline"
+
+  dir="$TMP_ROOT/stop-timeout"; mkdir -p "$dir"
+  fakebin=$(fake_prime_agent "$dir" "{\"sessions\":[$(session slow-stop "$dir")]}" 0 0 0 2)
+  FM_PRIME_AGENT_CLI_TIMEOUT=1 run_stop_under "$dir" "$dir" "$fakebin"; rc=$?
+  expect_code 75 "$rc" "a stop timeout must make retirement unconfirmed"
+  assert_grep "prime-agent stop slow-stop timed out after 1s" "$dir/stop.err" \
+    "stop timeout did not report the concrete deadline"
+  pass "fm_prime_agent_stop_sessions_under: list and stop timeouts report unconfirmed retirement"
 }
 
 test_only_sessions_under_the_directory_are_stopped
 test_a_symlinked_target_matches_either_recorded_form
 test_missing_binary_is_a_silent_no_op
-test_unusable_listing_stops_nothing
-test_unsafe_session_id_is_never_passed_to_the_cli
+test_listing_failure_is_unconfirmed
+test_invalid_listing_data_is_unconfirmed
+test_unsafe_session_id_is_unconfirmed
+test_stop_failure_is_unconfirmed
+test_cli_timeouts_are_unconfirmed

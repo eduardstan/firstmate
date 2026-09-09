@@ -57,7 +57,8 @@ A file named both by `-e` and by auto-discovery loads twice (two factory calls, 
 
 ### Prime Agent (prime-agent) native delivery, 2026-09-08
 
-The Prime Agent adapter was verified on 2026-09-08 with prime-agent 0.9.1 and the openai-codex `gpt-5.6-luna` model across crewmate, scout, local secondmate, and primary roles on Linux x86_64 through the Herdr backend.
+This is fork-only evidence for the full adapter and does not describe the three-slice upstream branch, which refuses Prime Agent secondmates and has no Prime Agent primary supervision assets.
+The full adapter on the fork was verified on 2026-09-08 with prime-agent 0.9.1 and the openai-codex `gpt-5.6-luna` model across crewmate, scout, local secondmate, and primary roles on Linux x86_64 through the Herdr backend.
 Both tracked `.prime/agent/extensions/*.ts` files auto-load (`fm-primary-prime-watch.ts` and `fm-primary-turnend-guard.ts`), registering the `fm_watch_arm_prime` watcher arm tool and the PreToolUse seatbelt check.
 Because prime-agent emits `agent_end` rather than `agent_settled`, the turn-end guard reconstructs settle from `agent_end` with an auto-retry grace window.
 Prime Agent runs detached daemon workers under a per-user supervisor, so teardown retires sessions by cwd via `fm_prime_agent_stop_sessions_under` rather than stopping the daemon.
