@@ -205,8 +205,11 @@ fm_composer_normalize_trim_var() {  # <varname>
 # codes are processed left to right within a sequence, so "ESC[0;2m" reads as dim.
 # LC_ALL=C makes awk walk bytes, so multibyte glyphs (e.g. ❯) and de-emphasised
 # runs alike pass through or drop intact without locale-dependent classes.
-fm_composer_strip_ghost() {
-  LC_ALL=C awk -v lumamax="${FM_COMPOSER_GHOST_LUMA_MAX:-128}" '
+# _FM_COMPOSER_SGR_AWK_FUNCS: the ONE definition of "read an SGR introducer's
+# code and skip its colour payload" (38/48/58, both the `;` and the ITU `:`
+# form). Shared verbatim by fm_composer_strip_ghost and
+# fm_composer_row_is_prime_agent_surface so this parsing exists exactly once.
+_FM_COMPOSER_SGR_AWK_FUNCS='
     function sgr_code(v, b) {
       b = v
       sub(/:.*/, "", b)
@@ -223,6 +226,11 @@ fm_composer_strip_ghost() {
       if (code == "2") return p + 4
       return p + 1
     }
+'
+
+fm_composer_strip_ghost() {
+  LC_ALL=C awk -v lumamax="${FM_COMPOSER_GHOST_LUMA_MAX:-128}" '
+    '"$_FM_COMPOSER_SGR_AWK_FUNCS"'
     # fg38_is_dark: 1 when the SGR 38 foreground starting at param p is a
     # TRUECOLOR (38;2 / 38:2) whose luminance is below lumamax; 0 otherwise
     # (a 38;5 palette colour, a bright truecolor, or a malformed run).
@@ -549,49 +557,44 @@ fm_composer_prime_agent_idle_re() {
 }
 
 fm_composer_row_is_prime_agent_surface() {  # <raw-styled-row> <plain-trimmed-row>
-  local raw=$1 plain=$2 csi=$'\033[' rest seq params p next i n open=0
+  local raw=$1 plain=$2
   case "$plain" in '>'|'> '*) ;; *) return 1 ;; esac
-  rest=${raw%%>*}
-  while :; do
-    case "$rest" in *"$csi"*) rest=${rest#*"$csi"} ;; *) break ;; esac
-    case "$rest" in *m*) seq=${rest%%m*} ;; *) break ;; esac
-    case "$seq" in *[!0-9\;:]*) continue ;; esac
-    [ -n "$seq" ] || { open=0; continue; }
-    IFS=';' read -r -a params <<< "$seq" || true
-    i=0
-    n=${#params[@]}
-    while [ "$i" -lt "$n" ]; do
-      p=${params[i]}
-      case "$p" in
-        *:*)
-          p=${p%%:*}
-          case "$p" in ''|*[!0-9]*) p=-1 ;; *) p=$((10#$p)) ;; esac
-          [ "$p" != 48 ] || open=1
-          i=$((i + 1))
-          continue
-          ;;
-        *[!0-9]*) i=$((i + 1)); continue ;;
-        '') p=0 ;;
-        *) p=$((10#$p)) ;;
-      esac
-      case "$p" in
-        0|49) open=0 ;;
-        38|48|58)
-          [ "$p" != 48 ] || open=1
-          next=${params[i + 1]-}
-          case "$next" in ''|*[!0-9]*) next=-1 ;; *) next=$((10#$next)) ;; esac
-          case "$next" in
-            5) i=$((i + 3)) ;;
-            2) i=$((i + 5)) ;;
-            *) i=$((i + 2)) ;;
-          esac
-          continue
-          ;;
-      esac
-      i=$((i + 1))
-    done
-  done
-  [ "$open" = 1 ]
+  raw=${raw%%>*}
+  printf '%s\n' "$raw" | LC_ALL=C awk '
+    '"$_FM_COMPOSER_SGR_AWK_FUNCS"'
+    {
+      line = $0; n = length(line); i = 1; open = 0
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (c == "\033") {            # ESC: consume a CSI ... final-byte sequence
+          j = i + 1
+          if (substr(line, j, 1) == "[") {
+            j++; params = ""
+            while (j <= n) {
+              cc = substr(line, j, 1)
+              if (cc ~ /[@-~]/) break
+              params = params cc; j++
+            }
+            if (j <= n && substr(line, j, 1) == "m") {   # SGR: track background state
+              if (params == "") params = "0"
+              k = split(params, a, ";")
+              for (p = 1; p <= k; p++) {
+                v = a[p]; code = sgr_code(v)
+                if (code == "38" || code == "48" || code == "58") {
+                  if (code == "48") open = 1
+                  p = skip_color_payload(a, p, k)
+                } else if (code == "0" || code == "49") open = 0
+              }
+            }
+            if (j <= n) { i = j + 1; continue }
+          }
+          i = i + 1; continue          # lone/other ESC: drop the ESC byte only
+        }
+        i++
+      }
+      exit (open == 1) ? 0 : 1
+    }
+  '
 }
 
 
@@ -1226,7 +1229,7 @@ _fm_composer_select_cursorless() {
      && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ]; then
     if [ "${FM_COMPOSER_CAP_IDENTITY:-0}" = 1 ] && [ "$generic" -ge 0 ]; then
       FM_COMPOSER_NEEDS_LONE_RULE_IDENTITY=1
-    elif [ "$FM_COMPOSER_SELECTED_KIND" != bare ]; then
+    else
       FM_COMPOSER_SELECTED_KIND=
       return 1
     fi
