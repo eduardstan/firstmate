@@ -92,12 +92,11 @@ SH
   # Ordinary teardown reports any final ledger outcome before removing records.
   ln -s "$ROOT/bin/fm-inactive-reconcile.sh" "$fake/bin/fm-inactive-reconcile.sh"
   ln -s "$ROOT/bin/fm-parent-channel-lib.sh" "$fake/bin/fm-parent-channel-lib.sh"
-  # fm-prime-agent-lib.sh (and the fm-timeout-lib.sh it bounds its CLI calls
-  # with): teardown sources it unconditionally to retire prime-agent's detached
-  # daemon sessions. Neither does anything in this fixture, whose task has
-  # harness=claude, but both are real siblings teardown now requires.
+  # fm-prime-agent-lib.sh: teardown sources it unconditionally to retire
+  # prime-agent's detached daemon sessions. It does nothing in this fixture,
+  # whose task has harness=claude, but it is a real sibling teardown now
+  # requires. Its own fm-timeout-lib.sh bound is already linked above.
   ln -s "$ROOT/bin/fm-prime-agent-lib.sh" "$fake/bin/fm-prime-agent-lib.sh"
-  ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
   # fm-guard.sh: stub (teardown calls it with `|| true`).
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -195,9 +194,9 @@ SH
   ln -s "$ROOT/bin/fm-operational-input.sh" "$fake/bin/fm-operational-input.sh"
   ln -s "$ROOT/bin/fm-inactive-reconcile.sh" "$fake/bin/fm-inactive-reconcile.sh"
   ln -s "$ROOT/bin/fm-parent-channel-lib.sh" "$fake/bin/fm-parent-channel-lib.sh"
-  # Same newly-required prime-agent siblings as the builder above.
+  # Same newly-required prime-agent sibling as the builder above; its own
+  # fm-timeout-lib.sh bound is already linked above.
   ln -s "$ROOT/bin/fm-prime-agent-lib.sh" "$fake/bin/fm-prime-agent-lib.sh"
-  ln -s "$ROOT/bin/fm-timeout-lib.sh" "$fake/bin/fm-timeout-lib.sh"
   cat > "$fake/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
