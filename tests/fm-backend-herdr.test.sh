@@ -3390,7 +3390,7 @@ prime_agent_fake_ps() {  # <path> <row>...
 
 test_composer_state_prime_agent_bare_prompt_needs_both_signals() {
   local dir log resp fb out case_id
-  for case_id in both-live identity-only-dead-shell process-only; do
+  for case_id in both-live identity-only-dead-shell process-only no-surface pi-pane claude-pane; do
     dir="$TMP_ROOT/composer-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
     # The row prime-agent actually draws: the `>` glyph at normal intensity and
     # its rotating placeholder in dark truecolor, which the ghost stripper drops.
@@ -3408,6 +3408,19 @@ test_composer_state_prime_agent_bare_prompt_needs_both_signals() {
         prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
         printf '{"result":{"agent":{"agent":"","agent_status":""}}}\n' > "$resp/3.out"
         ;;
+      no-surface)
+        printf '> Try "explain how @<filepath> works"\n' > "$resp/1.out"
+        prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"prime-agent","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
+      pi-pane)
+        prime_agent_process_info w1:p2 prime-agent > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"pi","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
+      claude-pane)
+        prime_agent_process_info w1:p2 claude > "$resp/2.out"
+        printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/3.out"
+        ;;
     esac
     fb=$(make_herdr_fakebin "$dir")
     out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
@@ -3417,7 +3430,7 @@ test_composer_state_prime_agent_bare_prompt_needs_both_signals() {
       *) [ "$out" = unknown ] || fail "prime-agent case '$case_id' must remain unknown, got '$out'" ;;
     esac
   done
-  pass "fm_backend_herdr_composer_state: a bare '>' needs BOTH the live prime-agent process and its native identity"
+  pass "fm_backend_herdr_composer_state: a bare '>' needs the Prime surface, live process and native identity"
 }
 
 test_composer_state_prime_agent_real_text_is_pending() {
