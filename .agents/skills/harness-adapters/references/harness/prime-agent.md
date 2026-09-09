@@ -1,7 +1,8 @@
 # Prime Agent
 
 This slice registers Prime Agent as a distinct Pi-family harness and covers detection, crewmate/scout launch, and control mechanics.
-Herdr pane classification and detached-daemon-session retirement land in the following adapter slices; primary supervision does too, so a secondmate launch is refused here.
+Herdr pane classification has since landed too, owned by `../../../docs/herdr-backend.md`.
+Detached-daemon-session retirement and primary supervision land in the following adapter slices, so a secondmate launch is refused here.
 
 ## Detection
 
@@ -26,7 +27,8 @@ Detection was verified against Prime Agent 0.9.1 on Linux, with earlier checks a
 Control mechanics are Pi's, verified on Prime Agent 0.9.1: a single `Escape` cancels a turn, the composer is left empty afterwards so no clear key is needed, and `/quit` exits.
 `../../../bin/fm-spawn.sh --help` owns the executable-preflight mechanics: a missing `prime-agent` executable on PATH refuses before endpoint or metadata creation.
 
-## Scope of this slice
+## Scope of these slices
 
 Detection keys on the explicit `FM_PI_HARNESS=prime-agent` launch marker only, so a firstmate-launched worker identifies itself while a Prime Agent PRIMARY still resolves as Pi-family exactly as it did before.
+Herdr pane classification requires that same native identity, so a Prime Agent primary's panes are unaffected by it either.
 Ambient auto-detection of that primary, and a prime-agent secondmate, arrive with the supervision slices that give the value a supervision model, a supervision snippet, and the primary supervision extensions; a secondmate spawn is refused here rather than launched unsupervised.
