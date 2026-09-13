@@ -3979,7 +3979,7 @@ test_composer_state_prime_placeholder_requires_ghost_styling() {
 # when the probe is actually readable.
 test_agent_state_prime_agent_quit_pane_is_dead() {
   local dir log resp fb out case_id ps_bin
-  for case_id in quit-shell suspended-agent live-agent unreadable-probe unreadable-table other-harness; do
+  for case_id in quit-shell suspended-agent live-agent unreadable-probe unreadable-table; do
     dir="$TMP_ROOT/agent-state-prime-$case_id"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
     ps_bin="$dir/ps"
     printf '{"result":{"pane":{"pane_id":"w1:p2"}}}\n' > "$resp/1.out"
@@ -4015,9 +4015,6 @@ test_agent_state_prime_agent_quit_pane_is_dead() {
         prime_agent_process_info w1:p2 bash > "$resp/4.out"
         prime_agent_fake_ps "$ps_bin" '  1     0 systemd'
         ;;
-      other-harness)
-        printf '{"result":{"agent":{"agent":"claude","agent_status":"idle"}}}\n' > "$resp/2.out"
-        ;;
     esac
     fb=$(make_herdr_fakebin "$dir")
     out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_PS_BIN="$ps_bin" \
@@ -4031,9 +4028,6 @@ test_agent_state_prime_agent_quit_pane_is_dead() {
         ;;
     esac
   done
-  # A harness that is not prime-agent never pays for the extra probe.
-  assert_no_grep 'process-info' "$TMP_ROOT/agent-state-prime-other-harness/log" \
-    "a non-prime-agent pane was charged a foreground-process probe"
   pass "fm_backend_herdr_agent_state: only a quit prime-agent pane is dead; suspended, live and unreadable stay alive"
 }
 

@@ -18,6 +18,16 @@ HARNESS="$ROOT/bin/fm-harness.sh"
 TMP_ROOT=$(fm_test_tmproot fm-prime-agent-harness)
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 
+# detect_own defers to a structural (comm) ancestor of a DIFFERENT harness over
+# any marker, so without blinding the ancestry walk every plain marker
+# assertion below would resolve to whatever harness actually launched this
+# suite (see tests/lib.sh fm_fake_blind_ancestry) rather than the marker under
+# test. Cases that mean to test ancestry override PATH themselves (last
+# assignment wins under `env`), so this default only governs the marker-only
+# cases.
+BLIND_BIN=$(fm_fakebin "$TMP_ROOT/blind")
+fm_fake_blind_ancestry "$BLIND_BIN"
+
 # bin/fm-harness.sh reads verified ENV markers before ancestry, and a suite run
 # from inside one of those harnesses inherits its marker, which outranks
 # everything these cases set up: with an ambient CURSOR_AGENT=1 every assertion
@@ -29,6 +39,7 @@ scrubbed() {  # <env assignment>... <command> [arg]...
     -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER \
     -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
     -u ATLASSIAN_AGENT_TYPE -u ROVODEV_CLI -u FM_OMP_HARNESS \
+    PATH="$BLIND_BIN:$BASE_PATH" \
     "$@"
 }
 
@@ -41,12 +52,41 @@ detect() {  # <env assignment>...
 # macOS code signing), which is what `ps -o comm=` reports on both platforms.
 # Every `-c` body ends in a no-op so bash does not exec-optimize the single
 # command away and replace the named process.
+#
+# prime-agent has no structural (comm) arm in harness_process_verdict by
+# design, so a climb past this shim does not stop here the way it does for
+# omp - it keeps going into whatever real ancestor sits above the process that
+# ran this suite. A `ps` shim answers comm=/args=/ppid= genuinely for every
+# real pid EXCEPT it reports the shim's own ppid as 1, so the walk proves the
+# real kernel-reported comm name at this process and then terminates exactly
+# here, never reaching the suite's own (real) ancestry above it.
 make_named_shells() {  # <dir> -> echoes <bindir>
-  local dir=$1 name
+  local dir=$1 name real_ps
   mkdir -p "$dir"
   for name in prime-agent omp; do
     ln -sf /bin/bash "$dir/$name"
   done
+  real_ps=$(command -v ps) || return 1
+  cat > "$dir/ps" <<SH
+#!/usr/bin/env bash
+set -u
+field=
+pid=
+prev=
+for arg in "\$@"; do
+  [ "\$prev" = -o ] && field=\$arg
+  [ "\$prev" = -p ] && pid=\$arg
+  prev=\$arg
+done
+if [ "\$field" = ppid= ] && [ -n "\$pid" ]; then
+  comm=\$("$real_ps" -o comm= -p "\$pid" 2>/dev/null)
+  case "\$(basename -- "\$comm")" in
+    prime-agent|omp) printf '1\n'; exit 0 ;;
+  esac
+fi
+exec "$real_ps" "\$@"
+SH
+  chmod +x "$dir/ps"
   printf '%s' "$dir"
 }
 

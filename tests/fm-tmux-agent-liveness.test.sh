@@ -172,7 +172,7 @@ wait_for_state "$SESSION:prime-agent" alive \
 pass "tmux liveness: an exact prime-agent executable name classifies alive"
 
 new_window prime-agent-helper "$LAB/bin/prime-agent-helper" 900
-[ "$(fm_backend_tmux_classify_process_name prime-agent-helper)" = other ] \
+[ "$(fm_agent_process_classify_name prime-agent-helper)" = other ] \
   || fail "prime-agent-helper must stay outside the exact Prime Agent identity"
 wait_for_state "$SESSION:prime-agent-helper" ambiguous \
   || fail "prime-agent-helper must not classify as a live Prime Agent pane"

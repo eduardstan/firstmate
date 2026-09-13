@@ -2284,6 +2284,26 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
     working|idle|done|blocked) ;;
     *) printf 'unknown'; return 0 ;;
   esac
+  # Prime Agent keeps its registration after /quit, so its dedicated process
+  # probes distinguish a shell-only pane from a live or inconclusive pane.
+  if [ "$agent" = prime-agent ]; then
+    fm_backend_herdr_pane_prime_agent_foreground "$session" "$pane_id"
+    fg_rc=$?
+    case "$fg_rc" in
+      0) printf 'live'; return 0 ;;
+      1)
+        fm_backend_herdr_pane_prime_agent_in_subtree "$session" "$pane_id"
+        live_rc=$?
+        case "$live_rc" in
+          0|2) printf 'live' ;;
+          1) printf 'no-agent' ;;
+          *) printf 'unknown' ;;
+        esac
+        return 0
+        ;;
+      *) printf 'live'; return 0 ;;
+    esac
+  fi
   case "$(fm_backend_herdr_pane_process_state "$session" "$pane_id")" in
     agent|other) printf 'live' ;;
     shell) printf 'stale-agent' ;;
