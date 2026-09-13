@@ -49,6 +49,7 @@ SH
   chmod +x "$fakebin/timeout" "$fakebin/cursor-agent"
   make_spawn_pi_probe "$fakebin" pi
   make_spawn_pi_probe "$fakebin" pi-signed
+  fm_fake_exit0 "$fakebin" prime-agent
   printf '%s\n' "$fakebin"
 }
 
@@ -135,9 +136,80 @@ test_no_profile_keeps_claude_profile_defaults() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude default default
 
   launch=$(cat "$LAUNCH_LOG")
-  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
+  expected="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/launch-brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
   pass "no --model/--effort records defaults and types the claude launch instructions"
+}
+
+# A prime-agent crewmate is the launch boundary that establishes the identity
+# marker bin/fm-harness.sh keys on, so the rendered launch must carry it; the
+# worker would otherwise resolve as plain Pi.
+test_prime_agent_launch_establishes_its_harness_marker() {
+  local rec id out status launch
+  id=profile-prime-agent-z1c
+  rec=$(make_spawn_case profile-prime-agent prime-agent "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    --model openai-codex/gpt-5.6-luna)
+  status=$?
+  expect_code 0 "$status" "prime-agent spawn should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "FM_PI_HARNESS=prime-agent env -u CLAUDECODE -u GROK_AGENT '$FAKEBIN_DIR/prime-agent'" \
+    "prime-agent launch did not establish FM_PI_HARNESS=prime-agent with its resolved executable path"
+  assert_not_contains "$launch" "GROK_AGENT prime-agent " \
+    "prime-agent launch still asks the worker pane to resolve a bare executable"
+  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER" \
+    "prime-agent launch kept inherited cursor/gemini identity markers"
+  assert_contains "$launch" "--model 'openai-codex/gpt-5.6-luna'" \
+    "prime-agent launch dropped the selected model"
+  assert_contains "$launch" "-e '$HOME_DIR/state/$id.prime-ext.ts'" \
+    "prime-agent launch did not load its turn-end extension"
+  [ -s "$HOME_DIR/state/$id.prime-ext.ts" ] \
+    || fail "prime-agent spawn did not write its turn-end extension"
+  pass "a prime-agent launch establishes the harness marker its own detection needs"
+}
+
+test_prime_agent_missing_binary_refuses_before_endpoint_or_metadata() {
+  local rec id out status
+  id=profile-prime-agent-missing-z1e
+  rec=$(make_spawn_case profile-prime-agent-missing prime-agent "$id")
+  read_case_record "$rec"
+  rm -f "$FAKEBIN_DIR/prime-agent"
+  : > "$LAUNCH_LOG"
+
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
+    FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$WT_DIR" TMUX="fake,1,0" \
+    FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PATH="$FAKEBIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1)
+  status=$?
+  expect_code 1 "$status" "a missing prime-agent executable should refuse the spawn"
+  assert_contains "$out" "prime-agent executable not found on PATH" \
+    "missing prime-agent refusal did not name the actionable requirement"
+  assert_absent "$HOME_DIR/state/$id.meta" "missing prime-agent refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "missing prime-agent refusal typed a launch command"
+  pass "prime-agent refuses safely and actionably when the selected executable is unavailable"
+}
+
+# A prime-agent secondmate has no primary supervision protocol yet, so the spawn
+# must refuse by name rather than fall through to the raw-launch escape hatch.
+test_prime_agent_secondmate_is_refused() {
+  local rec id out status
+  id=profile-prime-agent-sm-z1d
+  rec=$(make_spawn_case profile-prime-agent-sm prime-agent "$id")
+  read_case_record "$rec"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" prime-agent --secondmate)
+  status=$?
+  [ "$status" -ne 0 ] || fail "prime-agent was accepted as a secondmate harness"
+  assert_contains "$out" "crewmate/scout adapter only" \
+    "prime-agent secondmate refusal did not explain the boundary"
+  case "$out" in
+    *"unknown harness"*) fail "prime-agent secondmate refusal claimed the harness is unknown: $out" ;;
+  esac
+  pass "a prime-agent secondmate spawn is refused by name, not as an unknown harness"
 }
 
 test_non_cursor_launch_clears_inherited_cursor_markers() {
@@ -151,7 +223,7 @@ test_non_cursor_launch_clears_inherited_cursor_markers() {
   status=$?
   expect_code 0 "$status" "claude spawn under Cursor markers should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI" \
+  assert_contains "$launch" "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER" \
     "non-cursor launch must clear both inherited Cursor identity markers"
   pass "non-cursor launches clear inherited Cursor identity markers"
 }
@@ -417,7 +489,7 @@ test_claude_threads_model_and_effort() {
   expect_code 0 "$status" "claude spawn with profile flags should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet high
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}' --model 'sonnet' --effort 'high'" \
+  assert_contains "$launch" "claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' --model 'sonnet' --effort 'high'" \
     "claude launch did not thread model and effort flags"
   assert_not_contains "$launch" "--tui-mode" "non-Pi launches must not receive Pi's TUI mode override"
   pass "claude receives --model and --effort profile flags"
@@ -599,6 +671,74 @@ test_opencode_threads_model_and_ignores_effort_axis() {
   pass "opencode receives --model and omits the unsupported effort axis"
 }
 
+test_native_effort_validator_keeps_axes_separate() {
+  local harness
+  for harness in pi pi-signed; do
+    "$ROOT/bin/fm-harness.sh" validate-native-effort "$harness" codex-native/gpt-6-astra ultra \
+      || fail "native validator refused supported harness $harness"
+  done
+  if "$ROOT/bin/fm-harness.sh" validate-native-effort 'pi:codex-native/forged' '' ultra 2>/dev/null; then
+    fail "native validator accepted a model prefix embedded in the harness axis"
+  fi
+  pass "native effort validator checks harness and model as separate axes"
+}
+
+test_native_pi_ultra_is_explicit_and_model_scoped() {
+  local rec id out launch harness mode native_profile model
+  for harness in pi pi-signed; do
+    for mode in no-mistakes direct-PR; do
+      id="ultra-$harness-$mode"
+      rec=$(make_spawn_case "$id" "$harness" "$id")
+      read_case_record "$rec"
+      out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+        --harness "$harness" --model codex-native/gpt-6-astra --effort ultra --mode "$mode" --yolo off)
+      expect_code 0 "$?" "native Ultra spawn failed: $out"
+      assert_meta_profile "$HOME_DIR/state/$id.meta" "$harness" codex-native/gpt-6-astra ultra
+      launch=$(cat "$LAUNCH_LOG")
+      assert_contains "$launch" "--model 'codex-native/gpt-6-astra' --codex-effort 'ultra'" "native Ultra flag missing"
+      assert_not_contains "$launch" "--thinking" "native Ultra was converted into Pi thinking"
+      assert_not_contains "$launch" "'max'" "native Ultra was aliased to max"
+    done
+  done
+  for native_profile in 'claude:codex-native/gpt-6-astra' 'codex:codex-native/gpt-6-astra' 'pi:openai-codex/gpt-6-astra' 'pi:default' 'pi:codex-native/'; do
+    harness=${native_profile%%:*}; model=${native_profile#*:}; id="ultra-refused-$RANDOM"
+    rec=$(make_spawn_case "$id" "$harness" "$id")
+    read_case_record "$rec"
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+      --harness "$harness" --model "$model" --effort ultra 2>&1)
+    expect_code 1 "$?" "unsupported Ultra profile should refuse: $native_profile"
+    assert_contains "$out" "ultra effort requires pi or pi-signed" "native-only refusal missing"
+    [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "unsupported Ultra published metadata"
+    [ ! -e "$HOME_DIR/state/$id.busy-gen" ] || fail "unsupported Ultra provisioned lifecycle wiring"
+    [ ! -s "$LAUNCH_LOG" ] || fail "unsupported Ultra launched an agent"
+  done
+  id=ultra-raw-refused
+  rec=$(make_spawn_case "$id" pi "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+    'pi --offline' --model codex-native/gpt-6-astra --effort ultra 2>&1)
+  expect_code 1 "$?" "raw launch silently omitted the native Ultra flag"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "raw Ultra launch published metadata"
+  assert_contains "$out" "canonical --harness pi or pi-signed" "raw launch refusal was not actionable"
+  pass "Ultra is explicit for native Pi and Pi-signed, including direct-PR, and refuses unsupported profiles before provisioning"
+}
+
+test_batch_preserves_native_ultra() {
+  local rec id1=ultra-batch-a id2=ultra-batch-b out launch
+  rec=$(make_spawn_case ultra-batch pi "$id1" "$id2")
+  read_case_record "$rec"
+  enable_dispatch_profile "$HOME_DIR"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness pi --model codex-native/gpt-6-astra --effort ultra)
+  expect_code 0 "$?" "native Ultra batch failed: $out"
+  assert_meta_profile "$HOME_DIR/state/$id1.meta" pi codex-native/gpt-6-astra ultra
+  assert_meta_profile "$HOME_DIR/state/$id2.meta" pi codex-native/gpt-6-astra ultra
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--codex-effort 'ultra'" "batch dropped native effort"
+  assert_not_contains "$launch" "--thinking 'ultra'" "batch passed an invalid Pi level"
+  pass "batch dispatch preserves native Ultra in metadata and launch flags"
+}
+
 test_pi_threads_model_and_max_effort() {
   local rec id out status launch
   id=profile-pi-z8
@@ -773,7 +913,7 @@ test_claude_forwards_firstmate_config_dir_when_set() {
   status=$?
   expect_code 0 "$status" "claude spawn with CLAUDE_CONFIG_DIR set should succeed"
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\"}'" \
+  assert_contains "$launch" "CLAUDE_CONFIG_DIR='$CASE_DIR/claude-work' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude --dangerously-skip-permissions --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}'" \
     "claude launch did not forward firstmate's CLAUDE_CONFIG_DIR to the crewmate pane"
   pass "claude forwards firstmate's CLAUDE_CONFIG_DIR so the crewmate uses the same credential store"
 }
@@ -809,6 +949,49 @@ test_non_claude_harness_ignores_config_dir() {
   assert_not_contains "$launch" "CLAUDE_CONFIG_DIR=" \
     "non-claude harness launch must not receive the claude-specific config-dir prefix"
   pass "non-claude harnesses do not receive the claude CLAUDE_CONFIG_DIR prefix"
+}
+
+# The captain's attribution policy lives in the `user` settings scope, which a
+# spawned worker's settings sources are not guaranteed to load. Every claude
+# launch must therefore carry the policy itself, or a spawned worker writes
+# Co-Authored-By and Claude-Session trailers into commits and PR bodies.
+assert_attribution_policy() {  # <launch-command> <what>
+  local launch=$1 what=$2
+  assert_contains "$launch" '"attribution":' "$what launch carries no attribution policy"
+  assert_contains "$launch" '"commit":""' "$what launch does not silence the commit trailer"
+  assert_contains "$launch" '"pr":""' "$what launch does not silence the PR-body attribution"
+  assert_contains "$launch" '"sessionUrl":false' "$what launch does not silence the session URL"
+}
+
+test_claude_crewmate_launch_carries_the_attribution_policy() {
+  local rec id out status launch
+  id=profile-claude-attribution-z22
+  rec=$(make_spawn_case profile-claude-attribution claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude crewmate spawn should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_attribution_policy "$launch" "claude crewmate"
+  pass "a claude crewmate launch carries the attribution-off policy in its own settings"
+}
+
+test_claude_secondmate_launch_carries_the_attribution_policy() {
+  local rec id sm out status launch
+  id=profile-secondmate-attribution-z23
+  rec=$(make_spawn_case profile-secondmate-attribution claude "$id")
+  read_case_record "$rec"
+  sm="$CASE_DIR/secondmate-home"
+  make_seeded_secondmate_home "$sm" "$id"
+
+  out=$(FM_TEST_CLAUDE_CONFIG_DIR="$CASE_DIR/claude-work" \
+    run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 0 "$status" "secondmate claude spawn should succeed"$'\n'"$out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_attribution_policy "$launch" "claude secondmate"
+  pass "a claude secondmate launch carries the attribution-off policy too"
 }
 
 test_active_dispatch_profile_does_not_block_secondmate_launch() {
@@ -1178,8 +1361,103 @@ SH
   pass "fm-spawn: actual ship/scout launch commands deliver the worker role contract"
 }
 
+# config/claude-permission-mode (bin/fm-spawn.sh header): absent and `bypass`
+# must both produce today's launch byte-for-byte, `auto` swaps only the
+# permission flag, and any other token refuses before endpoint or metadata.
+claude_expected_launch() {  # <home> <id> <permission-flag>
+  local home=$1 id=$2 flag=$3
+  printf '%s' "env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_SEND_FEEDBACK=0 claude $flag --settings '{\"feedbackDrafts\":\"off\",\"attribution\":{\"commit\":\"\",\"pr\":\"\",\"sessionUrl\":false}}' \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$home/data/$id/launch-brief.md')\""
+}
+
+test_claude_permission_mode_bypass_matches_absent_launch() {
+  local rec id out status launch expected
+  id=permmode-bypass-z19
+  rec=$(make_spawn_case permmode-bypass claude "$id")
+  read_case_record "$rec"
+  printf 'bypass\n' > "$HOME_DIR/config/claude-permission-mode"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude spawn with claude-permission-mode=bypass should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  expected=$(claude_expected_launch "$HOME_DIR" "$id" --dangerously-skip-permissions)
+  [ "$launch" = "$expected" ] || fail "explicit bypass did not reproduce the absent-file launch"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  pass "config/claude-permission-mode=bypass launches exactly as an absent file does"
+}
+
+test_claude_permission_mode_auto_swaps_only_the_permission_flag() {
+  local rec id out status launch expected
+  id=permmode-auto-z20
+  rec=$(make_spawn_case permmode-auto claude "$id")
+  read_case_record "$rec"
+  # Surrounding whitespace is trimmed, so an editor's trailing newline or indent is fine.
+  printf '  auto\n' > "$HOME_DIR/config/claude-permission-mode"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "claude spawn with claude-permission-mode=auto should succeed"
+  assert_contains "$out" "spawned $id harness=claude" "auto spawn did not report claude"
+  launch=$(cat "$LAUNCH_LOG")
+  expected=$(claude_expected_launch "$HOME_DIR" "$id" '--permission-mode auto')
+  [ "$launch" = "$expected" ] || fail "auto changed more than the permission flag"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  assert_not_contains "$launch" "--dangerously-skip-permissions" "auto launch must not request bypass mode"
+  pass "config/claude-permission-mode=auto replaces --dangerously-skip-permissions with --permission-mode auto"
+}
+
+test_claude_permission_mode_auto_reaches_scout_launch() {
+  local rec id out status launch
+  id=permmode-scout-z21
+  rec=$(make_spawn_case permmode-scout claude "$id")
+  read_case_record "$rec"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --scout)
+  status=$?
+  expect_code 0 "$status" "claude scout spawn with claude-permission-mode=auto should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "claude --permission-mode auto --settings" "scout launch did not carry --permission-mode auto"
+  assert_not_contains "$launch" "--dangerously-skip-permissions" "scout launch must not request bypass mode"
+  pass "config/claude-permission-mode=auto reaches scout launches too"
+}
+
+test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata() {
+  local rec id out status
+  id=permmode-invalid-z22
+  rec=$(make_spawn_case permmode-invalid claude "$id")
+  read_case_record "$rec"
+  printf 'yolo\n' > "$HOME_DIR/config/claude-permission-mode"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 1 "$status" "an unrecognized claude-permission-mode token must refuse the spawn"
+  assert_contains "$out" "config/claude-permission-mode holds 'yolo'" "refusal must name the file and the offending token"
+  assert_contains "$out" "bypass" "refusal must list bypass as an accepted value"
+  assert_contains "$out" "--permission-mode auto" "refusal must list auto as an accepted value"
+  [ ! -s "$LAUNCH_LOG" ] || fail "an invalid permission mode must launch nothing (got: $(cat "$LAUNCH_LOG"))"
+  assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written"
+  pass "an unrecognized config/claude-permission-mode token refuses before any endpoint or metadata"
+}
+
+test_non_claude_harness_ignores_claude_permission_mode() {
+  local rec id out status launch
+  id=permmode-codex-z23
+  rec=$(make_spawn_case permmode-codex codex "$id")
+  read_case_record "$rec"
+  printf 'auto\n' > "$HOME_DIR/config/claude-permission-mode"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --harness codex)
+  status=$?
+  expect_code 0 "$status" "codex spawn under claude-permission-mode=auto should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "codex " "codex launch did not run codex"
+  assert_not_contains "$launch" "--permission-mode" "the claude permission flag must not leak into a codex launch"
+  pass "config/claude-permission-mode changes claude launches only"
+}
+
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
+test_prime_agent_launch_establishes_its_harness_marker
+test_prime_agent_secondmate_is_refused
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
@@ -1201,15 +1479,26 @@ test_cursor_threads_model_workspace_and_omits_effort_axis
 test_cursor_refuses_model_absent_from_live_catalog
 test_cursor_failed_catalog_probe_does_not_block_spawn
 test_opencode_threads_model_and_ignores_effort_axis
+test_native_effort_validator_keeps_axes_separate
+test_native_pi_ultra_is_explicit_and_model_scoped
+test_batch_preserves_native_ultra
 test_pi_threads_model_and_max_effort
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
+test_prime_agent_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
 test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset
+test_claude_permission_mode_bypass_matches_absent_launch
+test_claude_permission_mode_auto_swaps_only_the_permission_flag
+test_claude_permission_mode_auto_reaches_scout_launch
+test_claude_permission_mode_invalid_refuses_before_endpoint_or_metadata
+test_non_claude_harness_ignores_claude_permission_mode
 test_non_claude_harness_ignores_config_dir
+test_claude_crewmate_launch_carries_the_attribution_policy
+test_claude_secondmate_launch_carries_the_attribution_policy
 test_active_dispatch_profile_does_not_block_secondmate_launch
 
 echo "# all fm-spawn-dispatch-profile tests passed"

@@ -119,7 +119,7 @@ wait_for_state() {  # <target> <expected> [tries]
 title_classifies_agent() {  # <target>
   local name
   name=$(fm_backend_tmux_current_command "$1" 2>/dev/null)
-  [ "$(fm_backend_tmux_classify_process_name "$name")" = agent ]
+  [ "$(fm_agent_process_classify_name "$name")" = agent ]
 }
 
 # Does the foreground-process-group identity, including argv[0], name one?
@@ -127,13 +127,13 @@ comms_classify_agent() {  # <target>
   local name
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ "$(fm_backend_tmux_classify_process_name "$name")" = agent ] && return 0
+    [ "$(fm_agent_process_classify_name "$name")" = agent ] && return 0
   done <<EOF
 $(fm_backend_tmux_foreground_comms "$1")
 EOF
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    [ "$(fm_backend_tmux_classify_process_name '' "$name")" = agent ] && return 0
+    [ "$(fm_agent_process_classify_name '' "$name")" = agent ] && return 0
   done <<EOF
 $(fm_backend_tmux_foreground_argv0s "$1")
 EOF
@@ -172,7 +172,7 @@ wait_for_state "$SESSION:prime-agent" alive \
 pass "tmux liveness: an exact prime-agent executable name classifies alive"
 
 new_window prime-agent-helper "$LAB/bin/prime-agent-helper" 900
-[ "$(fm_backend_tmux_classify_process_name prime-agent-helper)" = other ] \
+[ "$(fm_agent_process_classify_name prime-agent-helper)" = other ] \
   || fail "prime-agent-helper must stay outside the exact Prime Agent identity"
 wait_for_state "$SESSION:prime-agent-helper" ambiguous \
   || fail "prime-agent-helper must not classify as a live Prime Agent pane"

@@ -13,16 +13,19 @@ DOC_DIR="$REPO_ROOT/docs/supervision-protocols"
 HARNESS=
 READ_ONLY=0
 AFK=0
+AFK_MODE=away
 X_MODE=0
 REPAIR_LINE=0
 QUEUE_PENDING=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line] [--queue-pending 0|1]
+Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--afk-mode away|quiet] [--x-mode 0|1] [--repair-line] [--queue-pending 0|1]
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
+--afk-mode only matters when --afk 1 (present); it selects the away-mode vs
+quiet-mode (kunchenguid/firstmate#2356) wording, and defaults to away.
 EOF
 }
 
@@ -48,6 +51,14 @@ while [ "$#" -gt 0 ]; do
     --afk)
       [ "$#" -gt 1 ] || { echo "error: --afk requires 0 or 1" >&2; exit 2; }
       AFK=$(bool_value "$2")
+      shift 2
+      ;;
+    --afk-mode)
+      [ "$#" -gt 1 ] || { echo "error: --afk-mode requires away or quiet" >&2; exit 2; }
+      case "$2" in
+        away|quiet) AFK_MODE=$2 ;;
+        *) AFK_MODE=away ;;
+      esac
       shift 2
       ;;
     --x-mode)
@@ -81,7 +92,7 @@ if [ -z "$HARNESS" ]; then
 fi
 
 case "$HARNESS" in
-  claude|codex|opencode|pi|grok|cursor|prime-agent|omp) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
+  claude|codex|opencode|pi|grok|cursor|omp) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
   pi-signed) SNIPPET="$DOC_DIR/pi.md" ;;
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
@@ -90,8 +101,6 @@ esac
 checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
 pi_ext="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
-prime_ext="$FM_ROOT/.prime/agent/extensions/fm-primary-prime-watch.ts"
-prime_turnend_ext="$FM_ROOT/.prime/agent/extensions/fm-primary-turnend-guard.ts"
 omp_ext="$FM_ROOT/.omp/extensions/fm-primary-omp-watch.ts"
 omp_turnend_ext="$FM_ROOT/.omp/extensions/fm-primary-turnend-guard.ts"
 x_mode_env="$CONFIG/x-mode.env"
@@ -113,8 +122,6 @@ render_snippet() {
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line//__FM_PI_EXT__/$pi_ext}
     line=${line//__FM_PI_TURNEND_EXT__/$pi_turnend_ext}
-    line=${line//__FM_PRIME_EXT__/$prime_ext}
-    line=${line//__FM_PRIME_TURNEND_EXT__/$prime_turnend_ext}
     line=${line//__FM_OMP_EXT__/$omp_ext}
     line=${line//__FM_OMP_TURNEND_EXT__/$omp_turnend_ext}
     line=${line//__FM_X_MODE_ENV_SH__/$x_mode_env_sh}
@@ -129,7 +136,11 @@ repair_line() {
     return 0
   fi
   if [ "$AFK" -eq 1 ]; then
-    printf '%s\n' 'Away mode owns watcher supervision; load /afk and ensure the daemon is running instead of starting normal supervision directly.'
+    if [ "$AFK_MODE" = quiet ]; then
+      printf '%s\n' 'Quiet mode owns watcher supervision; load /quiet and ensure the daemon is running instead of starting normal supervision directly.'
+    else
+      printf '%s\n' 'Away mode owns watcher supervision; load /afk and ensure the daemon is running instead of starting normal supervision directly.'
+    fi
     return 0
   fi
 
@@ -150,9 +161,6 @@ repair_line() {
       ;;
     pi|pi-signed)
       printf '%s%s%s%s%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e ' "$pi_turnend_ext" ' -e ' "$pi_ext" ' if the extensions are not loaded.'
-      ;;
-    prime-agent)
-      printf '%s%s%s%s%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the prime-agent tool fm_watch_arm_prime, or restart prime-agent with -e ' "$prime_turnend_ext" ' -e ' "$prime_ext" ' if extension discovery is disabled.'
       ;;
     omp)
       printf '%s%s%s%s%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the omp tool fm_watch_arm_omp, or restart omp inside this home so ' "$omp_turnend_ext" ' and ' "$omp_ext" ' auto-load from .omp/extensions/ (use -e with both paths only when starting omp from another directory).'
@@ -182,9 +190,6 @@ ordinary_wake_line() {
       ;;
     pi|pi-signed)
       printf '%s\n' '- Ordinary wake: the Pi extension already owns watcher continuity; do not arm another cycle.'
-      ;;
-    prime-agent)
-      printf '%s\n' '- Ordinary wake: the prime-agent extension already owns watcher continuity; do not arm another cycle.'
       ;;
     omp)
       printf '%s\n' '- Ordinary wake: the omp extension already owns watcher continuity; do not arm another cycle.'
@@ -220,9 +225,13 @@ else
   printf '%s\n' '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
 fi
 if [ "$AFK" -eq 1 ]; then
-  printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
+  if [ "$AFK_MODE" = quiet ]; then
+    printf '%s\n' '- Quiet mode: active; load /quiet and keep normal harness supervision paused while the daemon owns the watcher. Ordinary captain chat does NOT exit it - only an explicit /quiet off does.'
+  else
+    printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
+  fi
 else
-  printf '%s\n' '- Away mode: inactive.'
+  printf '%s\n' '- Away/quiet mode: inactive.'
 fi
 if [ "$X_MODE" -eq 1 ]; then
   printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
