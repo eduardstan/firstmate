@@ -1276,6 +1276,17 @@ pause_state_class() {  # <window> <task>
   printf '%s' "$class"
 }
 
+# task_waiting_for_merge: 0 only for a task that both declared it is finished
+# and still owns a valid, armed PR poll. A finished worker is deliberately idle
+# on the forge, so it uses the same bounded pause cadence as any other declared
+# external wait.
+task_waiting_for_merge() {  # <task>
+  local task=$1
+  [ -n "$task" ] || return 1
+  [ "$(status_line_verb "$(last_status_line "$STATE/$task.status")")" = "done" ] || return 1
+  fm_pr_poll_artifacts_valid "$STATE" "$task" "$SCRIPT_DIR/fm-pr-poll.sh" >/dev/null 2>&1
+}
+
 # The two records of one ordinary crew wait, and why its stale alarm reads both.
 #
 # status_is_paused_or_captain_held reads the status LINE a worker wrote, which is

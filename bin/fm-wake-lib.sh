@@ -281,7 +281,7 @@ fm_omp_extension_owns_supervision() {
 # family's markers the lock-owning session recorded. Exactly one family can
 # match because both bind to the same lock pid.
 fm_extension_owns_supervision() {
-  fm_pi_extension_owns_supervision "$1" "$2" || fm_omp_extension_owns_supervision "$1" "$2"
+  fm_pi_extension_owns_supervision "$1" "$2" || fm_prime_agent_extension_owns_supervision "$1" "$2" || fm_omp_extension_owns_supervision "$1" "$2"
 }
 
 fm_extension_pair_owns_supervision() {  # <state> <extension-dir> <source:marker>...
@@ -292,6 +292,22 @@ fm_extension_pair_owns_supervision() {  # <state> <extension-dir> <source:marker
     source=${pair%%:*}
     marker=${pair#*:}
     version=$(fm_pi_extension_version "$dir/$source") || return 1
+    fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
+  done
+  session_pid=$(sed -n '1p' "$lock" 2>/dev/null)
+  fm_pid_alive "$session_pid"
+}
+
+# Prime Agent primary extension evidence mirrors the Pi proof but uses Prime's
+# own marker names and extension directory.
+fm_prime_agent_extension_owns_supervision() {
+  local state=$1 root=$2 lock="$1/.lock" session_pid pair source marker version
+  for pair in \
+    "fm-primary-prime-watch.ts:.prime-watch-extension-loaded" \
+    "fm-primary-turnend-guard.ts:.prime-turnend-extension-loaded"; do
+    source=${pair%%:*}
+    marker=${pair#*:}
+    version=$(fm_pi_extension_version "$root/.prime/agent/extensions/$source") || return 1
     fm_pi_extension_loaded "$state/$marker" "$version" "$lock" || return 1
   done
   session_pid=$(sed -n '1p' "$lock" 2>/dev/null)

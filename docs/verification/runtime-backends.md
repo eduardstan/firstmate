@@ -1903,3 +1903,12 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 6. `bin/fm-control.sh <id> exit` stopped the agent and `bin/fm-teardown.sh` returned the worktree and closed the item.
 
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the primary evidence; the worker path above is refreshed by repeating the scout dispatch after any omp upgrade.
+
+## Prime Agent (prime-agent)
+
+The Prime Agent adapter was verified on 2026-09-13 with prime-agent 0.9.1 on Linux x86_64.
+The shared process classifier recognizes the exact `prime-agent` executable and rejects similarly named helpers.
+Firstmate launch resolves the concrete executable path, sets `FM_PI_HARNESS=prime-agent`, clears inherited foreign markers, and loads the task extension.
+The launch path preserves provider, model, effort, and autonomous-gate options.
+`tests/fm-prime-agent-harness.test.sh`, `tests/fm-prime-watch-extension.test.sh`, and `tests/fm-spawn-dispatch-profile.test.sh` are the deterministic verification entry points.
+The primary extension and control behavior are additionally covered by `tests/fm-control-relaunch.test.sh`, `tests/fm-crew-state.test.sh`, and `tests/fm-teardown-endpoint-safety.test.sh`.

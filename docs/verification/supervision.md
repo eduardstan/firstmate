@@ -547,3 +547,10 @@ Observed output:
 ```
 
 The safe command-channel contract is covered without a notification by `tests/fm-daemon.test.sh`: the summary reaches both `$1` and stdin, every channel is process-group bounded, and a failed channel falls through.
+
+## Prime Agent (prime-agent) native delivery, 2026-09-13
+
+Prime Agent primary supervision uses the tracked `.prime/agent/extensions/fm-primary-prime-watch.ts` and `.prime/agent/extensions/fm-primary-turnend-guard.ts` extensions.
+The watcher extension owns continuity and the turn-end extension provides the recovery backstop.
+The task worker path is verified by `tests/fm-prime-agent-harness.test.sh` and `tests/fm-prime-watch-extension.test.sh` on Linux with prime-agent 0.9.1.
+The exact local validation command was `bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-harness.test.sh tests/fm-prime-watch-extension.test.sh`, which passed both scripts.

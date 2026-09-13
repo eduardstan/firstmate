@@ -1,58 +1,32 @@
 # Prime Agent
 
-Verified for crewmate, scout, local secondmate, and primary work on 2026-09-08 with Prime Agent 0.9.1 on Linux through Herdr, building on earlier verification with 0.7.1 and 0.7.2 in August 2026.
-Remote secondmates are not verified for this adapter and the remote spawn allowlist refuses `prime-agent`.
-The executable owners remain `../../../bin/fm-harness.sh`, `../../../bin/fm-spawn.sh`, `../../../bin/fm-control-lib.sh`, and `../../../bin/fm-prime-agent-lib.sh`.
-
-## Operating facts
-
-| Fact | Value |
-|---|---|
-| Binary | `prime-agent` is resolved from `PATH`; its Node bundle sets the exact process name `prime-agent` for the client, detached daemon supervisor, and session worker. |
-| Launch | `../../../bin/fm-spawn.sh` launches one positional encoded brief with `prime-agent`, clears inherited `CLAUDECODE` and `GROK_AGENT`, and stamps `FM_PI_HARNESS=prime-agent`; it adds provider, model, effort, and Prime Agent autonomous-gate flags only when those axes are selected. |
-| Model flag | `--model <model>` or `--model <provider>/<model>`; discover current support with `prime-agent model list [search]` rather than assuming a model namespace. |
-| Provider | `--provider <provider>` is supported by the Prime Agent launch path and is recorded independently from harness identity. |
-| Autonomy | Prime Agent has no permission gate, so no `--yolo` flag is needed; Firstmate's separate `--autonomous-gate` options own bounded completion runs. |
-| Trust | Project-local extensions auto-load without a trust gate; an unexercised first-run onboarding screen may still be controlled by Prime Agent's own settings. |
-| Control kinds | The verified adapter supports crewmates, scouts, LOCAL secondmates, and primary sessions, while remote secondmates remain refused. |
-| Marker | `PI_CODING_AGENT=true` establishes only the Pi family; `PRIME_AGENT_CODING_AGENT_DIR`, `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1`, and `FM_PI_HARNESS=prime-agent` disambiguate Prime Agent. |
-| Effort flag | `--thinking <low\|medium\|high\|xhigh\|max>`; all five shared values are emitted by `fm-spawn.sh` and were accepted by the verified Prime Agent CLI. |
-| Skill invocation | `/skill:<skill>`, for example `/skill:no-mistakes`; the bare `/<skill>` form is not a Prime Agent command. |
-| Exit command | `/quit` exits the client pane but leaves the detached daemon session live, so `fm-control.sh` uses this command and `fm-prime-agent-lib.sh` owns directory-scoped retirement. |
-| Interrupt | Single Escape cancels the running turn and leaves the agent at its composer without restoring the cancelled prompt, so the control plane sends no clear key. |
-| Composer | The bare `>` glyph is trusted as a composer only inside the verified Prime Agent background surface; an unstructured bare `>` remains unknown or a dead shell and is never an injection target. |
-| Extension | `-e <path>` loads an explicit extension, and Prime Agent auto-discovers project-local `.prime/agent/extensions/` without a project-trust gate; it does not discover `.pi/extensions/`. |
-| Busy state | Under Herdr, Prime Agent's built-in reporter supplies busy and idle state, so the crewmate extension written by `fm-spawn.sh` touches only the task turn-end notification marker and never seeds a firstmate busy record. |
-| Autonomous gates | Repeatable `--autonomous-gate` implies `--autonomous` for ship and scout tasks, with defaults of 24 continuations, 96 turns, 500000 tokens, 14400000 ms, 5 retries, and 900000 ms; the spawn refuses these gates for secondmates and no-mistakes ships. |
-| Resume | `prime-agent --resume <session-uuid>`, `-c` or `--continue`, and `prime-agent attach <agent>` are native resume shapes, while deterministic Firstmate recovery uses relaunch. |
-
-## Launch and extensions
-
-A crewmate or scout loads the active home's `state/<id>.prime-ext.ts` extension, which listens only for `turn_end` and touches the task turn-end notification marker.
-A local secondmate loads both its provisioned home's `.prime/agent/extensions/fm-primary-turnend-guard.ts` and `.prime/agent/extensions/fm-primary-prime-watch.ts`.
-The primary pair auto-discovers from `.prime/agent/extensions/`, and `../../../bin/fm-session-start.sh` reports when either loaded marker is missing or stale.
-The primary turn-end extension reconstructs logical-run settle from `agent_end` because Prime Agent has no `agent_settled` event, while the watcher extension owns the `fm_watch_arm_prime` tool and its successor arm lifecycle.
-The Prime Agent extension API has no `registerEntryRenderer`, so the Pi Calm extension and custom tool rendering are not loaded under this adapter.
-
-## Detached daemon and local secondmates
-
-Each root Prime Agent session runs in a detached worker under one per-user supervisor, and closing the client or sending `/quit` can leave that worker live with its launch directory as `cwd`.
-`../../../bin/fm-prime-agent-lib.sh` lists sessions by exact directory binding and stops only sessions whose `cwd` is the task worktree or local secondmate home or a path below it.
-Never use `prime-agent shutdown`, because one supervisor serves the whole user and that command would stop unrelated Firstmate and user sessions.
-`../../../bin/fm-spawn.sh --secondmate` retires resident Prime Agent sessions bound to the local home before relaunching it, and refuses the relaunch if strict retirement cannot prove success.
-Prime Agent is LOCAL-secondmate-only in the current implementation; remote secondmate spawning excludes it and accepts only the separately verified remote adapters.
+This slice registers Prime Agent as a distinct Pi-family harness and covers detection, crewmate/scout launch, and control mechanics.
+Herdr pane classification and detached-daemon-session retirement land in the following adapter slices; primary supervision does too, so a secondmate launch is refused here.
 
 ## Detection
 
 Prime Agent exports `PI_CODING_AGENT=true`, the same Pi-family marker used by Pi and Pi-signed.
-Its own `PRIME_AGENT_CODING_AGENT_DIR`, `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1`, and launch-boundary `FM_PI_HARNESS=prime-agent` markers disambiguate it when paired with the Pi-family marker.
-`../../../bin/fm-harness.sh` checks those Prime markers before `CLAUDECODE` and the unmarked Pi result, while explicit `FM_PI_HARNESS=pi` or `pi-signed` stays authoritative for those identities.
-The ancestry fallback matches the exact `prime-agent` process name or a Prime Agent path in a Node command's arguments.
+The launch-boundary marker `FM_PI_HARNESS=prime-agent` is what disambiguates it when paired with the Pi-family marker, the same Firstmate-owned mechanism `FM_PI_HARNESS=pi-signed` uses for the signed wrapper.
+Prime Agent's own `PRIME_AGENT_CODING_AGENT_DIR` and `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` are session-wide inherited values and are deliberately not detection evidence: an unmarked Prime Agent session stays Pi-family.
+`../../../bin/fm-harness.sh` checks the Prime Agent marker before `CLAUDECODE` and the unmarked Pi result, and after the cursor, gemini, rovo, and omp marker arms.
+Those four therefore keep their identity when one of them is started by hand inside a Prime Agent session.
+grok is deliberately not among them: `GROK_AGENT=1` is already tested after the unmarked Pi result, so a grok session started inside any Pi-family session has always resolved to that family, and reordering it belongs outside this slice.
+An explicit `FM_PI_HARNESS=pi` or `FM_PI_HARNESS=pi-signed` is therefore what a Pi or Pi-signed session carries, and neither is ever relabelled.
+The marker without `PI_CODING_AGENT=true` is ignored, so it cannot relabel a Claude or unrelated process.
+The marker can itself leak into a Claude pane of the same session, so when `CLAUDECODE=1` is present it is a precedence override rather than evidence, the same boundary `FM_OMP_HARNESS=omp` uses: the verdict is `prime-agent` only when a `prime-agent` process sits within eight parents, and otherwise falls through to `claude`.
+With `CLAUDECODE` absent the marker stands alone and no ancestry is required.
+Prime Agent does not clear the foreign markers it inherits either, so a prime-agent launch clears `CLAUDECODE` and `GROK_AGENT` in its own template and rides the shared launch prefix that clears `CURSOR_AGENT`, `CURSOR_INVOKED_AS`, and `GEMINI_CLI`, which is what keeps a prime-agent worker started under a cursor or gemini primary from resolving as that primary.
 
-## Composer and primary supervision
+Detection was verified against Prime Agent 0.9.1 on Linux, with earlier checks against 0.7.1 and 0.7.2.
 
-Prime Agent's shell-style `>` prompt is a dead-shell hazard, so `../../../bin/fm-composer-lib.sh` promotes it only after the styled background surface proves the composer container.
-The Herdr adapter additionally requires the current foreground process and native agent identity to be Prime Agent; the shell returned after `/quit` must not inherit the composer verdict.
-The shared ghost stripper removes Prime Agent's dark truecolor start hints from ANSI captures, while a plain capture degrades to unknown when the verified surface cannot be proven.
-The tmux reader has no equivalent native Prime Agent identity arm, so an unproven mid-turn composer remains unknown rather than accepting unsafe input.
-The primary watcher protocol is `../../../docs/supervision-protocols/prime-agent.md`, and its turn-end and pre-tool hooks are wired through the tracked `.prime/agent/extensions/` pair.
+## Launch and control
+
+`../../../bin/fm-spawn.sh` launches a prime-agent crewmate or scout on the same single-positional brief and `-e` extension shape as Pi, establishing `FM_PI_HARNESS=prime-agent` so the worker identifies itself, passing `--model` and `--thinking`, and writing the turn-end notification extension to `state/<task-id>.prime-ext.ts` outside the worktree.
+`../../../bin/fm-teardown.sh` removes that extension with the rest of a task's wiring, and `fm_control_harness_wiring_paths` lists it so a relaunch onto another harness retires it.
+Control mechanics are Pi's, verified on Prime Agent 0.9.1: a single `Escape` cancels a turn, the composer is left empty afterwards so no clear key is needed, and `/quit` exits.
+`../../../bin/fm-spawn.sh --help` owns the executable-preflight mechanics: a missing `prime-agent` executable on PATH refuses before endpoint or metadata creation.
+
+## Scope of this slice
+
+Detection keys on the explicit `FM_PI_HARNESS=prime-agent` launch marker only, so a firstmate-launched worker identifies itself while a Prime Agent PRIMARY still resolves as Pi-family exactly as it did before.
+Ambient auto-detection of that primary, and a prime-agent secondmate, arrive with the supervision slices that give the value a supervision model, a supervision snippet, and the primary supervision extensions; a secondmate spawn is refused here rather than launched unsupervised.

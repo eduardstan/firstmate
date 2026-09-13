@@ -133,7 +133,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -142,6 +142,9 @@
 #   a failed or inconclusive probe omits it so older Pi versions remain launchable.
 #   A missing selected executable refuses before endpoint creation, and pi-signed
 #   never falls back to pi.
+#   For prime-agent, fm-spawn resolves the `prime-agent` executable from PATH once
+#   and refuses before endpoint or metadata creation when it is absent, then
+#   launches that same concrete path.
 #   For omp (Oh My Pi), fm-spawn resolves the `omp` executable from PATH once and
 #   refuses when it is absent. Every omp launch clears the foreign harness
 #   markers (omp publishes none of its own), sets the Firstmate-owned
@@ -264,11 +267,14 @@
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
+#     __PRIMEBIN__  quoted concrete prime-agent executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
 #                  written by this script; outside the worktree to avoid pi's trust gate)
+#     __PRIMEEXT__ absolute path to state/<task-id>.prime-ext.ts (prime-agent turn-end
+#                  extension, written by this script; outside the worktree like __PIEXT__)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OMPBIN__   quoted concrete omp executable path resolved from PATH
@@ -1492,7 +1498,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
+    ''|claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1698,29 +1704,9 @@ launch_template() {
     # watcher extensions. Autonomous flags are populated only for this adapter.
     prime-agent)
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMETURNEND__ -e __PRIMEWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMETURNEND__ -e __PRIMEWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT prime-agent __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
-      fi
-      ;;
-    # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
-    # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
-    # the launch boundary and documented in the header above: foreign markers
-    # cleared (omp has none of its own, so an inherited CLAUDECODE would win),
-    # FM_OMP_HARNESS=omp established for bin/fm-harness.sh, OMP_SKIP_SETUP=1
-    # against the fresh-profile provider wizard, --auto-approve so no approval
-    # prompt can park an unattended worker, the tracked posture overlay so a
-    # captain-level plan, prewalk, or usage dialog cannot either, and --cwd
-    # pinned to the worktree because omp's extension discovery is cwd-only. A
-    # secondmate loads its two primary extensions by that discovery alone:
-    # naming them with -e as well loads each twice (verified), doubling every
-    # session_stop continuation.
-    omp)
-      printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS -u GEMINI_CLI -u CURSOR_AGENT -u CURSOR_INVOKED_AS FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 __OMPBIN__ --config __OMPWORKERCFG__ --auto-approve --cwd __WORKTREE__'
-      if [ "$kind" = secondmate ]; then
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
-      else
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
@@ -1923,8 +1909,11 @@ case "$ARG3" in
     ;;
 esac
 
-# muse, gemini, and agy are verified as CREWMATE/SCOUT adapters only. A secondmate is
-# a firstmate instance, so it needs a primary supervision protocol.
+# muse, gemini, prime-agent, and agy are verified as CREWMATE/SCOUT adapters only. A
+# secondmate is a firstmate instance, so it needs a primary supervision protocol.
+# prime-agent has none yet: its crew wiring is a turn-end notification with no
+# agent_settled event, so the primary supervision extensions a secondmate arms
+# have nothing to bind to until that support lands.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
 # exit, so a gemini secondmate is refused rather than stood up on an unverified
@@ -1935,7 +1924,7 @@ esac
 # secondmate whose supervision cycle could never be armed.
 # agy has none either: it exposes no hook surface for primary supervision and
 # docs/supervision-protocols/ carries no agy wake protocol (agy 1.2.0).
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = prime-agent ] || [ "$HARNESS" = agy ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -1950,6 +1939,13 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
 fi
 
 case "$HARNESS" in
+  prime-agent)
+    PRIME_BIN=$(resolve_pi_executable prime-agent) || {
+      echo "error: prime-agent executable not found on PATH; install Prime Agent or select a different verified harness" >&2
+      exit 1
+    }
+    LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
+    ;;
   pi|pi-signed)
     PI_BIN=$(resolve_pi_executable "$HARNESS") || {
       echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
@@ -1960,13 +1956,6 @@ case "$HARNESS" in
       PI_TUI_MODE=' --tui-mode regular'
     fi
     LAUNCH=${LAUNCH//__PITUIMODE__/$PI_TUI_MODE}
-    LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
-    ;;
-  prime-agent)
-    command -v prime-agent >/dev/null 2>&1 || {
-      echo "error: prime-agent executable not found on PATH; install Prime Agent or select a different verified harness" >&2
-      exit 1
-    }
     LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
     ;;
   cursor)
@@ -2152,7 +2141,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
+    claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -2225,9 +2214,13 @@ effort_flag_for_harness() {
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
-    omp)
-      # omp 18.1.11 --thinking accepts off|minimal|low|medium|high|xhigh|max|auto,
-      # a superset of the shared vocabulary, so every level maps straight across.
+    prime-agent)
+      # prime-agent 0.9.1 --thinking accepts off|minimal|low|medium|high|xhigh|max,
+      # so the whole shared vocabulary maps straight across; off and minimal sit
+      # below it and stay unreachable. The flag IS applied, but the EFFECTIVE
+      # level is then clamped to the selected model's supported set by the shared
+      # pi-ai clampThinkingLevel, which walks UP to the next supported level
+      # first - that is model capability, not a dropped flag.
       case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
@@ -2257,11 +2250,6 @@ effort_flag_for_harness() {
     # --config-override, but that flag is single-value (see
     # rovo_config_override_flag below) so it is built there, merged with the
     # mandatory allowedExternalPaths grant, rather than here.
-    prime-agent)
-      case "$effort" in
-        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
-      esac
-      ;;
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
@@ -3817,6 +3805,23 @@ export const FmBusyState = async () => {
 EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
       ;;
+    prime-agent)
+      # prime-agent's crew wake is a turn-end NOTIFICATION only, deliberately
+      # with no busy-state wiring. Nothing is armed for the same reason muse and
+      # standalone Kimi are not: a seeded busy record needs a writer that can
+      # clear it. Written OUTSIDE the worktree like the Pi extension, so the
+      # project stays clean. Cleaned by teardown.
+      cat > "$STATE/$ID.prime-ext.ts" <<EOF
+// Firstmate crew turn-end notification for prime-agent; written by fm-spawn.
+// "turn_end" fires at every completed turn boundary and is a wake NOTIFICATION
+// for the watcher, never current-state truth. prime-agent exposes no
+// agent_settled event at all, so no settle-based state is derived here.
+import { execFile } from "node:child_process";
+export default function (pi: any) {
+  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+}
+EOF
+      ;;
     pi|pi-signed)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
       # loaded from inside the project (verified live), but an explicit -e path
@@ -3858,56 +3863,6 @@ export default function (pi: any) {
       "progress", "$STATE_REAL", "$ID", "--gen", "$BUSY_GEN",
     ]);
   });
-}
-EOF
-      ;;
-    omp)
-      # Written OUTSIDE the worktree like Pi's, but for a different reason: omp
-      # has no trust gate, yet its cwd-only extension auto-discovery would load a
-      # worktree-resident copy a SECOND time next to the explicit -e (verified,
-      # omp 18.1.11). Lives in state/, cleaned by teardown.
-      cat > "$STATE/$ID.omp-ext.ts" <<EOF
-// Firstmate semantic busy-state events + turn-end notification for omp (Oh My
-// Pi); written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
-// Semantic state: "agent_start" -> busy when a low-level agent run begins;
-// "agent_end" -> idle only when event.willContinue is not true. omp has no
-// agent_settled at all (verified, omp 18.1.2 and 18.1.11: zero occurrences in
-// the binary); agent_end is its loop boundary and willContinue is the reliable
-// "another loop is coming" flag, covering auto-retries, compaction retries,
-// queued follow-ups, and a session_stop-forced continuation. ctx.isIdle() is
-// deliberately NOT consulted: at a natural TUI agent_end it still reads false
-// because session_stop is awaited before the session settles, so gating on it
-// would leave every completed turn recorded busy. "turn_end" fires at every
-// inner turn boundary and stays a wake NOTIFICATION touch for the watcher,
-// never current-state truth.
-import { execFile } from "node:child_process";
-const busyEvent = (state: string, event: string) =>
-  new Promise<void>((resolve) => {
-    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
-      "apply", "$STATE_REAL", "$ID", state,
-      "--gen", "$BUSY_GEN", "--source", "omp-ext", "--event", event,
-    ], () => resolve());
-  });
-export default function (pi: any) {
-  pi.on("agent_start", () => busyEvent("busy", "agent-start"));
-  pi.on("agent_end", (event: any) => {
-    if (event && event.willContinue === true) return;
-    return busyEvent("idle", "agent-end");
-  });
-  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
-}
-EOF
-      ;;
-    prime-agent)
-      # Prime's crew wake is a turn-end notification only. Its built-in Herdr
-      # reporter owns busy/idle state, so the task-local extension only touches
-      # the notification marker and never seeds an uncleared busy record.
-      cat > "$STATE/$ID.prime-ext.ts" <<EOF
-// Firstmate crew turn-end notification for prime-agent; written by fm-spawn.
-// This is a wake notification, never current-state truth.
-import { execFile } from "node:child_process";
-export default function (pi: any) {
-  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
       ;;
@@ -4296,6 +4251,7 @@ fi
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
+sq_primeext=$(shell_quote "$STATE/$ID.prime-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
@@ -4303,7 +4259,10 @@ sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}"
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 PROVIDERFLAG=$(provider_flag_for_harness "$HARNESS" "$PROVIDER")
+AUTONOMOUSFLAGS=$(autonomous_flags_for_harness "$HARNESS")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
+LAUNCH=${LAUNCH//__PROVIDERFLAG__/$PROVIDERFLAG}
+LAUNCH=${LAUNCH//__AUTONOMOUSFLAGS__/$AUTONOMOUSFLAGS}
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
@@ -4318,6 +4277,7 @@ fi
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
@@ -4325,6 +4285,7 @@ LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
+  prime-agent) LAUNCH=${LAUNCH//__PRIMEBIN__/"$(shell_quote "$PRIME_BIN")"} ;;
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
   gemini) LAUNCH=${LAUNCH//__GEMINISETTINGS__/"$(shell_quote "$STATE_REAL/$ID.gemini-settings.json")"} ;;
   omp) LAUNCH=${LAUNCH//__OMPBIN__/"$(shell_quote "$OMP_BIN")"} ;;
@@ -4332,8 +4293,8 @@ case "$HARNESS" in
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo|agy)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
+  claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|gemini|muse|rovo|agy)
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER $LAUNCH"
     ;;
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
