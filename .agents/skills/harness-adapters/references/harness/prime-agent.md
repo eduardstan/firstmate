@@ -43,3 +43,4 @@ Prime Agent is verified for crewmate and scout work.
 Secondmate launches remain refused because no primary supervision protocol is verified for Prime Agent.
 Primary-session supervision is outside this adapter's verified scope.
 Prime Agent's native RPC, RLM, and agent-messaging features are not Firstmate control-plane replacements.
+Prime Agent itself warns that Anthropic subscription use is billed per token as extra usage.

@@ -7,10 +7,6 @@
 # bin/fm-claude-stop-autoarm.sh uses it to prove a Stop hook fires inside the
 # lock-owning primary session before it may arm or rewake.
 # This file is sourced by scripts and has no side effects on source.
-# shellcheck source=bin/fm-prime-agent-lib.sh
-if [ -r "$(dirname -- "${BASH_SOURCE[0]}")/fm-prime-agent-lib.sh" ]; then
-  . "$(dirname -- "${BASH_SOURCE[0]}")/fm-prime-agent-lib.sh"
-fi
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
 # deliberately not added to the tables below: Cursor's installed names are
@@ -157,22 +153,13 @@ EOF
   printf '%s\n' "$outermost"
 }
 
-# True if $1 is a live process that looks like a verified harness holding a
-# session someone can still be working in. prime-agent's recorded pid is a
-# detached daemon worker, so an abandoned worker is not a live session holder.
+# True if $1 is a live process that looks like a verified harness.
 fm_harness_pid_alive() {
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
   args=$(ps -o args= -p "$pid" 2>/dev/null)
-  fm_harness_process_matches "$comm" "$args" || return 1
-  case "$(basename -- "$comm")" in
-    prime-agent)
-      declare -F fm_prime_agent_worker_abandoned >/dev/null 2>&1 \
-        && fm_prime_agent_worker_abandoned "$pid" && return 1
-      ;;
-  esac
-  return 0
+  fm_harness_process_matches "$comm" "$args"
 }
 
 # True when state dir $1 holds a session lock whose pid is ANY harness ancestor
