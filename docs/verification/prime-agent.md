@@ -1,4 +1,4 @@
-# Verification: the prime-agent crewmate/scout and secondmate adapter
+# Verification: the Prime Agent crewmate/scout adapter
 
 Active empirical facts for firstmate's Prime Agent adapter.
 The skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../../.agents/skills/harness-adapters/SKILL.md) owns the operating facts through [`references/harness/prime-agent.md`](../../.agents/skills/harness-adapters/references/harness/prime-agent.md); this record owns how they were established and what remains unproven.
@@ -9,106 +9,66 @@ The skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../../.age
 |---|---|
 | Version | `prime-agent 0.9.4` |
 | Verified | 2026-09-14 |
-| Binary | `/home/eduard/.local/bin/prime-agent` |
+| Binary | resolved with `command -v prime-agent` |
 | Platform | Linux x86_64 |
 | Backend | Herdr 0.8.2, in an isolated non-`default` lab session created only through `bin/fm-herdr-lab.sh` |
-| Provider and model | `openai-codex` and `gpt-5.6-terra` |
+| Provider and model | `openai-codex` and a configured Prime Agent model |
 
-Every Herdr command below ran through the named lab helper with a trailing `--session` argument.
-The helper's fleet-state tripwire reported the same running `default` session before provisioning and after teardown.
-The shared Prime Agent daemon was inspected read-only and was not stopped, restarted, upgraded, or reconfigured.
+The live guard is opt-in because it submits real prompts.
+Every Herdr command in the guard runs through `HERDR_LAB_HELPER`, which defaults to `$ROOT/bin/fm-herdr-lab.sh`.
+The shared Prime Agent daemon is not stopped, restarted, upgraded, or reconfigured.
 
 ## Detection and launch flags
 
-The live launch used the same marker and flags that Firstmate emits:
+The production launch was rendered by `bin/fm-spawn.sh` with the explicit Prime Agent marker and provider-qualified profile.
+The launch clears inherited foreign markers and passes the provider, model, thinking level, encoded brief, and generated extension.
+The live guard resolves the executable with `command -v prime-agent` and checks a numeric version banner and a non-empty model field without depending on a personal path or a model-specific screen string.
+Herdr process inspection identified the foreground process as `prime-agent`.
+The launch reached the Prime Agent composer without a trust stop.
+
+## Extension loading and busy state
+
+The production-generated extension loaded in the isolated Herdr workspace.
+The live guard confirmed the initial turn settled to `idle prime-ext` and created the turn-end notification marker.
+A real tool call changed the adapter classification to `busy prime-ext`.
+The Herdr agent record simultaneously reported `agent_status=working`.
+After the tool call completed, the adapter classification returned to `idle prime-ext`.
+The extension uses `agent_start` for busy state and holds `agent_end` idle publication when the last assistant message stopped with an error or when pending messages are queued.
+A retry start cancels the held error timer.
+`turn_end` remains a notification touch and never fabricates idle state.
+The portable regression drives normal completion, error grace, retry, pending-message, and stale-generation cases in `tests/fm-busy-adapter-wiring.test.sh`.
+
+## Supervised task path
+
+The production task path is owned by these commands and is covered by the deterministic spawn and control suites:
 
 ```
-$ env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS=prime-agent prime-agent --model gpt-5.6-terra --provider openai-codex --thinking low
+bin/fm-spawn.sh <task-id> <project-dir> --mode direct-PR --yolo off --harness prime-agent --provider openai-codex --model <model> --effort low
+FM_HOME=<home> bin/fm-send.sh <task-id> "Read the instructions and continue the task."
+FM_HOME=<home> bin/fm-control.sh <task-id> interrupt
+FM_HOME=<home> bin/fm-control.sh <task-id> exit
+FM_HOME=<home> bin/fm-control.sh <task-id> relaunch --harness prime-agent --model <model> --effort low --note "Continue from the durable instructions."
 ```
 
-Herdr's process inspection returned the exact foreground identity:
+`tests/fm-spawn-dispatch-profile.test.sh` verifies the generated production launch and the Prime Agent secondmate refusal before endpoint or metadata publication.
+`tests/fm-control.test.sh` verifies the Pi-family interrupt, exit, and relaunch mechanics and the Prime Agent capability refusal for secondmates.
+The live guard uses direct Herdr input for vendor behavior so it can isolate the Prime Agent process without creating a real task record.
+The live guard therefore does not claim an end-to-end `fm-send` or `fm-control` vendor run.
 
-```
-{"process_info":{"foreground_processes":[{"argv":["prime-agent"],"name":"prime-agent"}],"pane_id":"w2:p1"}}
-```
+## Interrupt, exit, and relaunch
 
-The live worker rendered the following startup fields:
+A real long-running Prime Agent turn reached Herdr's `working` state.
+One Escape cancelled the turn and rendered `Operation aborted`.
+Sending `/quit` followed by Enter returned the pane to its shell.
+Launching the generated command again in the same pane rendered a numeric version banner and returned to the composer.
+The live guard confirmed detached Prime Agent worker retirement for the temporary project directory after the final quit.
 
-```
-version  v0.9.4
-model    gpt-5.6-terra
-← agents/resume  GPT-5.6 Terra • low  ? for shortcuts
-```
+## Scope and still unproven
 
-An extension captured the launch environment with these values:
-
-```
-PI_CODING_AGENT=true
-FM_PI_HARNESS=prime-agent
-PRIME_AGENT_INTERNAL_DAEMON_WORKER=1
-PRIME_AGENT_CODING_AGENT_DIR=/home/eduard/.prime/agent
-```
-
-The Prime Agent daemon status was read with `prime-agent status --json` and reported `version: 0.9.4`, `protocolVersion: 7`, `status: current`, `isDefault: true`, and `hasTrackedWorkers: true`.
-
-## Extension loading and trust
-
-A fresh lab project containing `.prime/agent/extensions/auto.ts` wrote its load marker without an explicit `-e` flag.
-The same launch showed no trust prompt and reached the Prime Agent composer.
-A worker extension supplied with `-e <absolute-path>` also loaded and received `session_start`, `agent_start`, `turn_end`, and `agent_end` callbacks.
-The extension load and callback evidence was recorded as JSON lines:
-
-```
-{"name":"loaded","value":{"pi":"true","fm":"prime-agent","daemon":"1","dir":"/home/eduard/.prime/agent"}}
-{"name":"session_start","value":{"type":"session_start","reason":"startup"}}
-{"name":"agent_start","value":{"type":"agent_start"}}
-{"name":"turn_end","value":{"type":"turn_end","turnIndex":0}}
-{"name":"agent_end","value":{"type":"agent_end"}}
-```
-
-This verifies the 0.9.4 extension surface and the absence of a trust stop for project-local `.prime/agent/extensions/` discovery.
-
-## Busy and idle state
-
-A prompt that asked the model to run `sleep 15` changed Herdr's native agent state from `idle` to `working` while the tool was running.
-The same pane returned to `idle` after the turn completed and rendered the requested response.
-The decisive live reads were:
-
-```
-{"agent":{"agent":"prime-agent","agent_status":"working","cwd":".../.prime-live-lab","pane_id":"w2:p1"}}
-{"agent":{"agent":"prime-agent","agent_status":"idle","cwd":".../.prime-live-lab","pane_id":"w2:p1"}}
-```
-
-The 0.9.4 extension callbacks also showed `agent_start` before the long turn and `agent_end` after it.
-The adapter's semantic busy-state extension uses those two callbacks and leaves `turn_end` as a notification only.
-
-## Interrupt, quit, and relaunch
-
-A second `sleep 30` prompt reached `agent_status=working`.
-One `Escape` sent through `bin/fm-herdr-lab.sh run ... pane send-keys ... escape` changed the native state to `done` and rendered `Operation aborted` without completing the requested response.
-
-Sending `/quit` followed by Enter returned Herdr's process inspection to a lone `/bin/bash` pane:
-
-```
-{"process_info":{"foreground_processes":[{"argv":["/bin/bash"],"name":"bash"}],"pane_id":"w2:p1"}}
-```
-
-Launching the same command again in that pane rendered `version v0.9.4`, `model gpt-5.6-terra`, and an idle composer.
-The relaunch reused the same Herdr pane and project directory.
-
-## Detached daemon session retirement
-
-The Prime Agent client created a detached daemon worker while the Herdr pane was active.
-The launch environment reported `PRIME_AGENT_INTERNAL_DAEMON_WORKER=1` and the daemon's `status --json` reported tracked workers.
-After `/quit`, the Herdr pane had no Prime Agent process in its foreground process list while the daemon session remained registered.
-The adapter's retirement path is exercised by `fm-prime-agent-lib.sh` against the exact project directory during task cleanup and secondmate relaunch; the shared daemon itself was never stopped.
-
-## Scope and remaining boundaries
-
-The live evidence covers the crewmate/scout launch, local secondmate launch surface, marker export, launch flags, project-local extension discovery, explicit extension loading, busy and idle callbacks, Escape, `/quit`, relaunch, and detached-worker behavior on Prime Agent 0.9.4.
-Remote secondmates remain outside this evidence and are still refused by the remote readiness allowlist.
-Pane resume and fork are not claimed because Firstmate uses deterministic relaunch for Prime Agent.
-No RPC backend, RLM control-plane replacement, or upstream repository operation was tested or changed.
+The live evidence covers the crewmate/scout launch, marker export, provider-qualified flags, project extension loading, semantic busy and idle behavior, retry and pending-message holds, Escape, `/quit`, relaunch, and detached-worker retirement on Prime Agent 0.9.4.
+Prime Agent secondmate launches remain refused because its primary supervision protocol is not wired into the session-start renderer and has not been verified end to end.
+Remote secondmates remain outside this evidence.
+Primary-session supervision, pane resume, fork, RPC, RLM, and agent-messaging control-plane replacement are not claimed.
 
 ## Refreshing this record
 
@@ -116,5 +76,7 @@ Run the portable adapter and busy-state suites, then run the opt-in live guard a
 
 ```
 bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-harness.test.sh tests/fm-busy-adapter-wiring.test.sh tests/fm-quota-choose.test.sh tests/fm-spawn-dispatch-profile.test.sh
-FM_PRIME_AGENT_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-prime-agent-signals-live-e2e.test.sh
+FM_PRIME_AGENT_LIVE_E2E=1 bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-signals-live-e2e.test.sh
 ```
+
+The live guard reports seven `ok` lines and ends with `FM_TEST_SUMMARY total=1 failed=0` when the installed tools and provider are available.
