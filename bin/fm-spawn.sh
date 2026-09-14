@@ -1701,13 +1701,9 @@ launch_template() {
       fi
       ;;
     # prime-agent (Prime Agent): Pi-family CLI with Firstmate's turn-end and
-    # watcher extensions. Autonomous flags are populated only for this adapter.
+    # watcher extension. Autonomous flags are populated only for this adapter.
     prime-agent)
-      if [ "$kind" = secondmate ]; then
-        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMETURNEND__ -e __PRIMEWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
-      else
-        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
-      fi
+      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
@@ -1909,11 +1905,10 @@ case "$ARG3" in
     ;;
 esac
 
-# muse, gemini, prime-agent, and agy are verified as CREWMATE/SCOUT adapters only. A
-# secondmate is a firstmate instance, so it needs a primary supervision protocol.
-# prime-agent has none yet: its crew wiring is a turn-end notification with no
-# agent_settled event, so the primary supervision extensions a secondmate arms
-# have nothing to bind to until that support lands.
+# muse, gemini, prime-agent, and agy are verified as CREWMATE/SCOUT adapters only.
+# A secondmate is a firstmate instance, so it needs a primary supervision protocol.
+# Prime Agent's primary supervision path is not wired into the session-start
+# renderer or secondmate launch, so it remains refused until that evidence exists.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
 # exit, so a gemini secondmate is refused rather than stood up on an unverified
@@ -3191,12 +3186,6 @@ EOF
     ;;
 esac
 fi
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = prime-agent ]; then
-  if ! fm_prime_agent_stop_sessions_under_strict "$PROJ_ABS"; then
-    echo "error: could not retire every resident prime-agent session bound to $PROJ_ABS; refusing secondmate relaunch" >&2
-    exit 1
-  fi
-fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
     propagate_inheritable_config "$CONFIG" "$PROJ_ABS/config" \
@@ -3679,7 +3668,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed|omp)
+    claude*|opencode*|pi|pi-signed|prime-agent|omp)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -3817,18 +3806,81 @@ EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
       ;;
     prime-agent)
-      # prime-agent's crew wake is a turn-end NOTIFICATION only, deliberately
-      # with no busy-state wiring. Nothing is armed for the same reason muse and
-      # standalone Kimi are not: a seeded busy record needs a writer that can
-      # clear it. Written OUTSIDE the worktree like the Pi extension, so the
-      # project stays clean. Cleaned by teardown.
+      # Written OUTSIDE the worktree like Pi's, so the task extension can write
+      # semantic busy state and the turn-end notification without dirtying the
+      # project. Cleaned by teardown.
       cat > "$STATE/$ID.prime-ext.ts" <<EOF
-// Firstmate crew turn-end notification for prime-agent; written by fm-spawn.
-// "turn_end" fires at every completed turn boundary and is a wake NOTIFICATION
-// for the watcher, never current-state truth. prime-agent exposes no
-// agent_settled event at all, so no settle-based state is derived here.
+// Firstmate semantic busy-state events + turn-end notification for prime-agent;
+// written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
+// Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled.
+// agent_end is held briefly when an error may trigger an auto-retry or when
+// messages are queued, matching the primary guard's settle reconstruction.
+// turn_end fires at every inner turn boundary and stays a wake NOTIFICATION touch.
 import { execFile } from "node:child_process";
+const busyEvent = (state: string, event: string) =>
+  new Promise<void>((resolve) => {
+    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
+      "apply", "$STATE_REAL", "$ID", state,
+      "--gen", "$BUSY_GEN", "--source", "prime-ext", "--event", event,
+    ], () => resolve());
+  });
+const retryGraceMs = Number(process.env.HERDR_PI_RETRY_GRACE_MS) > 0
+  ? Math.floor(Number(process.env.HERDR_PI_RETRY_GRACE_MS)) : 2500;
+const idleDebounceMs = Number(process.env.HERDR_PI_IDLE_DEBOUNCE_MS) > 0
+  ? Math.floor(Number(process.env.HERDR_PI_IDLE_DEBOUNCE_MS)) : 250;
+function lastAssistantStoppedOnError(event: any): boolean {
+  const messages = event?.messages;
+  if (!Array.isArray(messages)) return false;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "assistant") return messages[i]?.stopReason === "error";
+  }
+  return false;
+}
 export default function (pi: any) {
+  let agentActive = false;
+  let boundSessionManager: unknown;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  const isBoundSession = (ctx: any): boolean =>
+    boundSessionManager === undefined || ctx?.sessionManager === boundSessionManager;
+  const bindSession = (ctx: any): boolean => {
+    const sessionManager = ctx?.sessionManager;
+    if (boundSessionManager === undefined && sessionManager !== undefined) {
+      boundSessionManager = sessionManager;
+    }
+    return isBoundSession(ctx);
+  };
+  const clearSettleTimer = () => {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = undefined;
+  };
+  const scheduleIdle = (delayMs: number, event: string) => {
+    clearSettleTimer();
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      void busyEvent("idle", event);
+    }, delayMs);
+    settleTimer.unref?.();
+  };
+  pi.on("agent_start", (_event: any, ctx: any) => {
+    if (!bindSession(ctx)) return;
+    clearSettleTimer();
+    agentActive = true;
+    return busyEvent("busy", "agent-start");
+  });
+  pi.on("agent_end", (event: any, ctx: any) => {
+    if (!isBoundSession(ctx) || !agentActive) return;
+    agentActive = false;
+    if (lastAssistantStoppedOnError(event)) {
+      scheduleIdle(retryGraceMs, "agent-end-error-grace");
+      return;
+    }
+    if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) {
+      scheduleIdle(idleDebounceMs, "agent-end-pending");
+      return;
+    }
+    clearSettleTimer();
+    return busyEvent("idle", "agent-end");
+  });
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF

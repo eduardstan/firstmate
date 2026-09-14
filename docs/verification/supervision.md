@@ -550,7 +550,7 @@ The safe command-channel contract is covered without a notification by `tests/fm
 
 ## Prime Agent (prime-agent) native delivery, 2026-09-13
 
-Prime Agent primary supervision uses the tracked `.prime/agent/extensions/fm-primary-prime-watch.ts` and `.prime/agent/extensions/fm-primary-turnend-guard.ts` extensions.
-The watcher extension owns continuity and the turn-end extension provides the recovery backstop.
-The task worker path is verified by `tests/fm-prime-agent-harness.test.sh` and `tests/fm-prime-watch-extension.test.sh` on Linux with prime-agent 0.9.1.
+Prime Agent primary supervision remains unproven and outside the crewmate/scout adapter scope.
+The tracked primary extensions and protocol are not a verified secondmate launch path, so `bin/fm-spawn.sh` refuses Prime Agent secondmates.
+The task worker path is verified by `tests/fm-prime-agent-harness.test.sh`, `tests/fm-prime-watch-extension.test.sh`, and `docs/verification/prime-agent.md` on Linux with prime-agent 0.9.4.
 The exact local validation command was `bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-harness.test.sh tests/fm-prime-watch-extension.test.sh`, which passed both scripts.
