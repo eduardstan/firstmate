@@ -35,14 +35,14 @@ For recovery and control, use the exact `harness=` in `state/<id>.meta`; never i
 Deliver lifecycle actions only through `../../../bin/fm-control.sh <task-id> interrupt|exit|relaunch`.
 Never type an interrupt key or exit command through `fm-send`, where routing-marked lifecycle text becomes chat.
 Trust handling is complete only when inspection proves the target started processing its instructions; delivery success alone is not proof.
-Muse, Gemini, Prime Agent, and AGY are verified only for crewmate and scout work, never a secondmate or primary.
+Muse, Gemini, and AGY are verified only for crewmate and scout work, never a secondmate or primary. Prime Agent is additionally verified for local secondmate work through its primary supervision protocol.
 
 ## Detection
 
 `../../../bin/fm-harness.sh` prints firstmate's own harness from verified environment markers and process ancestry, and owns how they combine.
 A marker names its harness, but a structural ancestor of a different harness outranks it, because a marker is ordinary environment state a child or a multiplexer can retain while ancestry is what proves who owns the process tree.
 Only `FM_PI_HARNESS=pi-signed` at the launch boundary together with `PI_CODING_AGENT=true` selects Pi-signed; shared unmarked launcher ancestry remains Pi.
-Prime Agent and Pi share `PI_CODING_AGENT=true`, so only the launch marker `FM_PI_HARNESS=prime-agent`, established by `../../../bin/fm-spawn.sh` at the prime-agent launch boundary, selects Prime Agent, checked before the `CLAUDECODE` fast path and the unmarked Pi result and after the cursor, gemini, rovo, and omp marker arms; Prime Agent's own session-wide `PRIME_AGENT_*` values are not detection evidence, so an unmarked Prime Agent session stays Pi-family until the supervision slices land.
+Prime Agent and Pi share `PI_CODING_AGENT=true`, so only the launch marker `FM_PI_HARNESS=prime-agent`, established by `../../../bin/fm-spawn.sh` at the prime-agent launch boundary, selects Prime Agent, checked before the `CLAUDECODE` fast path and the unmarked Pi result and after the cursor, gemini, rovo, and omp marker arms; Prime Agent's own session-wide `PRIME_AGENT_*` values are not detection evidence, so an unmarked Prime Agent session stays Pi-family by design.
 The marker is accepted only with the Pi-family marker, and when `CLAUDECODE=1` is present too it acts as a precedence override rather than evidence, like `FM_OMP_HARNESS=omp`: the verdict is prime-agent only when a real `prime-agent` process is in the ancestry, and a claude pane started by hand inside a Prime Agent session stays claude.
 omp publishes no marker of its own; `FM_OMP_HARNESS=omp` is Firstmate's launch marker and the anchored process name `omp` is its ancestry evidence, as `references/harness/omp.md` records.
 `../../../bin/fm-spawn.sh` owns worker marker establishment, while the README launch command owns the signed-primary boundary.
@@ -90,7 +90,6 @@ A new tool remains undispatchable until the `verify` plan, its harness entry, ev
     "opencode": "references/harness/opencode.md",
     "pi": "references/harness/pi.md",
     "pi-signed": "references/harness/pi.md",
-    "prime-agent": "references/harness/prime-agent.md",
     "prime-agent": "references/harness/prime-agent.md",
     "grok": "references/harness/grok.md",
     "kimi": "references/harness/kimi.md",

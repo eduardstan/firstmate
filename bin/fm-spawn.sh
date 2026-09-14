@@ -1909,11 +1909,10 @@ case "$ARG3" in
     ;;
 esac
 
-# muse, gemini, prime-agent, and agy are verified as CREWMATE/SCOUT adapters only. A
+# muse, gemini, and agy are verified as CREWMATE/SCOUT adapters only. A
 # secondmate is a firstmate instance, so it needs a primary supervision protocol.
-# prime-agent has none yet: its crew wiring is a turn-end notification with no
-# agent_settled event, so the primary supervision extensions a secondmate arms
-# have nothing to bind to until that support lands.
+# Prime Agent has that protocol in docs/supervision-protocols/prime-agent.md and
+# its two primary extensions, with agent_end-based settle reconstruction.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
 # exit, so a gemini secondmate is refused rather than stood up on an unverified
@@ -1924,7 +1923,7 @@ esac
 # secondmate whose supervision cycle could never be armed.
 # agy has none either: it exposes no hook surface for primary supervision and
 # docs/supervision-protocols/ carries no agy wake protocol (agy 1.2.0).
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = prime-agent ] || [ "$HARNESS" = agy ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -4273,6 +4272,8 @@ sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_primeext=$(shell_quote "$STATE/$ID.prime-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
+sq_primeturnend=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-turnend-guard.ts")
+sq_primewatch=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-prime-watch.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
 sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
@@ -4299,6 +4300,8 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
+LAUNCH=${LAUNCH//__PRIMETURNEND__/$sq_primeturnend}
+LAUNCH=${LAUNCH//__PRIMEWATCH__/$sq_primewatch}
 LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
 LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}

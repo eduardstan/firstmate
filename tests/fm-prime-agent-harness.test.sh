@@ -247,9 +247,7 @@ test_prime_agent_control_table() {
   [ "$(fm_control_exit_command prime-agent)" = /quit ] || fail "prime-agent exit command is not /quit"
   fm_control_harness_supports_kind prime-agent ship || fail "prime-agent should support ship tasks"
   fm_control_harness_supports_kind prime-agent scout || fail "prime-agent should support scout tasks"
-  if fm_control_harness_supports_kind prime-agent secondmate; then
-    fail "prime-agent should never support secondmate tasks"
-  fi
+  fm_control_harness_supports_kind prime-agent secondmate     || fail "prime-agent should support local secondmate tasks"
   wiring=$(fm_control_harness_wiring_paths prime-agent /wt /state t1)
   [ "$wiring" = "/state/t1.prime-ext.ts" ] \
     || fail "prime-agent wiring paths did not list its turn-end extension, got '$wiring'"
