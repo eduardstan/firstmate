@@ -1909,10 +1909,10 @@ case "$ARG3" in
     ;;
 esac
 
-# muse, gemini, and agy are verified as CREWMATE/SCOUT adapters only. A
-# secondmate is a firstmate instance, so it needs a primary supervision protocol.
-# Prime Agent has that protocol in docs/supervision-protocols/prime-agent.md and
-# its two primary extensions, with agent_end-based settle reconstruction.
+# muse, gemini, prime-agent, and agy are verified as CREWMATE/SCOUT adapters only.
+# A secondmate is a firstmate instance, so it needs a primary supervision protocol.
+# Prime Agent's primary supervision path is not wired into the session-start
+# renderer or secondmate launch, so it remains refused until that evidence exists.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
 # exit, so a gemini secondmate is refused rather than stood up on an unverified
@@ -1923,7 +1923,7 @@ esac
 # secondmate whose supervision cycle could never be armed.
 # agy has none either: it exposes no hook surface for primary supervision and
 # docs/supervision-protocols/ carries no agy wake protocol (agy 1.2.0).
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = prime-agent ] || [ "$HARNESS" = agy ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -3822,9 +3822,10 @@ EOF
       cat > "$STATE/$ID.prime-ext.ts" <<EOF
 // Firstmate semantic busy-state events + turn-end notification for prime-agent;
 // written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
-// Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled;
-// agent_end is the logical prompt boundary for this adapter. turn_end fires at
-// every inner turn boundary and stays a wake NOTIFICATION touch for the watcher.
+// Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled.
+// agent_end is held when an error may trigger an auto-retry or when messages
+// are queued, matching the primary guard's settle reconstruction. turn_end
+// fires at every inner turn boundary and stays a wake NOTIFICATION touch.
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
@@ -3833,9 +3834,44 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "prime-ext", "--event", event,
     ], () => resolve());
   });
+const retryGraceMs = Number(process.env.HERDR_PI_RETRY_GRACE_MS) > 0
+  ? Math.floor(Number(process.env.HERDR_PI_RETRY_GRACE_MS)) : 2500;
+function lastAssistantStoppedOnError(event: any): boolean {
+  const messages = event?.messages;
+  if (!Array.isArray(messages)) return false;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "assistant") return messages[i]?.stopReason === "error";
+  }
+  return false;
+}
 export default function (pi: any) {
-  pi.on("agent_start", () => busyEvent("busy", "agent-start"));
-  pi.on("agent_end", () => busyEvent("idle", "agent-end"));
+  let agentActive = false;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearSettleTimer = () => {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = undefined;
+  };
+  pi.on("agent_start", () => {
+    clearSettleTimer();
+    agentActive = true;
+    return busyEvent("busy", "agent-start");
+  });
+  pi.on("agent_end", (event: any, ctx: any) => {
+    if (!agentActive) return;
+    agentActive = false;
+    if (lastAssistantStoppedOnError(event)) {
+      clearSettleTimer();
+      settleTimer = setTimeout(() => {
+        settleTimer = undefined;
+        void busyEvent("idle", "agent-end-error-grace");
+      }, retryGraceMs);
+      settleTimer.unref?.();
+      return;
+    }
+    if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
+    clearSettleTimer();
+    return busyEvent("idle", "agent-end");
+  });
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF

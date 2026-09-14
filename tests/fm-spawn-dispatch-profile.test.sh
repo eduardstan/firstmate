@@ -193,10 +193,10 @@ test_prime_agent_missing_binary_refuses_before_endpoint_or_metadata() {
   pass "prime-agent refuses safely and actionably when the selected executable is unavailable"
 }
 
-# Prime Agent has a live-verified primary supervision protocol, so a local
-# secondmate launch uses its primary extensions instead of being refused.
-test_prime_agent_secondmate_uses_primary_extensions() {
-  local rec id sm out status launch
+# Prime Agent has no verified primary supervision protocol, so secondmate
+# launches remain refused before any endpoint or metadata is created.
+test_prime_agent_secondmate_refused() {
+  local rec id sm out status
   id=profile-prime-agent-sm-z1d
   rec=$(make_spawn_case profile-prime-agent-sm prime-agent "$id")
   read_case_record "$rec"
@@ -206,12 +206,12 @@ test_prime_agent_secondmate_uses_primary_extensions() {
 
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
   status=$?
-  expect_code 0 "$status" "prime-agent secondmate spawn should succeed"
-  assert_contains "$out" "spawned $id harness=prime-agent kind=secondmate"     "prime-agent secondmate spawn did not preserve its runtime identity"
-  assert_meta_profile "$HOME_DIR/state/$id.meta" prime-agent default default
-  launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "-e '$sm/.prime/agent/extensions/fm-primary-turnend-guard.ts' -e '$sm/.prime/agent/extensions/fm-primary-prime-watch.ts'"     "prime-agent secondmate did not load both primary supervision extensions"
-  pass "a prime-agent secondmate launch uses its verified primary supervision extensions"
+  expect_code 1 "$status" "prime-agent secondmate spawn should be refused"
+  assert_contains "$out" "prime-agent is a verified crewmate/scout adapter only" \
+    "prime-agent secondmate refusal did not name the unsupported role"
+  assert_absent "$HOME_DIR/state/$id.meta" "prime-agent secondmate refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] || fail "prime-agent secondmate refusal typed a launch command"
+  pass "prime-agent refuses secondmate launches without primary supervision"
 }
 
 test_non_cursor_launch_clears_inherited_cursor_markers() {
@@ -1459,7 +1459,7 @@ test_non_claude_harness_ignores_claude_permission_mode() {
 test_worker_launch_delivers_role_scope
 test_no_profile_keeps_claude_profile_defaults
 test_prime_agent_launch_establishes_its_harness_marker
-test_prime_agent_secondmate_uses_primary_extensions
+test_prime_agent_secondmate_refused
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths
