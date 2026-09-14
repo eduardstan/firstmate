@@ -174,7 +174,7 @@ for _ in $(seq 1 60); do
 done
 for _ in $(seq 1 60); do
   fm_prime_agent_stop_sessions_under "$WT" >/dev/null 2>&1 || true
-  left=$(fm_prime_agent_session_ids_under "$(CDPATH='' cd -- "$WT" && pwd -P)" resident 2>/dev/null || true)
+  left=$(fm_prime_agent_session_ids_under "$(CDPATH='' cd -- "$WT" && pwd -P)" 2>/dev/null || true)
   [ -z "$left" ] && break
   sleep 0.5
 done
