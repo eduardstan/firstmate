@@ -41,9 +41,9 @@
 # model: and product: scopes. Any other or absent prefix is refused up front,
 # the same shape as an unknown harness, because no quota-axi row measures it.
 # Prime Agent records the launch provider separately from its model; the
-# candidate's provider-qualified model preserves that identity here, so
-# openai-codex/<id> checks codex and claude-bridge/<id> checks claude. A bare
-# Prime Agent model remains the Pi-family form used only by Pi-provider tasks.
+# candidate must preserve that identity here. Only openai-codex/<id> is mapped
+# to the codex quota family. Bare, anthropic/, and other provider prefixes are
+# refused rather than silently reading an unrelated quota row.
 # quota-axi reports Codex quota unavailable on this host because omp carries
 # its own Codex login, so an openai-codex candidate reads as unknown quota here
 # and is never selected on this host; its runway is disclosed uncertainty for
@@ -336,8 +336,7 @@ provider_for_harness() {
     prime-agent)
       case "${2:-}" in
         openai-codex/*) printf 'codex\n' ;;
-        claude-bridge/*) printf 'claude\n' ;;
-        *) printf 'pi\n' ;;
+        *) return 1 ;;
       esac
       ;;
     grok)         printf 'grok\n' ;;
@@ -385,6 +384,7 @@ for c in "${CANDIDATES[@]}"; do
   fm_control_harness_supported "$harness" || die "unknown harness: $harness"
   provider_for_harness "$harness" "$model" >/dev/null || case "$harness" in
     omp) die "omp quota mapping covers only the openai-codex and claude-bridge prefixes: $model" ;;
+    prime-agent) die "prime-agent quota mapping requires the openai-codex/<model> prefix; bare and non-Codex providers are refused: $model" ;;
     *) die "unknown harness: $harness" ;;
   esac
 done

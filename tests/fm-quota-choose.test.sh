@@ -229,9 +229,17 @@ fi
 [ "$out" = "none" ] || fail "prime-agent openai-codex provider returned: $out"
 out=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:openai-codex/codex_other)
 [ "$out" = "prime-agent openai-codex/codex_other" ] || fail "prime-agent openai-codex provider mapped to the wrong quota family: $out"
-out=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:pi-model)
-[ "$out" = "prime-agent pi-model" ] || fail "bare prime-agent model did not retain the Pi provider family: $out"
-ok "prime-agent quota follows its provider-qualified launch model"
+if err=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:pi-model 2>&1); then
+  fail "bare prime-agent model unexpectedly selected"
+fi
+[ "$err" = "error: prime-agent quota mapping requires the openai-codex/<model> prefix; bare and non-Codex providers are refused: pi-model" ] \
+  || fail "bare prime-agent model returned: $err"
+if err=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:anthropic/claude-opus-5 2>&1); then
+  fail "anthropic prime-agent model unexpectedly selected"
+fi
+[ "$err" = "error: prime-agent quota mapping requires the openai-codex/<model> prefix; bare and non-Codex providers are refused: anthropic/claude-opus-5" ] \
+  || fail "anthropic prime-agent model returned: $err"
+ok "prime-agent quota requires its verified openai-codex provider"
 
 if err=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:ollama/qwen3:8b --candidate claude:claude-3-5-sonnet 2>&1); then
   fail "unmapped omp prefix unexpectedly selected a later candidate"
