@@ -3679,7 +3679,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed|omp)
+    claude*|opencode*|pi|pi-signed|prime-agent|omp)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -3817,18 +3817,26 @@ EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
       ;;
     prime-agent)
-      # prime-agent's crew wake is a turn-end NOTIFICATION only, deliberately
-      # with no busy-state wiring. Nothing is armed for the same reason muse and
-      # standalone Kimi are not: a seeded busy record needs a writer that can
-      # clear it. Written OUTSIDE the worktree like the Pi extension, so the
-      # project stays clean. Cleaned by teardown.
+      # Written OUTSIDE the worktree like Pi's, so the task extension can write
+      # semantic busy state and the turn-end notification without dirtying the
+      # project. Cleaned by teardown.
       cat > "$STATE/$ID.prime-ext.ts" <<EOF
-// Firstmate crew turn-end notification for prime-agent; written by fm-spawn.
-// "turn_end" fires at every completed turn boundary and is a wake NOTIFICATION
-// for the watcher, never current-state truth. prime-agent exposes no
-// agent_settled event at all, so no settle-based state is derived here.
+// Firstmate semantic busy-state events + turn-end notification for prime-agent;
+// written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
+// Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled;
+// agent_end is the logical prompt boundary for this adapter. turn_end fires at
+// every inner turn boundary and stays a wake NOTIFICATION touch for the watcher.
 import { execFile } from "node:child_process";
+const busyEvent = (state: string, event: string) =>
+  new Promise<void>((resolve) => {
+    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
+      "apply", "$STATE_REAL", "$ID", state,
+      "--gen", "$BUSY_GEN", "--source", "prime-ext", "--event", event,
+    ], () => resolve());
+  });
 export default function (pi: any) {
+  pi.on("agent_start", () => busyEvent("busy", "agent-start"));
+  pi.on("agent_end", () => busyEvent("idle", "agent-end"));
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
 EOF
