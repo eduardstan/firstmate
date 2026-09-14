@@ -1954,5 +1954,5 @@ The launch path preserves provider, model, and effort options.
 The generated task extension reports semantic busy and idle state from the verified `agent_start` and settled `agent_end` paths and keeps `turn_end` as a notification.
 Prime Agent is verified for crewmate and scout launches only; secondmate launches remain refused until primary supervision is wired and verified.
 The complete dated evidence is [`docs/verification/prime-agent.md`](prime-agent.md).
-`tests/fm-prime-agent-harness.test.sh`, `tests/fm-busy-adapter-wiring.test.sh`, and `tests/fm-spawn-dispatch-profile.test.sh` are the deterministic verification entry points.
+`tests/fm-prime-agent-harness.test.sh`, `tests/fm-busy-adapter-wiring.test.sh`, `tests/fm-spawn-dispatch-profile.test.sh`, and `tests/fm-backend-herdr.test.sh` are the deterministic verification entry points.
 `FM_PRIME_AGENT_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-prime-agent-signals-live-e2e.test.sh` refreshes the real Prime Agent and Herdr evidence.

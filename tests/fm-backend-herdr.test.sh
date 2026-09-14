@@ -4058,12 +4058,15 @@ test_agent_state_prime_agent_quit_pane_is_dead() {
       quit-shell)
         [ "$out" = dead ] || fail "a quit prime-agent pane must classify dead so recovery relaunches it, got '$out'"
         ;;
+      unreadable-probe|unreadable-table)
+        [ "$out" = unreadable ] || fail "prime-agent case '$case_id' must stay unreadable, got '$out'"
+        ;;
       *)
         [ "$out" = alive ] || fail "prime-agent case '$case_id' must stay alive, got '$out'"
         ;;
     esac
   done
-  pass "fm_backend_herdr_agent_state: only a quit prime-agent pane is dead; suspended, live and unreadable stay alive"
+  pass "fm_backend_herdr_agent_state: only a quit prime-agent pane is dead; suspended and live stay alive, unreadable stays unreadable"
 }
 
 test_composer_state_pi_separator_requires_safe_native_identity() {

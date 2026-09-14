@@ -127,9 +127,9 @@ harness_marker() {
   # a multiplexer server that stored that environment, the hazard the muse note
   # below forbids ignoring - carries them while being claude, and an unmarked
   # Prime Agent session is Pi-family either way. bin/fm-spawn.sh establishes the
-  # marker at every prime-agent worker launch boundary, so a firstmate-launched
-  # worker is identified; ambient auto-detection of a Prime Agent PRIMARY lands
-  # with the supervision slices that give that value a supervision model.
+  # marker at every prime-agent worker launch boundary. Worker launches are
+  # identified by the Firstmate launch marker; primary supervision is outside
+  # this adapter.
   # The marker is tested BEFORE the CLAUDECODE fast path and the unmarked Pi
   # result below, for cursor's reason above: Prime Agent does not clear an
   # inherited CLAUDECODE, so a resident Prime Agent worker under a claude

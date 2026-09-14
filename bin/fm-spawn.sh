@@ -1427,6 +1427,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   }
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
+  if [ "$PROVIDER_SET" = 0 ]; then
+    PROVIDER=$(fm_meta_get "$RELAUNCH_META" provider)
+  fi
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)

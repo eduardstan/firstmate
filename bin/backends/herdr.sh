@@ -2295,13 +2295,13 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
         fm_backend_herdr_pane_prime_agent_in_subtree "$session" "$pane_id"
         live_rc=$?
         case "$live_rc" in
-          0|2) printf 'live' ;;
+          0) printf 'live' ;;
           1) printf 'no-agent' ;;
           *) printf 'unknown' ;;
         esac
         return 0
         ;;
-      *) printf 'live'; return 0 ;;
+      *) printf 'unknown'; return 0 ;;
     esac
   fi
   case "$(fm_backend_herdr_pane_process_state "$session" "$pane_id")" in
