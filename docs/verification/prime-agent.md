@@ -33,7 +33,7 @@ The live guard confirmed the initial turn settled to `idle prime-ext` and create
 A real tool call changed the adapter classification to `busy prime-ext`.
 The Herdr agent record simultaneously reported `agent_status=working`.
 After the tool call completed, the adapter classification returned to `idle prime-ext`.
-The extension uses `agent_start` for busy state and holds `agent_end` idle publication when the last assistant message stopped with an error or when pending messages are queued.
+The extension uses `agent_start` for busy state and holds `agent_end` idle publication for a short grace window when the last assistant message stopped with an error or when pending messages are queued.
 A retry start cancels the held error timer.
 `turn_end` remains a notification touch and never fabricates idle state.
 The portable regression drives normal completion, error grace, retry, pending-message, and stale-generation cases in `tests/fm-busy-adapter-wiring.test.sh`.
@@ -65,7 +65,7 @@ The live guard confirmed detached Prime Agent worker retirement for the temporar
 
 ## Scope and still unproven
 
-The live evidence covers the crewmate/scout launch, marker export, provider-qualified flags, project extension loading, semantic busy and idle behavior, retry and pending-message holds, Escape, `/quit`, relaunch, and detached-worker retirement on Prime Agent 0.9.4.
+The live evidence covers the crewmate/scout launch, marker export, provider-qualified flags, project extension loading, semantic busy and idle behavior, Escape, `/quit`, relaunch, and detached-worker retirement on Prime Agent 0.9.4.
 Prime Agent secondmate launches remain refused because its primary supervision protocol is not wired into the session-start renderer and has not been verified end to end.
 Remote secondmates remain outside this evidence.
 Primary-session supervision, pane resume, fork, RPC, RLM, and agent-messaging control-plane replacement are not claimed.

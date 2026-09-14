@@ -1701,13 +1701,9 @@ launch_template() {
       fi
       ;;
     # prime-agent (Prime Agent): Pi-family CLI with Firstmate's turn-end and
-    # watcher extensions. Autonomous flags are populated only for this adapter.
+    # watcher extension. Autonomous flags are populated only for this adapter.
     prime-agent)
-      if [ "$kind" = secondmate ]; then
-        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMETURNEND__ -e __PRIMEWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
-      else
-        printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
-      fi
+      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
@@ -3190,12 +3186,6 @@ EOF
     ;;
 esac
 fi
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = prime-agent ]; then
-  if ! fm_prime_agent_stop_sessions_under_strict "$PROJ_ABS"; then
-    echo "error: could not retire every resident prime-agent session bound to $PROJ_ABS; refusing secondmate relaunch" >&2
-    exit 1
-  fi
-fi
 if [ "$KIND" = secondmate ]; then
   FM_INHERITABLE_CONFIG=trace-context \
     propagate_inheritable_config "$CONFIG" "$PROJ_ABS/config" \
@@ -3823,9 +3813,9 @@ EOF
 // Firstmate semantic busy-state events + turn-end notification for prime-agent;
 // written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
 // Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled.
-// agent_end is held when an error may trigger an auto-retry or when messages
-// are queued, matching the primary guard's settle reconstruction. turn_end
-// fires at every inner turn boundary and stays a wake NOTIFICATION touch.
+// agent_end is held briefly when an error may trigger an auto-retry or when
+// messages are queued, matching the primary guard's settle reconstruction.
+// turn_end fires at every inner turn boundary and stays a wake NOTIFICATION touch.
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
@@ -3836,6 +3826,8 @@ const busyEvent = (state: string, event: string) =>
   });
 const retryGraceMs = Number(process.env.HERDR_PI_RETRY_GRACE_MS) > 0
   ? Math.floor(Number(process.env.HERDR_PI_RETRY_GRACE_MS)) : 2500;
+const idleDebounceMs = Number(process.env.HERDR_PI_IDLE_DEBOUNCE_MS) > 0
+  ? Math.floor(Number(process.env.HERDR_PI_IDLE_DEBOUNCE_MS)) : 250;
 function lastAssistantStoppedOnError(event: any): boolean {
   const messages = event?.messages;
   if (!Array.isArray(messages)) return false;
@@ -3846,29 +3838,46 @@ function lastAssistantStoppedOnError(event: any): boolean {
 }
 export default function (pi: any) {
   let agentActive = false;
+  let boundSessionManager: unknown;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  const isBoundSession = (ctx: any): boolean =>
+    boundSessionManager === undefined || ctx?.sessionManager === boundSessionManager;
+  const bindSession = (ctx: any): boolean => {
+    const sessionManager = ctx?.sessionManager;
+    if (boundSessionManager === undefined && sessionManager !== undefined) {
+      boundSessionManager = sessionManager;
+    }
+    return isBoundSession(ctx);
+  };
   const clearSettleTimer = () => {
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = undefined;
   };
-  pi.on("agent_start", () => {
+  const scheduleIdle = (delayMs: number, event: string) => {
+    clearSettleTimer();
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      void busyEvent("idle", event);
+    }, delayMs);
+    settleTimer.unref?.();
+  };
+  pi.on("agent_start", (_event: any, ctx: any) => {
+    if (!bindSession(ctx)) return;
     clearSettleTimer();
     agentActive = true;
     return busyEvent("busy", "agent-start");
   });
   pi.on("agent_end", (event: any, ctx: any) => {
-    if (!agentActive) return;
+    if (!isBoundSession(ctx) || !agentActive) return;
     agentActive = false;
     if (lastAssistantStoppedOnError(event)) {
-      clearSettleTimer();
-      settleTimer = setTimeout(() => {
-        settleTimer = undefined;
-        void busyEvent("idle", "agent-end-error-grace");
-      }, retryGraceMs);
-      settleTimer.unref?.();
+      scheduleIdle(retryGraceMs, "agent-end-error-grace");
       return;
     }
-    if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
+    if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) {
+      scheduleIdle(idleDebounceMs, "agent-end-pending");
+      return;
+    }
     clearSettleTimer();
     return busyEvent("idle", "agent-end");
   });
@@ -4308,8 +4317,6 @@ sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_primeext=$(shell_quote "$STATE/$ID.prime-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
-sq_primeturnend=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-turnend-guard.ts")
-sq_primewatch=$(shell_quote "$PROJ_ABS/.prime/agent/extensions/fm-primary-prime-watch.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
 sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
@@ -4336,8 +4343,6 @@ LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
-LAUNCH=${LAUNCH//__PRIMETURNEND__/$sq_primeturnend}
-LAUNCH=${LAUNCH//__PRIMEWATCH__/$sq_primewatch}
 LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
 LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}

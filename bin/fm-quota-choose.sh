@@ -44,10 +44,9 @@
 # candidate must preserve that identity here. Only openai-codex/<id> is mapped
 # to the codex quota family. Bare, anthropic/, and other provider prefixes are
 # refused rather than silently reading an unrelated quota row.
-# quota-axi reports Codex quota unavailable on this host because omp carries
-# its own Codex login, so an openai-codex candidate reads as unknown quota here
-# and is never selected on this host; its runway is disclosed uncertainty for
-# the agent-side gates, not measured headroom.
+# Live quota-axi data may report Codex quota as unknown when a harness carries
+# its own Codex login; an openai-codex candidate then remains eligible only with
+# disclosed uncertainty for the agent-side gates, not measured headroom.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

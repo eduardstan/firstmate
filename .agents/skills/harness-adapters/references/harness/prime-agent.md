@@ -22,7 +22,7 @@ Detection and launch markers were verified live against Prime Agent 0.9.4.
 
 `../../../bin/fm-spawn.sh` launches a Prime Agent crewmate or scout with one encoded brief, `--provider`, `--model`, `--thinking`, and `-e state/<task-id>.prime-ext.ts`.
 The generated extension writes the semantic busy record on `agent_start`, clears it after a settled `agent_end`, and touches the turn-end notification marker on `turn_end`.
-Prime Agent 0.9.4 has no `agent_settled` event, so error stop reasons and pending messages hold the busy record through retry or continuation.
+Prime Agent 0.9.4 has no `agent_settled` event, so error stop reasons and pending messages hold the busy record for a short grace window.
 `bin/fm-busy-lib.sh` trusts the generated `prime-ext` source only for a recorded Prime Agent task.
 The extension is written outside the project and is removed by cleanup and harness relaunch wiring.
 Prime Agent primary supervision and secondmate launch remain unproven and are outside this adapter's verified scope.

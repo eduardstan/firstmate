@@ -55,7 +55,7 @@ classify() {  # <harness> <id> <state-dir>
 # Node host and fire one lifecycle handler. Modes: agent-start, settle-idle,
 # settle-continuing, turn-end.
 drive_pi_ext() {
-  EXT_PATH="$1" MODE="$2" HERDR_PI_RETRY_GRACE_MS=50 node --input-type=module 2>&1 <<'EOF'
+  EXT_PATH="$1" MODE="$2" node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
 const handlers = {};
@@ -180,7 +180,7 @@ oc_idle() {  # <sessionID>
 }
 
 drive_prime_ext() {
-  EXT_PATH="$1" MODE="$2" node --input-type=module 2>&1 <<'EOF'
+  EXT_PATH="$1" MODE="$2" HERDR_PI_RETRY_GRACE_MS=50 HERDR_PI_IDLE_DEBOUNCE_MS=50 node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 const mod = await import(pathToFileURL(process.env.EXT_PATH).href);
 const handlers = {};
@@ -197,6 +197,11 @@ switch (process.env.MODE) {
     await handlers["agent_end"]({ messages: [{ role: "assistant", stopReason: "error" }] }, { hasPendingMessages: () => false });
     await new Promise((resolve) => setTimeout(resolve, 10));
     break;
+  case "error-expired":
+    await handlers["agent_start"]({}, {});
+    await handlers["agent_end"]({ messages: [{ role: "assistant", stopReason: "error" }] }, { hasPendingMessages: () => false });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    break;
   case "error-retry":
     await handlers["agent_start"]({}, {});
     await handlers["agent_end"]({ messages: [{ role: "assistant", stopReason: "error" }] }, { hasPendingMessages: () => false });
@@ -208,6 +213,27 @@ switch (process.env.MODE) {
     await handlers["agent_start"]({}, {});
     await handlers["agent_end"]({}, { hasPendingMessages: () => true });
     break;
+  case "pending-expired":
+    await handlers["agent_start"]({}, {});
+    await handlers["agent_end"]({}, { hasPendingMessages: () => true });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    break;
+  case "pending-retry":
+    await handlers["agent_start"]({}, {});
+    await handlers["agent_end"]({}, { hasPendingMessages: () => true });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await handlers["agent_start"]({}, {});
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    break;
+  case "session-bound": {
+    const parent = {};
+    const child = {};
+    await handlers["agent_start"]({}, { sessionManager: parent });
+    await handlers["agent_end"]({}, { sessionManager: child, hasPendingMessages: () => false });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await handlers["agent_end"]({}, { sessionManager: parent, hasPendingMessages: () => false });
+    break;
+  }
   default: throw new Error("unknown mode " + process.env.MODE);
 }
 if (process.env.MODE === "turn-end") await new Promise((resolve) => setTimeout(resolve, 200));
@@ -245,6 +271,10 @@ test_prime_agent_extension_semantic_lifecycle() {
   out=$(classify prime-agent "$id" "$state")
   [ "$out" = "busy prime-ext" ] || fail "prime-agent error-end must hold busy during retry grace, got '$out'"
 
+  out=$(drive_prime_ext "$ext" error-expired) || fail "prime-agent error expiry drive failed: $out"
+  out=$(classify prime-agent "$id" "$state")
+  [ "$out" = "idle prime-ext" ] || fail "prime-agent terminal error did not settle idle after grace, got '$out'"
+
   out=$(drive_prime_ext "$ext" error-retry) || fail "prime-agent retry drive failed: $out"
   out=$(classify prime-agent "$id" "$state")
   [ "$out" = "busy prime-ext" ] || fail "a retrying prime-agent run must remain busy after a stale error timer, got '$out'"
@@ -253,12 +283,24 @@ test_prime_agent_extension_semantic_lifecycle() {
   out=$(classify prime-agent "$id" "$state")
   [ "$out" = "busy prime-ext" ] || fail "prime-agent pending messages must hold busy, got '$out'"
 
+  out=$(drive_prime_ext "$ext" pending-expired) || fail "prime-agent pending expiry drive failed: $out"
+  out=$(classify prime-agent "$id" "$state")
+  [ "$out" = "idle prime-ext" ] || fail "prime-agent pending messages did not debounce to idle, got '$out'"
+
+  out=$(drive_prime_ext "$ext" pending-retry) || fail "prime-agent pending retry drive failed: $out"
+  out=$(classify prime-agent "$id" "$state")
+  [ "$out" = "busy prime-ext" ] || fail "prime-agent pending retry did not cancel debounced idle, got '$out'"
+
+  out=$(drive_prime_ext "$ext" session-bound) || fail "prime-agent session binding drive failed: $out"
+  out=$(classify prime-agent "$id" "$state")
+  [ "$out" = "idle prime-ext" ] || fail "prime-agent child session event changed parent state, got '$out'"
+
   out=$(drive_prime_ext "$ext" agent-start) || fail "prime-agent second agent_start drive failed: $out"
   "$ROOT/bin/fm-busy-event.sh" arm "$state" "$id" >/dev/null
   out=$(drive_prime_ext "$ext" agent-end) || fail "prime-agent stale agent_end drive failed: $out"
   out=$(classify prime-agent "$id" "$state")
   [ "$out" = "busy fm-spawn" ] || fail "a stale prime-agent extension event must not change state, got '$out'"
-  pass "prime-agent extension reports semantic busy/idle, holds retries and queued messages, and keeps turn_end as notification"
+  pass "prime-agent extension binds sessions, holds retries, debounces queued messages, and keeps turn_end as notification"
 }
 
 test_opencode_plugin_semantic_lifecycle() {

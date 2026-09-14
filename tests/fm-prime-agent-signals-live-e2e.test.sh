@@ -31,6 +31,9 @@ HOME_DIR="$LAB/home"
 PROJECT="$LAB/project"
 WT="$LAB/worktree"
 ID=prime-agent-live
+PROVIDER=openai-codex
+MODEL=gpt-5.6-terra
+EFFORT=low
 FAKEBIN=
 LAUNCH_LOG="$LAB/launch.log"
 SESSION=$("$LAB_HELPER" name prime-adapter-solid)
@@ -60,11 +63,19 @@ FAKEBIN=$(make_spawn_fakebin "$LAB/fake" prime-agent)
 # Fake tmux lets production fm-spawn render the exact extension and busy record.
 # The real process is launched below in the isolated Herdr pane instead.
 out=$(FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" fm_test_run_spawn "$HOME_DIR" "$WT" "$FAKEBIN" "$ID" "$PROJECT" \
-  --harness prime-agent --provider openai-codex --model gpt-5.6-terra --effort low \
+  --harness prime-agent --provider "$PROVIDER" --model "$MODEL" --effort "$EFFORT" \
   --mode direct-PR --yolo off 2>&1) || fail "production spawn generation failed: $out"
 [ -f "$HOME_DIR/state/$ID.prime-ext.ts" ] || fail "production spawn did not generate the Prime Agent extension"
 LAUNCH=$(sed "s#'$FAKEBIN/prime-agent'#'$PRIME_AGENT'#" "$LAUNCH_LOG")
 [ "$LAUNCH" != "$(cat "$LAUNCH_LOG")" ] || fail "could not replace the fake Prime Agent executable in the generated launch"
+printf '%s\n' "$LAUNCH" | grep -Fq -- "--provider '$PROVIDER'" \
+  || fail "generated launch omitted the requested provider: $LAUNCH"
+printf '%s\n' "$LAUNCH" | grep -Fq -- "--model '$MODEL'" \
+  || fail "generated launch omitted the requested model: $LAUNCH"
+model_version=${MODEL#gpt-}
+model_major=${model_version%-*}
+model_name=${model_version##*-}
+expected_model="GPT-${model_major} ${model_name^}"
 
 "$LAB_HELPER" provision "$SESSION" || fail "could not provision isolated Herdr lab"
 WS=$("$LAB_HELPER" run "$SESSION" workspace create --cwd "$WT" --label prime-agent-live --no-focus) \
@@ -77,14 +88,17 @@ PANE=$(printf '%s' "$WS" | jq -er '.result.root_pane.pane_id') \
 for i in $(seq 1 120); do
   screen=$("$LAB_HELPER" run "$SESSION" pane read "$PANE" --source recent --lines 200 2>/dev/null || true)
   if printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' \
-    && printf '%s\n' "$screen" | grep -Eq 'model[[:space:]]+[^[:space:]—]'; then
+    && printf '%s\n' "$screen" | grep -Fq "$expected_model" \
+    && printf '%s\n' "$screen" | grep -Fq "$EFFORT"; then
     break
   fi
   sleep 0.5
 done
 printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' || fail "Prime Agent did not render its startup screen (binary=$PRIME_AGENT): $screen"
-printf '%s\n' "$screen" | grep -Eq 'model[[:space:]]+[^[:space:]—]' \
-  || fail "generated launch did not render a selected model; launch=$LAUNCH screen=$screen"
+printf '%s\n' "$screen" | grep -Fq "$expected_model" \
+  || fail "generated launch did not render the requested model $expected_model; launch=$LAUNCH screen=$screen"
+printf '%s\n' "$screen" | grep -Fq "$EFFORT" \
+  || fail "generated launch did not render the requested effort $EFFORT; launch=$LAUNCH screen=$screen"
 printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+([.][0-9]+)+' \
   || fail "generated launch did not render a numeric version; launch=$LAUNCH screen=$screen"
 pass "Prime Agent rendered the production model, provider, and thinking launch"
