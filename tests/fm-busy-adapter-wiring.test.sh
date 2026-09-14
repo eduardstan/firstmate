@@ -231,7 +231,6 @@ switch (process.env.MODE) {
     await handlers["agent_start"]({}, { sessionManager: parent });
     await handlers["agent_end"]({}, { sessionManager: child, hasPendingMessages: () => false });
     await new Promise((resolve) => setTimeout(resolve, 10));
-    await handlers["agent_end"]({}, { sessionManager: parent, hasPendingMessages: () => false });
     break;
   }
   default: throw new Error("unknown mode " + process.env.MODE);
@@ -293,7 +292,7 @@ test_prime_agent_extension_semantic_lifecycle() {
 
   out=$(drive_prime_ext "$ext" session-bound) || fail "prime-agent session binding drive failed: $out"
   out=$(classify prime-agent "$id" "$state")
-  [ "$out" = "idle prime-ext" ] || fail "prime-agent child session event changed parent state, got '$out'"
+  [ "$out" = "busy prime-ext" ] || fail "prime-agent child session event changed parent state, got '$out'"
 
   out=$(drive_prime_ext "$ext" agent-start) || fail "prime-agent second agent_start drive failed: $out"
   "$ROOT/bin/fm-busy-event.sh" arm "$state" "$id" >/dev/null
