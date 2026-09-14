@@ -85,7 +85,7 @@ PANE=$(printf '%s' "$WS" | jq -er '.result.root_pane.pane_id') \
 "$LAB_HELPER" run "$SESSION" pane run "$PANE" "$LAUNCH" >/dev/null \
   || fail "could not launch the generated Prime Agent command"
 
-for i in $(seq 1 120); do
+for _ in $(seq 1 120); do
   screen=$("$LAB_HELPER" run "$SESSION" pane read "$PANE" --source recent --lines 200 2>/dev/null || true)
   if printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' \
     && printf '%s\n' "$screen" | grep -Fq "$expected_model" \
@@ -103,7 +103,7 @@ printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+([.][0-9]+)+' \
   || fail "generated launch did not render a numeric version; launch=$LAUNCH screen=$screen"
 pass "Prime Agent rendered the production model, provider, and thinking launch"
 
-for i in $(seq 1 120); do
+for _ in $(seq 1 120); do
   [ "$(fm_busy_classify tmux fake:w prime-agent "$ID" "$HOME_DIR/state")" = "idle prime-ext" ] && break
   sleep 0.5
 done
@@ -117,16 +117,14 @@ send() {
   "$LAB_HELPER" run "$SESSION" pane send-keys "$PANE" enter >/dev/null || return 1
 }
 wait_busy() {
-  local i
-  for i in $(seq 1 80); do
+  for _ in $(seq 1 80); do
     [ "$(fm_busy_classify tmux fake:w prime-agent "$ID" "$HOME_DIR/state")" = "busy prime-ext" ] && return 0
     sleep 0.5
   done
   return 1
 }
 wait_idle() {
-  local i
-  for i in $(seq 1 100); do
+  for _ in $(seq 1 100); do
     [ "$(fm_busy_classify tmux fake:w prime-agent "$ID" "$HOME_DIR/state")" = "idle prime-ext" ] && return 0
     sleep 0.5
   done
@@ -149,7 +147,7 @@ printf '%s\n' "$screen" | grep -q 'Operation aborted' || fail "Escape did not ab
 pass "Prime Agent $PRIME_VERSION cancels a running turn with one Escape"
 
 send '/quit' || fail "could not submit /quit"
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   info=$("$LAB_HELPER" run "$SESSION" pane process-info --pane "$PANE" 2>/dev/null || true)
   printf '%s\n' "$info" | jq -e '.result.process_info.foreground_processes[0].name == "bash"' >/dev/null 2>&1 && break
   sleep 0.5
@@ -160,7 +158,7 @@ pass "Prime Agent $PRIME_VERSION exits cleanly and leaves the detached worker fo
 
 "$LAB_HELPER" run "$SESSION" pane run "$PANE" "$LAUNCH" >/dev/null \
   || fail "could not relaunch Prime Agent in the same pane"
-for i in $(seq 1 120); do
+for _ in $(seq 1 120); do
   screen=$("$LAB_HELPER" run "$SESSION" pane read "$PANE" --source recent --lines 200 2>/dev/null || true)
   if printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+'; then break; fi
   sleep 0.5
@@ -169,12 +167,12 @@ printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' || fail "Prime A
 pass "Prime Agent $PRIME_VERSION relaunches in the same Herdr pane"
 
 send '/quit' || fail "could not submit the cleanup quit"
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   info=$("$LAB_HELPER" run "$SESSION" pane process-info --pane "$PANE" 2>/dev/null || true)
   printf '%s\n' "$info" | jq -e '.result.process_info.foreground_processes[0].name == "bash"' >/dev/null 2>&1 && break
   sleep 0.5
 done
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   fm_prime_agent_stop_sessions_under "$WT" >/dev/null 2>&1 || true
   left=$(fm_prime_agent_session_ids_under "$(CDPATH='' cd -- "$WT" && pwd -P)" resident 2>/dev/null || true)
   [ -z "$left" ] && break
