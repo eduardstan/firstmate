@@ -223,6 +223,16 @@ out=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:openai-codex/c
 [ "$out" = "omp openai-codex/codex_other" ] || fail "omp prefix: expected the provider-wide codex quota to select the prefixed model, got '$out'"
 ok "omp openai-codex prefix matches the bare codex model scope"
 
+if out=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:openai-codex/codex_bengalfox 2>/dev/null); then
+  fail "prime-agent openai-codex provider ignored the exhausted codex model scope"
+fi
+[ "$out" = "none" ] || fail "prime-agent openai-codex provider returned: $out"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:openai-codex/codex_other)
+[ "$out" = "prime-agent openai-codex/codex_other" ] || fail "prime-agent openai-codex provider mapped to the wrong quota family: $out"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate prime-agent:pi-model)
+[ "$out" = "prime-agent pi-model" ] || fail "bare prime-agent model did not retain the Pi provider family: $out"
+ok "prime-agent quota follows its provider-qualified launch model"
+
 if err=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:ollama/qwen3:8b --candidate claude:claude-3-5-sonnet 2>&1); then
   fail "unmapped omp prefix unexpectedly selected a later candidate"
 fi

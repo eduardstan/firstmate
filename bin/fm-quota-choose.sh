@@ -40,6 +40,10 @@
 # claude-bridge/<id> checks the claude row, each against the bare <id> for
 # model: and product: scopes. Any other or absent prefix is refused up front,
 # the same shape as an unknown harness, because no quota-axi row measures it.
+# Prime Agent records the launch provider separately from its model; the
+# candidate's provider-qualified model preserves that identity here, so
+# openai-codex/<id> checks codex and claude-bridge/<id> checks claude. A bare
+# Prime Agent model remains the Pi-family form used only by Pi-provider tasks.
 # quota-axi reports Codex quota unavailable on this host because omp carries
 # its own Codex login, so an openai-codex candidate reads as unknown quota here
 # and is never selected on this host; its runway is disclosed uncertainty for
@@ -309,7 +313,8 @@ fi
 printf '%s\n' "$QUOTA_JSON" | fm_quota_json_valid || die "invalid quota-axi provider data"
 
 # provider_for_harness <harness> [<model>]
-# Map a firstmate harness name to its primary quota-axi provider family.
+# Map a firstmate harness name and its provider-qualified model to a quota-axi
+# provider family.
 # Multi-provider harnesses (Pi, OpenCode) map to their primary family only; see
 # the header limitation note. omp is keyed on the candidate model prefix instead
 # and has no family for any other prefix (see the header). Authoritative
@@ -327,7 +332,14 @@ provider_for_harness() {
     claude)       printf 'claude\n' ;;
     codex)        printf 'codex\n' ;;
     opencode)     printf 'codex\n' ;;
-    pi|pi-signed|prime-agent) printf 'pi\n' ;;
+    pi|pi-signed) printf 'pi\n' ;;
+    prime-agent)
+      case "${2:-}" in
+        openai-codex/*) printf 'codex\n' ;;
+        claude-bridge/*) printf 'claude\n' ;;
+        *) printf 'pi\n' ;;
+      esac
+      ;;
     grok)         printf 'grok\n' ;;
     kimi)         printf 'kimi\n' ;;
     cursor)       printf 'cursor\n' ;;
@@ -384,7 +396,9 @@ for c in "${CANDIDATES[@]}"; do
   [ "$model" = "$c" ] && model="default"
   provider=$(provider_for_harness "$harness" "$model")
   scope_model=$model
-  [ "$harness" != omp ] || scope_model=${model#*/}
+  case "$harness" in
+    omp|prime-agent) scope_model=${model#*/} ;;
+  esac
   effective=$(effective_for_provider_model "$provider" "$scope_model")
   if [ -z "$effective" ] || [ "$effective" = "null" ]; then
     continue
