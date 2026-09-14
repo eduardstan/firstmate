@@ -1438,7 +1438,6 @@ else
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
-
 shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
@@ -1592,6 +1591,7 @@ launch_template() {
       fi
       ;;
     # prime-agent (Prime Agent): Pi-family CLI with Firstmate's turn-end and
+    # watcher extension.
     prime-agent)
       printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
