@@ -41,7 +41,7 @@ Primary-session supervision, pane resume, fork, RPC, RLM, and agent-messaging co
 Run the targeted suites, then the opt-in live guard after a Prime Agent or Herdr upgrade:
 
 ```
-bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-harness.test.sh tests/fm-busy-adapter-wiring.test.sh tests/fm-quota-choose.test.sh tests/fm-spawn-dispatch-profile.test.sh
+bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-harness.test.sh tests/fm-busy-adapter-wiring.test.sh tests/fm-quota-choose.test.sh tests/fm-spawn-dispatch-profile.test.sh tests/fm-backend-herdr.test.sh
 HERDR_LAB_HELPER="$PWD/bin/fm-herdr-lab.sh" FM_PRIME_AGENT_LIVE_E2E=1 bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-signals-live-e2e.test.sh
 ```
 

@@ -7,7 +7,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-fm_live_gate opt-in FM_PRIME_AGENT_LIVE_E2E prime-agent herdr jq
+fm_live_gate opt-in FM_PRIME_AGENT_LIVE_E2E prime-agent herdr jq node
 
 LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 PRIME_AGENT=$(command -v prime-agent || true)
