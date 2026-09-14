@@ -467,6 +467,10 @@ fake_screen() {
       printf 'esc to cancel                                Gemini 3.8 Flash · low\n'
       printf 'dialog\n' > "$FM_FAKE_AGY_STATE"
       ;;
+    late)
+      printf 'esc to cancel                                Gemini 3.8 Flash · low\n'
+      printf 'dialog\n' > "$FM_FAKE_AGY_STATE"
+      ;;
     *)
       printf 'shell starting\n$ \n'
       ;;
@@ -495,7 +499,7 @@ case "${1:-}" in
     done
     if [ -n "$literal" ]; then
       case "$literal" in
-        *--prompt-interactive*)
+        *--prompt-interactive*|*agy\ --dangerously*)
           printf '%s\n' "$literal" >> "$FM_FAKE_LAUNCH_LOG"
           printf 'launched\n' > "$FM_FAKE_AGY_STATE"
           ;;
@@ -507,7 +511,11 @@ case "${1:-}" in
         case "$state" in
           launched)
             if fake_path_trusted; then
-              printf 'busy\n' > "$FM_FAKE_AGY_STATE"
+              if [ "${FM_FAKE_AGY_LATE_DIALOG:-0}" = 1 ]; then
+                printf 'late\n' > "$FM_FAKE_AGY_STATE"
+              else
+                printf 'busy\n' > "$FM_FAKE_AGY_STATE"
+              fi
             elif [ "${FM_FAKE_AGY_RACE:-0}" = 1 ]; then
               printf 'racing\n' > "$FM_FAKE_AGY_STATE"
             else
@@ -606,10 +614,27 @@ run_agy_spawn() {
     FM_FAKE_AGY_IGNORE_TRUST="${FM_FAKE_AGY_IGNORE_TRUST:-0}" \
     FM_FAKE_AGY_ASSUME_TRUSTED="${FM_FAKE_AGY_ASSUME_TRUSTED:-0}" \
     FM_FAKE_AGY_RACE="${FM_FAKE_AGY_RACE:-0}" \
+    FM_FAKE_AGY_LATE_DIALOG="${FM_FAKE_AGY_LATE_DIALOG:-0}" \
     FM_FAKE_AGY_ANSWER="${FM_FAKE_AGY_ANSWER:-works}" \
     FM_AGY_READY_POLLS=4 FM_AGY_POLL_INTERVAL=0 FM_AGY_MODELS_TIMEOUT=${FM_AGY_MODELS_TIMEOUT:-1} \
     PATH="$fakebin:$BASE_PATH" \
     "$SPAWN" "$id" "$proj" --harness agy --mode no-mistakes --yolo off "$@" 2>&1
+}
+
+run_agy_raw_spawn() {
+  local case_dir=$1 home=$2 proj=$3 wt=$4 fakebin=$5 id=$6 command=$7
+  HOME="$home" FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_LAUNCH_LOG="$case_dir/launch.log" \
+    FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
+    FM_FAKE_AGY_STATE="$case_dir/agy.state" \
+    FM_FAKE_AGY_SETTINGS="$home/.gemini/antigravity-cli/settings.json" \
+    FM_FAKE_AGY_LATE_DIALOG="${FM_FAKE_AGY_LATE_DIALOG:-0}" \
+    FM_AGY_READY_POLLS=6 FM_AGY_POLL_INTERVAL=0 \
+    PATH="$fakebin:$BASE_PATH" \
+    "$SPAWN" "$id" "$proj" --scout "$command" 2>&1
 }
 
 test_agy_launch_carries_the_brief_with_model_effort_and_autonomy() {
@@ -725,6 +750,24 @@ test_agy_zero_model_timeout_is_clamped_to_the_default_bound() {
 # trust-dialog answer are lone key sends (`send-keys -t <target> Enter`).
 count_enter_sends() {  # <tmux-call-log>
   grep -c '^send-keys -t [^ ]* Enter$' "$1" || true
+}
+
+test_agy_raw_command_answers_a_late_trust_dialog() {
+  local id rec out rc enters
+  id="agy-raw-late-z15-$$"
+  rec=$(make_agy_spawn_case raw-late "$id")
+  read_agy_spawn_record "$rec"
+  rc=0
+  out=$(FM_FAKE_AGY_LATE_DIALOG=1 run_agy_raw_spawn \
+    "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" \
+    'agy --dangerously-skip-permissions --mode accept-edits --model gemini-3.8-flash-high -i "brief"') || rc=$?
+  expect_code 0 "$rc" "an agy raw command should answer a trust dialog that renders after an early working verdict"
+  [ "$(cat "$CASE_DIR/agy.state")" = busy ] \
+    || fail "the raw agy launch did not reach a busy turn after answering trust (state: $(cat "$CASE_DIR/agy.state"))"
+  enters=$(count_enter_sends "$CASE_DIR/tmux-calls.log")
+  [ "$enters" -eq 2 ] \
+    || fail "the raw agy launch must send one launch Enter and one trust-dialog Enter, got $enters Enter sends"
+  pass "fm-spawn: a raw agy command tolerates an early working verdict and answers trust"
 }
 
 test_agy_fresh_worktree_is_pre_trusted_and_launches_without_a_dialog() {
@@ -907,6 +950,7 @@ test_agy_trust_registers_the_logical_and_resolved_worktree_paths
 test_agy_trust_creates_a_missing_store
 test_agy_trust_refuses_out_of_scope_paths
 test_agy_fresh_worktree_is_pre_trusted_and_launches_without_a_dialog
+test_agy_raw_command_answers_a_late_trust_dialog
 test_agy_dialog_despite_registration_is_answered_once
 test_agy_unregistered_path_ignores_busy_until_the_dialog_is_answered
 test_agy_unregistered_path_without_a_dialog_fails_the_spawn
