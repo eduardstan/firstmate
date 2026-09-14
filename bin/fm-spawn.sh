@@ -3421,16 +3421,27 @@ agy_pane_is_working() {  # <plain-pane-capture>
 }
 
 agy_wait_for_working() {
-  local pane i=0 max=${FM_AGY_READY_POLLS:-60} interval=${FM_AGY_POLL_INTERVAL:-0.5}
+  local pane i=0 working_polls=0 max=${FM_AGY_READY_POLLS:-60} interval=${FM_AGY_POLL_INTERVAL:-0.5}
   while [ "$i" -lt "$max" ]; do
     pane=$(agy_capture)
     if agy_pane_shows_trust_dialog "$pane"; then
+      working_polls=0
       if [ "$AGY_TRUST_ANSWERED" -eq 0 ]; then
         spawn_send_key "$T" Enter
         AGY_TRUST_ANSWERED=1
       fi
     elif [ "$AGY_TRUST_PREREGISTERED" -eq 1 ] || [ "$AGY_TRUST_ANSWERED" -eq 1 ]; then
-      agy_pane_is_working "$pane" && return 0
+      if agy_pane_is_working "$pane"; then
+        # Require two consecutive working captures so a native working verdict
+        # that races the folder-trust dialog cannot report success before the
+        # dialog has had a chance to render and be answered.
+        working_polls=$((working_polls + 1))
+        [ "$working_polls" -ge 2 ] && return 0
+      else
+        working_polls=0
+      fi
+    else
+      working_polls=0
     fi
     i=$((i + 1))
     [ "$i" -ge "$max" ] || sleep "$interval"
