@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>] [Prime Agent options]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>] [Prime Agent options]
+#        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -28,7 +28,7 @@
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter.
-#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
+#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--provider <name>] [--model <name>] [--effort <level>] [Prime Agent options]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
 #   the launch half of the control plane (bin/fm-control.sh relaunch), which
@@ -135,7 +135,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -144,6 +144,9 @@
 #   a failed or inconclusive probe omits it so older Pi versions remain launchable.
 #   A missing selected executable refuses before endpoint creation, and pi-signed
 #   never falls back to pi.
+#   For prime-agent, fm-spawn resolves the `prime-agent` executable from PATH once
+#   and refuses before endpoint or metadata creation when it is absent, then
+#   launches that same concrete path.
 #   For omp (Oh My Pi), fm-spawn resolves the `omp` executable from PATH once and
 #   refuses when it is absent. Every omp launch clears the foreign harness
 #   markers (omp publishes none of its own), sets the Firstmate-owned
@@ -266,11 +269,14 @@
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __CLAUDEPERMFLAG__ the claude permission flag selected by config/claude-permission-mode
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
+#     __PRIMEBIN__  quoted concrete prime-agent executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
 #                  written by this script; outside the worktree to avoid pi's trust gate)
+#     __PRIMEEXT__ absolute path to state/<task-id>.prime-ext.ts (prime-agent turn-end
+#                  extension, written by this script; outside the worktree like __PIEXT__)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 #     __OMPBIN__   quoted concrete omp executable path resolved from PATH
@@ -466,6 +472,8 @@ if [ -e "$STATE" ] || [ -L "$STATE" ]; then
 fi
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
+# shellcheck source=bin/fm-prime-agent-lib.sh
+. "$SCRIPT_DIR/fm-prime-agent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 fm_backlog_directory_present "$STATE" "state directory" || {
@@ -503,15 +511,31 @@ fm_refuse_if_gate_agent
 KIND=ship
 KIND_SET=0
 HARNESS_ARG=
+PROVIDER=
 MODEL=
 EFFORT=
+AUTONOMOUS_GATES=()
+AUTONOMOUS_MAX_CONTINUATIONS=
+AUTONOMOUS_MAX_TURNS=
+AUTONOMOUS_MAX_TOKENS=
+AUTONOMOUS_TIMEOUT_MS=
+AUTONOMOUS_GATE_RETRIES=
+AUTONOMOUS_GATE_TIMEOUT_MS=
 BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
 HARNESS_SET=0
+PROVIDER_SET=0
 MODEL_SET=0
 EFFORT_SET=0
+AUTONOMOUS_GATE_SET=0
+AUTONOMOUS_MAX_CONTINUATIONS_SET=0
+AUTONOMOUS_MAX_TURNS_SET=0
+AUTONOMOUS_MAX_TOKENS_SET=0
+AUTONOMOUS_TIMEOUT_MS_SET=0
+AUTONOMOUS_GATE_RETRIES_SET=0
+AUTONOMOUS_GATE_TIMEOUT_MS_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
@@ -526,7 +550,15 @@ for a in "$@"; do
     esac
     case "$want_value" in
       harness) HARNESS_ARG=$a; HARNESS_SET=1 ;;
+      provider) PROVIDER=$a; PROVIDER_SET=1 ;;
       model) MODEL=$a; MODEL_SET=1 ;;
+      autonomous-gate) AUTONOMOUS_GATES+=("$a"); AUTONOMOUS_GATE_SET=1 ;;
+      autonomous-max-continuations) AUTONOMOUS_MAX_CONTINUATIONS=$a; AUTONOMOUS_MAX_CONTINUATIONS_SET=1 ;;
+      autonomous-max-turns) AUTONOMOUS_MAX_TURNS=$a; AUTONOMOUS_MAX_TURNS_SET=1 ;;
+      autonomous-max-tokens) AUTONOMOUS_MAX_TOKENS=$a; AUTONOMOUS_MAX_TOKENS_SET=1 ;;
+      autonomous-timeout-ms) AUTONOMOUS_TIMEOUT_MS=$a; AUTONOMOUS_TIMEOUT_MS_SET=1 ;;
+      autonomous-gate-retries) AUTONOMOUS_GATE_RETRIES=$a; AUTONOMOUS_GATE_RETRIES_SET=1 ;;
+      autonomous-gate-timeout-ms) AUTONOMOUS_GATE_TIMEOUT_MS=$a; AUTONOMOUS_GATE_TIMEOUT_MS_SET=1 ;;
       effort) EFFORT=$a; EFFORT_SET=1 ;;
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
@@ -543,10 +575,26 @@ for a in "$@"; do
     --relaunch) RELAUNCH=1 ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
+    --provider) want_value=provider ;;
+    --provider=*) PROVIDER=${a#--provider=}; PROVIDER_SET=1 ;;
     --model) want_value=model ;;
     --model=*) MODEL=${a#--model=}; MODEL_SET=1 ;;
     --effort) want_value=effort ;;
     --effort=*) EFFORT=${a#--effort=}; EFFORT_SET=1 ;;
+    --autonomous-gate) want_value=autonomous-gate ;;
+    --autonomous-gate=*) AUTONOMOUS_GATES+=("${a#--autonomous-gate=}"); AUTONOMOUS_GATE_SET=1 ;;
+    --autonomous-max-continuations) want_value=autonomous-max-continuations ;;
+    --autonomous-max-continuations=*) AUTONOMOUS_MAX_CONTINUATIONS=${a#--autonomous-max-continuations=}; AUTONOMOUS_MAX_CONTINUATIONS_SET=1 ;;
+    --autonomous-max-turns) want_value=autonomous-max-turns ;;
+    --autonomous-max-turns=*) AUTONOMOUS_MAX_TURNS=${a#--autonomous-max-turns=}; AUTONOMOUS_MAX_TURNS_SET=1 ;;
+    --autonomous-max-tokens) want_value=autonomous-max-tokens ;;
+    --autonomous-max-tokens=*) AUTONOMOUS_MAX_TOKENS=${a#--autonomous-max-tokens=}; AUTONOMOUS_MAX_TOKENS_SET=1 ;;
+    --autonomous-timeout-ms) want_value=autonomous-timeout-ms ;;
+    --autonomous-timeout-ms=*) AUTONOMOUS_TIMEOUT_MS=${a#--autonomous-timeout-ms=}; AUTONOMOUS_TIMEOUT_MS_SET=1 ;;
+    --autonomous-gate-retries) want_value=autonomous-gate-retries ;;
+    --autonomous-gate-retries=*) AUTONOMOUS_GATE_RETRIES=${a#--autonomous-gate-retries=}; AUTONOMOUS_GATE_RETRIES_SET=1 ;;
+    --autonomous-gate-timeout-ms) want_value=autonomous-gate-timeout-ms ;;
+    --autonomous-gate-timeout-ms=*) AUTONOMOUS_GATE_TIMEOUT_MS=${a#--autonomous-gate-timeout-ms=}; AUTONOMOUS_GATE_TIMEOUT_MS_SET=1 ;;
     --backend) want_value=backend ;;
     --backend=*) BACKEND_ARG=${a#--backend=}; BACKEND_SET=1 ;;
     --mode) want_value=mode ;;
@@ -560,11 +608,27 @@ for a in "$@"; do
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
+[ "$PROVIDER_SET" -eq 0 ] || [ -n "$PROVIDER" ] || { echo "error: --provider requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
+for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do
+  [ -n "$gate" ] || { echo "error: --autonomous-gate requires a non-empty value" >&2; exit 1; }
+  case "$gate" in *$'\n'*|*$'\r'*) echo "error: --autonomous-gate must be a single-line command" >&2; exit 1 ;; esac
+done
+for axis in autonomous-max-continuations autonomous-max-turns autonomous-max-tokens autonomous-timeout-ms autonomous-gate-retries autonomous-gate-timeout-ms; do
+  case "$axis" in
+    autonomous-max-continuations) value=$AUTONOMOUS_MAX_CONTINUATIONS ;;
+    autonomous-max-turns) value=$AUTONOMOUS_MAX_TURNS ;;
+    autonomous-max-tokens) value=$AUTONOMOUS_MAX_TOKENS ;;
+    autonomous-timeout-ms) value=$AUTONOMOUS_TIMEOUT_MS ;;
+    autonomous-gate-retries) value=$AUTONOMOUS_GATE_RETRIES ;;
+    autonomous-gate-timeout-ms) value=$AUTONOMOUS_GATE_TIMEOUT_MS ;;
+  esac
+  case "$value" in ''|*[!0-9]*|0) [ -z "$value" ] || { echo "error: --$axis requires a positive integer" >&2; exit 1; } ;; esac
+done
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -628,6 +692,23 @@ else
       exit 1
     }
   fi
+fi
+
+if [ "$RELAUNCH" -eq 0 ] && [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
+  [ "$KIND" != secondmate ] || {
+    echo "error: autonomous gates apply only to ship and scout tasks, not secondmates" >&2
+    exit 1
+  }
+  [ "$MODE" != no-mistakes ] || {
+    echo "error: autonomous gates are refused for delivery mode no-mistakes because the no-mistakes pipeline owns its own gates and branch custody; a harness-level gate would create duplicate gate ownership" >&2
+    exit 1
+  }
+  : "${AUTONOMOUS_MAX_CONTINUATIONS:=24}"
+  : "${AUTONOMOUS_MAX_TURNS:=96}"
+  : "${AUTONOMOUS_MAX_TOKENS:=500000}"
+  : "${AUTONOMOUS_TIMEOUT_MS:=14400000}"
+  : "${AUTONOMOUS_GATE_RETRIES:=5}"
+  : "${AUTONOMOUS_GATE_TIMEOUT_MS:=900000}"
 fi
 
 spawn_remote_secondmate() {
@@ -1176,8 +1257,16 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
+  [ -z "$PROVIDER" ] || shared_args+=(--provider "$PROVIDER")
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
+  for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do shared_args+=(--autonomous-gate "$gate"); done
+  [ -z "$AUTONOMOUS_MAX_CONTINUATIONS" ] || shared_args+=(--autonomous-max-continuations "$AUTONOMOUS_MAX_CONTINUATIONS")
+  [ -z "$AUTONOMOUS_MAX_TURNS" ] || shared_args+=(--autonomous-max-turns "$AUTONOMOUS_MAX_TURNS")
+  [ -z "$AUTONOMOUS_MAX_TOKENS" ] || shared_args+=(--autonomous-max-tokens "$AUTONOMOUS_MAX_TOKENS")
+  [ -z "$AUTONOMOUS_TIMEOUT_MS" ] || shared_args+=(--autonomous-timeout-ms "$AUTONOMOUS_TIMEOUT_MS")
+  [ -z "$AUTONOMOUS_GATE_RETRIES" ] || shared_args+=(--autonomous-gate-retries "$AUTONOMOUS_GATE_RETRIES")
+  [ -z "$AUTONOMOUS_GATE_TIMEOUT_MS" ] || shared_args+=(--autonomous-gate-timeout-ms "$AUTONOMOUS_GATE_TIMEOUT_MS")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
   # One delivery contract applies to every pair in a batch, exactly like the shared
   # harness. Each pair still re-validates it against its own brief, so a batch
@@ -1402,7 +1491,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
+    ''|claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1423,6 +1512,46 @@ else
   ARG3=${POS[2]:-}
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
+
+# A relaunch reproduces every recorded Prime launch axis unless the caller
+# explicitly replaces that axis. Gate records are repeatable in their original order.
+if [ "$RELAUNCH" -eq 1 ]; then
+  if [ "$PROVIDER_SET" -eq 0 ]; then
+    PROVIDER=$(fm_meta_get "$RELAUNCH_META" provider)
+    [ "$PROVIDER" != default ] || PROVIDER=
+  fi
+  if [ "$AUTONOMOUS_GATE_SET" -eq 0 ]; then
+    while IFS= read -r gate; do
+      AUTONOMOUS_GATES+=("$gate")
+    done < <(sed -n 's/^autonomous_gate=//p' "$RELAUNCH_META")
+  fi
+  for axis in autonomous-max-continuations autonomous-max-turns autonomous-max-tokens autonomous-timeout-ms autonomous-gate-retries autonomous-gate-timeout-ms; do
+    case "$axis" in
+      autonomous-max-continuations) flag=$AUTONOMOUS_MAX_CONTINUATIONS_SET; var=AUTONOMOUS_MAX_CONTINUATIONS ;;
+      autonomous-max-turns) flag=$AUTONOMOUS_MAX_TURNS_SET; var=AUTONOMOUS_MAX_TURNS ;;
+      autonomous-max-tokens) flag=$AUTONOMOUS_MAX_TOKENS_SET; var=AUTONOMOUS_MAX_TOKENS ;;
+      autonomous-timeout-ms) flag=$AUTONOMOUS_TIMEOUT_MS_SET; var=AUTONOMOUS_TIMEOUT_MS ;;
+      autonomous-gate-retries) flag=$AUTONOMOUS_GATE_RETRIES_SET; var=AUTONOMOUS_GATE_RETRIES ;;
+      autonomous-gate-timeout-ms) flag=$AUTONOMOUS_GATE_TIMEOUT_MS_SET; var=AUTONOMOUS_GATE_TIMEOUT_MS ;;
+    esac
+    if [ "$flag" -eq 0 ]; then
+      value=$(fm_meta_get "$RELAUNCH_META" "${var,,}")
+      [ "$value" != default ] || value=
+      printf -v "$var" '%s' "$value"
+    fi
+  done
+fi
+
+if [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
+  [ "$KIND" != secondmate ] || { echo "error: autonomous gates apply only to ship and scout tasks, not secondmates" >&2; exit 1; }
+  [ "$MODE" != no-mistakes ] || { echo "error: autonomous gates are refused for delivery mode no-mistakes because the no-mistakes pipeline owns its own gates and branch custody" >&2; exit 1; }
+  : "${AUTONOMOUS_MAX_CONTINUATIONS:=24}"
+  : "${AUTONOMOUS_MAX_TURNS:=96}"
+  : "${AUTONOMOUS_MAX_TOKENS:=500000}"
+  : "${AUTONOMOUS_TIMEOUT_MS:=14400000}"
+  : "${AUTONOMOUS_GATE_RETRIES:=5}"
+  : "${AUTONOMOUS_GATE_TIMEOUT_MS:=900000}"
+fi
 
 shell_quote() {
   printf "'"
@@ -1571,10 +1700,15 @@ launch_template() {
     pi|pi-signed)
       printf '%s' '__PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
+      ;;
+    # prime-agent (Prime Agent): Pi-family CLI with Firstmate's turn-end and
+    # watcher extension. Autonomous flags are populated only for this adapter.
+    prime-agent)
+      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
@@ -1776,8 +1910,10 @@ case "$ARG3" in
     ;;
 esac
 
-# muse, gemini, and agy are verified as CREWMATE/SCOUT adapters only. A secondmate is
-# a firstmate instance, so it needs a primary supervision protocol.
+# muse, gemini, prime-agent, and agy are verified as CREWMATE/SCOUT adapters only.
+# A secondmate is a firstmate instance, so it needs a primary supervision protocol.
+# Prime Agent's primary supervision path is not wired into the session-start
+# renderer or secondmate launch, so it remains refused until that evidence exists.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
 # and this task verified only crewmate-side launch, busy state, interrupt, and
 # exit, so a gemini secondmate is refused rather than stood up on an unverified
@@ -1788,7 +1924,7 @@ esac
 # secondmate whose supervision cycle could never be armed.
 # agy has none either: it exposes no hook surface for primary supervision and
 # docs/supervision-protocols/ carries no agy wake protocol (agy 1.2.0).
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = agy ]; }; then
+if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ] || [ "$HARNESS" = prime-agent ] || [ "$HARNESS" = agy ]; }; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
@@ -1803,6 +1939,13 @@ if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
 fi
 
 case "$HARNESS" in
+  prime-agent)
+    PRIME_BIN=$(resolve_pi_executable prime-agent) || {
+      echo "error: prime-agent executable not found on PATH; install Prime Agent or select a different verified harness" >&2
+      exit 1
+    }
+    LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
+    ;;
   pi|pi-signed)
     PI_BIN=$(resolve_pi_executable "$HARNESS") || {
       echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
@@ -1998,10 +2141,33 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
+    claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|cursor|gemini|muse|rovo|omp|agy)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
+}
+
+provider_flag_for_harness() {
+  local harness=$1 provider=$2
+  [ -n "$provider" ] && [ "$provider" != default ] || return 0
+  case "$harness" in
+    prime-agent|pi|pi-signed) printf -- '--provider %s ' "$(shell_quote "$provider")" ;;
+  esac
+}
+
+autonomous_flags_for_harness() {
+  local harness=$1 gate
+  [ "$harness" = prime-agent ] || return 0
+  [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ] && printf '%s' '--autonomous '
+  for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do
+    printf -- '--autonomous-gate %s ' "$(shell_quote "$gate")"
+  done
+  [ -z "$AUTONOMOUS_MAX_CONTINUATIONS" ] || printf -- '--autonomous-max-continuations %s ' "$(shell_quote "$AUTONOMOUS_MAX_CONTINUATIONS")"
+  [ -z "$AUTONOMOUS_MAX_TURNS" ] || printf -- '--autonomous-max-turns %s ' "$(shell_quote "$AUTONOMOUS_MAX_TURNS")"
+  [ -z "$AUTONOMOUS_MAX_TOKENS" ] || printf -- '--autonomous-max-tokens %s ' "$(shell_quote "$AUTONOMOUS_MAX_TOKENS")"
+  [ -z "$AUTONOMOUS_TIMEOUT_MS" ] || printf -- '--autonomous-timeout-ms %s ' "$(shell_quote "$AUTONOMOUS_TIMEOUT_MS")"
+  [ -z "$AUTONOMOUS_GATE_RETRIES" ] || printf -- '--autonomous-gate-retries %s ' "$(shell_quote "$AUTONOMOUS_GATE_RETRIES")"
+  [ -z "$AUTONOMOUS_GATE_TIMEOUT_MS" ] || printf -- '--autonomous-gate-timeout-ms %s ' "$(shell_quote "$AUTONOMOUS_GATE_TIMEOUT_MS")"
 }
 
 effort_flag_for_harness() {
@@ -2049,6 +2215,17 @@ effort_flag_for_harness() {
           "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$harness" "$model" "$effort" || return 1
           printf -- '--codex-effort %s ' "$(shell_quote ultra)"
           ;;
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    prime-agent)
+      # prime-agent 0.9.1 --thinking accepts off|minimal|low|medium|high|xhigh|max,
+      # so the whole shared vocabulary maps straight across; off and minimal sit
+      # below it and stay unreachable. The flag IS applied, but the EFFECTIVE
+      # level is then clamped to the selected model's supported set by the shared
+      # pi-ai clampThinkingLevel, which walks UP to the next supported level
+      # first - that is model capability, not a dropped flag.
+      case "$effort" in
         low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
@@ -3494,7 +3671,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed|omp)
+    claude*|opencode*|pi|pi-signed|prime-agent|omp)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -3630,6 +3807,86 @@ export const FmBusyState = async () => {
 };
 EOF
       exclude_path '.opencode/plugins/fm-busy-state.js'
+      ;;
+    prime-agent)
+      # Written OUTSIDE the worktree like Pi's, so the task extension can write
+      # semantic busy state and the turn-end notification without dirtying the
+      # project. Cleaned by teardown.
+      cat > "$STATE/$ID.prime-ext.ts" <<EOF
+// Firstmate semantic busy-state events + turn-end notification for prime-agent;
+// written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
+// Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled.
+// agent_end is held briefly when an error may trigger an auto-retry or when
+// messages are queued, matching the primary guard's settle reconstruction.
+// turn_end fires at every inner turn boundary and stays a wake NOTIFICATION touch.
+import { execFile } from "node:child_process";
+const busyEvent = (state: string, event: string) =>
+  new Promise<void>((resolve) => {
+    execFile("$FM_ROOT/bin/fm-busy-event.sh", [
+      "apply", "$STATE_REAL", "$ID", state,
+      "--gen", "$BUSY_GEN", "--source", "prime-ext", "--event", event,
+    ], () => resolve());
+  });
+const retryGraceMs = Number(process.env.HERDR_PI_RETRY_GRACE_MS) > 0
+  ? Math.floor(Number(process.env.HERDR_PI_RETRY_GRACE_MS)) : 2500;
+const idleDebounceMs = Number(process.env.HERDR_PI_IDLE_DEBOUNCE_MS) > 0
+  ? Math.floor(Number(process.env.HERDR_PI_IDLE_DEBOUNCE_MS)) : 250;
+function lastAssistantStoppedOnError(event: any): boolean {
+  const messages = event?.messages;
+  if (!Array.isArray(messages)) return false;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "assistant") return messages[i]?.stopReason === "error";
+  }
+  return false;
+}
+export default function (pi: any) {
+  let agentActive = false;
+  let boundSessionManager: unknown;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+  const isBoundSession = (ctx: any): boolean =>
+    boundSessionManager === undefined || ctx?.sessionManager === boundSessionManager;
+  const bindSession = (ctx: any): boolean => {
+    const sessionManager = ctx?.sessionManager;
+    if (boundSessionManager === undefined && sessionManager !== undefined) {
+      boundSessionManager = sessionManager;
+    }
+    return isBoundSession(ctx);
+  };
+  const clearSettleTimer = () => {
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = undefined;
+  };
+  const scheduleIdle = (delayMs: number, event: string) => {
+    clearSettleTimer();
+    settleTimer = setTimeout(() => {
+      settleTimer = undefined;
+      void busyEvent("idle", event);
+    }, delayMs);
+    settleTimer.unref?.();
+  };
+  pi.on("agent_start", (_event: any, ctx: any) => {
+    if (!bindSession(ctx)) return;
+    clearSettleTimer();
+    agentActive = true;
+    return busyEvent("busy", "agent-start");
+  });
+  pi.on("agent_end", (event: any, ctx: any) => {
+    if (!isBoundSession(ctx) || !agentActive) return;
+    agentActive = false;
+    if (lastAssistantStoppedOnError(event)) {
+      scheduleIdle(retryGraceMs, "agent-end-error-grace");
+      return;
+    }
+    if (typeof ctx?.hasPendingMessages === "function" && ctx.hasPendingMessages()) {
+      scheduleIdle(idleDebounceMs, "agent-end-pending");
+      return;
+    }
+    clearSettleTimer();
+    return busyEvent("idle", "agent-end");
+  });
+  pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
+}
+EOF
       ;;
     pi|pi-signed)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
@@ -3903,7 +4160,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp provider model effort autonomous_gate autonomous_max_continuations autonomous_max_turns autonomous_max_tokens autonomous_timeout_ms autonomous_gate_retries autonomous_gate_timeout_ms busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3919,7 +4176,17 @@ preserve_relaunch_meta() {
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
+  echo "provider=${PROVIDER:-default}"
   echo "model=${MODEL:-default}"
+  for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do
+    echo "autonomous_gate=$gate"
+  done
+  echo "autonomous_max_continuations=${AUTONOMOUS_MAX_CONTINUATIONS:-default}"
+  echo "autonomous_max_turns=${AUTONOMOUS_MAX_TURNS:-default}"
+  echo "autonomous_max_tokens=${AUTONOMOUS_MAX_TOKENS:-default}"
+  echo "autonomous_timeout_ms=${AUTONOMOUS_TIMEOUT_MS:-default}"
+  echo "autonomous_gate_retries=${AUTONOMOUS_GATE_RETRIES:-default}"
+  echo "autonomous_gate_timeout_ms=${AUTONOMOUS_GATE_TIMEOUT_MS:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
@@ -4050,13 +4317,18 @@ fi
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
+sq_primeext=$(shell_quote "$STATE/$ID.prime-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 sq_ompext=$(shell_quote "$STATE/$ID.omp-ext.ts")
 sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
+PROVIDERFLAG=$(provider_flag_for_harness "$HARNESS" "$PROVIDER")
+AUTONOMOUSFLAGS=$(autonomous_flags_for_harness "$HARNESS")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
+LAUNCH=${LAUNCH//__PROVIDERFLAG__/$PROVIDERFLAG}
+LAUNCH=${LAUNCH//__AUTONOMOUSFLAGS__/$AUTONOMOUSFLAGS}
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
@@ -4071,6 +4343,7 @@ fi
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+LAUNCH=${LAUNCH//__PRIMEEXT__/$sq_primeext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
@@ -4078,6 +4351,7 @@ LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
+  prime-agent) LAUNCH=${LAUNCH//__PRIMEBIN__/"$(shell_quote "$PRIME_BIN")"} ;;
   cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
   gemini) LAUNCH=${LAUNCH//__GEMINISETTINGS__/"$(shell_quote "$STATE_REAL/$ID.gemini-settings.json")"} ;;
   omp) LAUNCH=${LAUNCH//__OMPBIN__/"$(shell_quote "$OMP_BIN")"} ;;
@@ -4085,8 +4359,8 @@ case "$HARNESS" in
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo|agy)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
+  claude|codex|opencode|pi|pi-signed|prime-agent|grok|kimi|gemini|muse|rovo|agy)
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER $LAUNCH"
     ;;
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not
