@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>] [Prime Agent options]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>] [Prime Agent options]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--provider <name>] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -27,7 +27,7 @@
 #   Ship/scout launches always supply fm-dod-lib.sh's current worker role scope
 #   using the same private launch-brief overlay. This never rewrites a project's
 #   instruction files or a secondmate's charter.
-#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--provider <name>] [--model <name>] [--effort <level>] [Prime Agent options]
+#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--provider <name>] [--model <name>] [--effort <level>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
 #   the launch half of the control plane (bin/fm-control.sh relaunch), which
@@ -477,8 +477,6 @@ if [ -e "$STATE" ] || [ -L "$STATE" ]; then
 fi
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
-# shellcheck source=bin/fm-prime-agent-lib.sh
-. "$SCRIPT_DIR/fm-prime-agent-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 fm_backlog_directory_present "$STATE" "state directory" || {
@@ -519,13 +517,6 @@ HARNESS_ARG=
 PROVIDER=
 MODEL=
 EFFORT=
-AUTONOMOUS_GATES=()
-AUTONOMOUS_MAX_CONTINUATIONS=
-AUTONOMOUS_MAX_TURNS=
-AUTONOMOUS_MAX_TOKENS=
-AUTONOMOUS_TIMEOUT_MS=
-AUTONOMOUS_GATE_RETRIES=
-AUTONOMOUS_GATE_TIMEOUT_MS=
 BACKEND_ARG=
 MODE=
 YOLO=
@@ -534,13 +525,6 @@ HARNESS_SET=0
 PROVIDER_SET=0
 MODEL_SET=0
 EFFORT_SET=0
-AUTONOMOUS_GATE_SET=0
-AUTONOMOUS_MAX_CONTINUATIONS_SET=0
-AUTONOMOUS_MAX_TURNS_SET=0
-AUTONOMOUS_MAX_TOKENS_SET=0
-AUTONOMOUS_TIMEOUT_MS_SET=0
-AUTONOMOUS_GATE_RETRIES_SET=0
-AUTONOMOUS_GATE_TIMEOUT_MS_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
@@ -560,13 +544,6 @@ for a in "$@"; do
       harness) HARNESS_ARG=$a; HARNESS_SET=1 ;;
       provider) PROVIDER=$a; PROVIDER_SET=1 ;;
       model) MODEL=$a; MODEL_SET=1 ;;
-      autonomous-gate) AUTONOMOUS_GATES+=("$a"); AUTONOMOUS_GATE_SET=1 ;;
-      autonomous-max-continuations) AUTONOMOUS_MAX_CONTINUATIONS=$a; AUTONOMOUS_MAX_CONTINUATIONS_SET=1 ;;
-      autonomous-max-turns) AUTONOMOUS_MAX_TURNS=$a; AUTONOMOUS_MAX_TURNS_SET=1 ;;
-      autonomous-max-tokens) AUTONOMOUS_MAX_TOKENS=$a; AUTONOMOUS_MAX_TOKENS_SET=1 ;;
-      autonomous-timeout-ms) AUTONOMOUS_TIMEOUT_MS=$a; AUTONOMOUS_TIMEOUT_MS_SET=1 ;;
-      autonomous-gate-retries) AUTONOMOUS_GATE_RETRIES=$a; AUTONOMOUS_GATE_RETRIES_SET=1 ;;
-      autonomous-gate-timeout-ms) AUTONOMOUS_GATE_TIMEOUT_MS=$a; AUTONOMOUS_GATE_TIMEOUT_MS_SET=1 ;;
       effort) EFFORT=$a; EFFORT_SET=1 ;;
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
@@ -589,20 +566,6 @@ for a in "$@"; do
     --model=*) MODEL=${a#--model=}; MODEL_SET=1 ;;
     --effort) want_value=effort ;;
     --effort=*) EFFORT=${a#--effort=}; EFFORT_SET=1 ;;
-    --autonomous-gate) want_value=autonomous-gate ;;
-    --autonomous-gate=*) AUTONOMOUS_GATES+=("${a#--autonomous-gate=}"); AUTONOMOUS_GATE_SET=1 ;;
-    --autonomous-max-continuations) want_value=autonomous-max-continuations ;;
-    --autonomous-max-continuations=*) AUTONOMOUS_MAX_CONTINUATIONS=${a#--autonomous-max-continuations=}; AUTONOMOUS_MAX_CONTINUATIONS_SET=1 ;;
-    --autonomous-max-turns) want_value=autonomous-max-turns ;;
-    --autonomous-max-turns=*) AUTONOMOUS_MAX_TURNS=${a#--autonomous-max-turns=}; AUTONOMOUS_MAX_TURNS_SET=1 ;;
-    --autonomous-max-tokens) want_value=autonomous-max-tokens ;;
-    --autonomous-max-tokens=*) AUTONOMOUS_MAX_TOKENS=${a#--autonomous-max-tokens=}; AUTONOMOUS_MAX_TOKENS_SET=1 ;;
-    --autonomous-timeout-ms) want_value=autonomous-timeout-ms ;;
-    --autonomous-timeout-ms=*) AUTONOMOUS_TIMEOUT_MS=${a#--autonomous-timeout-ms=}; AUTONOMOUS_TIMEOUT_MS_SET=1 ;;
-    --autonomous-gate-retries) want_value=autonomous-gate-retries ;;
-    --autonomous-gate-retries=*) AUTONOMOUS_GATE_RETRIES=${a#--autonomous-gate-retries=}; AUTONOMOUS_GATE_RETRIES_SET=1 ;;
-    --autonomous-gate-timeout-ms) want_value=autonomous-gate-timeout-ms ;;
-    --autonomous-gate-timeout-ms=*) AUTONOMOUS_GATE_TIMEOUT_MS=${a#--autonomous-gate-timeout-ms=}; AUTONOMOUS_GATE_TIMEOUT_MS_SET=1 ;;
     --backend) want_value=backend ;;
     --backend=*) BACKEND_ARG=${a#--backend=}; BACKEND_SET=1 ;;
     --mode) want_value=mode ;;
@@ -622,21 +585,6 @@ done
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
-for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do
-  [ -n "$gate" ] || { echo "error: --autonomous-gate requires a non-empty value" >&2; exit 1; }
-  case "$gate" in *$'\n'*|*$'\r'*) echo "error: --autonomous-gate must be a single-line command" >&2; exit 1 ;; esac
-done
-for axis in autonomous-max-continuations autonomous-max-turns autonomous-max-tokens autonomous-timeout-ms autonomous-gate-retries autonomous-gate-timeout-ms; do
-  case "$axis" in
-    autonomous-max-continuations) value=$AUTONOMOUS_MAX_CONTINUATIONS ;;
-    autonomous-max-turns) value=$AUTONOMOUS_MAX_TURNS ;;
-    autonomous-max-tokens) value=$AUTONOMOUS_MAX_TOKENS ;;
-    autonomous-timeout-ms) value=$AUTONOMOUS_TIMEOUT_MS ;;
-    autonomous-gate-retries) value=$AUTONOMOUS_GATE_RETRIES ;;
-    autonomous-gate-timeout-ms) value=$AUTONOMOUS_GATE_TIMEOUT_MS ;;
-  esac
-  case "$value" in ''|*[!0-9]*|0) [ -z "$value" ] || { echo "error: --$axis requires a positive integer" >&2; exit 1; } ;; esac
-done
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -724,22 +672,6 @@ else
   fi
 fi
 
-if [ "$RELAUNCH" -eq 0 ] && [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
-  [ "$KIND" != secondmate ] || {
-    echo "error: autonomous gates apply only to ship and scout tasks, not secondmates" >&2
-    exit 1
-  }
-  [ "$MODE" != no-mistakes ] || {
-    echo "error: autonomous gates are refused for delivery mode no-mistakes because the no-mistakes pipeline owns its own gates and branch custody; a harness-level gate would create duplicate gate ownership" >&2
-    exit 1
-  }
-  : "${AUTONOMOUS_MAX_CONTINUATIONS:=24}"
-  : "${AUTONOMOUS_MAX_TURNS:=96}"
-  : "${AUTONOMOUS_MAX_TOKENS:=500000}"
-  : "${AUTONOMOUS_TIMEOUT_MS:=14400000}"
-  : "${AUTONOMOUS_GATE_RETRIES:=5}"
-  : "${AUTONOMOUS_GATE_TIMEOUT_MS:=900000}"
-fi
 
 spawn_remote_secondmate() {
   local id=$1 remote host root home harness positional model effort backend out rc meta tmp
@@ -1296,13 +1228,6 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ -z "$PROVIDER" ] || shared_args+=(--provider "$PROVIDER")
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
-  for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do shared_args+=(--autonomous-gate "$gate"); done
-  [ -z "$AUTONOMOUS_MAX_CONTINUATIONS" ] || shared_args+=(--autonomous-max-continuations "$AUTONOMOUS_MAX_CONTINUATIONS")
-  [ -z "$AUTONOMOUS_MAX_TURNS" ] || shared_args+=(--autonomous-max-turns "$AUTONOMOUS_MAX_TURNS")
-  [ -z "$AUTONOMOUS_MAX_TOKENS" ] || shared_args+=(--autonomous-max-tokens "$AUTONOMOUS_MAX_TOKENS")
-  [ -z "$AUTONOMOUS_TIMEOUT_MS" ] || shared_args+=(--autonomous-timeout-ms "$AUTONOMOUS_TIMEOUT_MS")
-  [ -z "$AUTONOMOUS_GATE_RETRIES" ] || shared_args+=(--autonomous-gate-retries "$AUTONOMOUS_GATE_RETRIES")
-  [ -z "$AUTONOMOUS_GATE_TIMEOUT_MS" ] || shared_args+=(--autonomous-gate-timeout-ms "$AUTONOMOUS_GATE_TIMEOUT_MS")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
   # One delivery contract applies to every pair in a batch, exactly like the shared
   # harness. Each pair still re-validates it against its own brief, so a batch
@@ -1569,45 +1494,6 @@ else
 fi
 [ -z "$HARNESS_ARG" ] || ARG3=$HARNESS_ARG
 
-# A relaunch reproduces every recorded Prime launch axis unless the caller
-# explicitly replaces that axis. Gate records are repeatable in their original order.
-if [ "$RELAUNCH" -eq 1 ]; then
-  if [ "$PROVIDER_SET" -eq 0 ]; then
-    PROVIDER=$(fm_meta_get "$RELAUNCH_META" provider)
-    [ "$PROVIDER" != default ] || PROVIDER=
-  fi
-  if [ "$AUTONOMOUS_GATE_SET" -eq 0 ]; then
-    while IFS= read -r gate; do
-      AUTONOMOUS_GATES+=("$gate")
-    done < <(sed -n 's/^autonomous_gate=//p' "$RELAUNCH_META")
-  fi
-  for axis in autonomous-max-continuations autonomous-max-turns autonomous-max-tokens autonomous-timeout-ms autonomous-gate-retries autonomous-gate-timeout-ms; do
-    case "$axis" in
-      autonomous-max-continuations) flag=$AUTONOMOUS_MAX_CONTINUATIONS_SET; var=AUTONOMOUS_MAX_CONTINUATIONS ;;
-      autonomous-max-turns) flag=$AUTONOMOUS_MAX_TURNS_SET; var=AUTONOMOUS_MAX_TURNS ;;
-      autonomous-max-tokens) flag=$AUTONOMOUS_MAX_TOKENS_SET; var=AUTONOMOUS_MAX_TOKENS ;;
-      autonomous-timeout-ms) flag=$AUTONOMOUS_TIMEOUT_MS_SET; var=AUTONOMOUS_TIMEOUT_MS ;;
-      autonomous-gate-retries) flag=$AUTONOMOUS_GATE_RETRIES_SET; var=AUTONOMOUS_GATE_RETRIES ;;
-      autonomous-gate-timeout-ms) flag=$AUTONOMOUS_GATE_TIMEOUT_MS_SET; var=AUTONOMOUS_GATE_TIMEOUT_MS ;;
-    esac
-    if [ "$flag" -eq 0 ]; then
-      value=$(fm_meta_get "$RELAUNCH_META" "${var,,}")
-      [ "$value" != default ] || value=
-      printf -v "$var" '%s' "$value"
-    fi
-  done
-fi
-
-if [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ]; then
-  [ "$KIND" != secondmate ] || { echo "error: autonomous gates apply only to ship and scout tasks, not secondmates" >&2; exit 1; }
-  [ "$MODE" != no-mistakes ] || { echo "error: autonomous gates are refused for delivery mode no-mistakes because the no-mistakes pipeline owns its own gates and branch custody" >&2; exit 1; }
-  : "${AUTONOMOUS_MAX_CONTINUATIONS:=24}"
-  : "${AUTONOMOUS_MAX_TURNS:=96}"
-  : "${AUTONOMOUS_MAX_TOKENS:=500000}"
-  : "${AUTONOMOUS_TIMEOUT_MS:=14400000}"
-  : "${AUTONOMOUS_GATE_RETRIES:=5}"
-  : "${AUTONOMOUS_GATE_TIMEOUT_MS:=900000}"
-fi
 
 shell_quote() {
   printf "'"
@@ -1762,9 +1648,8 @@ launch_template() {
       fi
       ;;
     # prime-agent (Prime Agent): Pi-family CLI with Firstmate's turn-end and
-    # watcher extension. Autonomous flags are populated only for this adapter.
     prime-agent)
-      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG____AUTONOMOUSFLAGS__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+      printf '%s' 'env -u CLAUDECODE -u GROK_AGENT __PRIMEBIN__ __PROVIDERFLAG____MODELFLAG____EFFORTFLAG__-e __PRIMEEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       ;;
     # omp (Oh My Pi), a Pi fork. Same one-positional-brief, --model, --thinking,
     # and -e shape as Pi, verified on omp 18.1.11. The differences are all at
@@ -2229,21 +2114,6 @@ provider_flag_for_harness() {
   case "$harness" in
     prime-agent|pi|pi-signed) printf -- '--provider %s ' "$(shell_quote "$provider")" ;;
   esac
-}
-
-autonomous_flags_for_harness() {
-  local harness=$1 gate
-  [ "$harness" = prime-agent ] || return 0
-  [ "${#AUTONOMOUS_GATES[@]}" -gt 0 ] && printf '%s' '--autonomous '
-  for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do
-    printf -- '--autonomous-gate %s ' "$(shell_quote "$gate")"
-  done
-  [ -z "$AUTONOMOUS_MAX_CONTINUATIONS" ] || printf -- '--autonomous-max-continuations %s ' "$(shell_quote "$AUTONOMOUS_MAX_CONTINUATIONS")"
-  [ -z "$AUTONOMOUS_MAX_TURNS" ] || printf -- '--autonomous-max-turns %s ' "$(shell_quote "$AUTONOMOUS_MAX_TURNS")"
-  [ -z "$AUTONOMOUS_MAX_TOKENS" ] || printf -- '--autonomous-max-tokens %s ' "$(shell_quote "$AUTONOMOUS_MAX_TOKENS")"
-  [ -z "$AUTONOMOUS_TIMEOUT_MS" ] || printf -- '--autonomous-timeout-ms %s ' "$(shell_quote "$AUTONOMOUS_TIMEOUT_MS")"
-  [ -z "$AUTONOMOUS_GATE_RETRIES" ] || printf -- '--autonomous-gate-retries %s ' "$(shell_quote "$AUTONOMOUS_GATE_RETRIES")"
-  [ -z "$AUTONOMOUS_GATE_TIMEOUT_MS" ] || printf -- '--autonomous-gate-timeout-ms %s ' "$(shell_quote "$AUTONOMOUS_GATE_TIMEOUT_MS")"
 }
 
 effort_flag_for_harness() {
@@ -3499,7 +3369,6 @@ rovo_spawn_fail() { # <detail>
 # The launch-then-confirm gates run after the task record is published, when
 # ORCA_ABORT_CLEANUP is already cleared and neither the abort trap nor a
 # teardown owns this endpoint yet, so a gate failure must close the launched
-# process here or it keeps running as an orphaned autonomous agent outside
 # task control. Mirrors fm-teardown.sh's own generic kill call. On orca only
 # the exact terminal is closed: that stops the CLI while its worktree stays
 # for the record's own teardown, which owns worktree deletion.
@@ -3931,7 +3800,7 @@ EOF
 // written by fm-spawn under the contract owned by bin/fm-busy-lib.sh.
 // Prime Agent 0.9.4 exposes agent_start and agent_end but no agent_settled.
 // agent_end is held briefly when an error may trigger an auto-retry or when
-// messages are queued, matching the primary guard's settle reconstruction.
+// messages are queued, matching the adapter's settle reconstruction.
 // turn_end fires at every inner turn boundary and stays a wake NOTIFICATION touch.
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
@@ -4274,7 +4143,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp provider model effort autonomous_gate autonomous_max_continuations autonomous_max_turns autonomous_max_tokens autonomous_timeout_ms autonomous_gate_retries autonomous_gate_timeout_ms busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp provider model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -4292,15 +4161,6 @@ preserve_relaunch_meta() {
   echo "tasktmp=$TASK_TMP"
   echo "provider=${PROVIDER:-default}"
   echo "model=${MODEL:-default}"
-  for gate in "${AUTONOMOUS_GATES[@]+${AUTONOMOUS_GATES[@]}}"; do
-    echo "autonomous_gate=$gate"
-  done
-  echo "autonomous_max_continuations=${AUTONOMOUS_MAX_CONTINUATIONS:-default}"
-  echo "autonomous_max_turns=${AUTONOMOUS_MAX_TURNS:-default}"
-  echo "autonomous_max_tokens=${AUTONOMOUS_MAX_TOKENS:-default}"
-  echo "autonomous_timeout_ms=${AUTONOMOUS_TIMEOUT_MS:-default}"
-  echo "autonomous_gate_retries=${AUTONOMOUS_GATE_RETRIES:-default}"
-  echo "autonomous_gate_timeout_ms=${AUTONOMOUS_GATE_TIMEOUT_MS:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
@@ -4439,10 +4299,8 @@ sq_ompcfg=$(shell_quote "${OMP_WORKER_CFG:-$FM_ROOT/.omp/fm-worker-overlay.yml}"
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 PROVIDERFLAG=$(provider_flag_for_harness "$HARNESS" "$PROVIDER")
-AUTONOMOUSFLAGS=$(autonomous_flags_for_harness "$HARNESS")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 LAUNCH=${LAUNCH//__PROVIDERFLAG__/$PROVIDERFLAG}
-LAUNCH=${LAUNCH//__AUTONOMOUSFLAGS__/$AUTONOMOUSFLAGS}
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL") || exit 1
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
