@@ -1352,7 +1352,7 @@ _fm_composer_select_cursorless() {
      && [ "$FM_COMPOSER_SCAN_PI_LAST_SEPARATOR" -gt "$generic" ]; then
     if [ "${FM_COMPOSER_CAP_IDENTITY:-0}" = 1 ] && [ "$generic" -ge 0 ]; then
       FM_COMPOSER_NEEDS_LONE_RULE_IDENTITY=1
-    elif [ "$FM_COMPOSER_SELECTED_KIND" != bare ]; then
+    else
       FM_COMPOSER_SELECTED_KIND=
       return 1
     fi
