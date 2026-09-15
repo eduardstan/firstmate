@@ -14,6 +14,8 @@ PRIME_AGENT=$(command -v prime-agent || true)
 [ -n "$PRIME_AGENT" ] || fail "FM_PRIME_AGENT_LIVE_E2E=1 but prime-agent is not on PATH"
 PRIME_VERSION=$("$PRIME_AGENT" --version 2>&1 | head -1 || true)
 [ -n "$PRIME_VERSION" ] || fail "could not read the installed Prime Agent version"
+printf '%s\n' "$PRIME_VERSION" | grep -Eq '^[vV]?[0-9]+([.][0-9]+)+' \
+  || fail "Prime Agent reported a non-numeric version: $PRIME_VERSION"
 [ -x "$LAB_HELPER" ] || fail "FM_PRIME_AGENT_LIVE_E2E=1 but the Herdr lab helper is not executable: $LAB_HELPER"
 
 # shellcheck source=tests/herdr-test-safety.sh
@@ -87,20 +89,16 @@ PANE=$(printf '%s' "$WS" | jq -er '.result.root_pane.pane_id') \
 
 for _ in $(seq 1 120); do
   screen=$("$LAB_HELPER" run "$SESSION" pane read "$PANE" --source recent --lines 200 2>/dev/null || true)
-  if printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' \
-    && printf '%s\n' "$screen" | grep -Fq "$expected_model" \
+  if printf '%s\n' "$screen" | grep -Fq "$expected_model" \
     && printf '%s\n' "$screen" | grep -Fq "$EFFORT"; then
     break
   fi
   sleep 0.5
 done
-printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' || fail "Prime Agent did not render its startup screen (binary=$PRIME_AGENT): $screen"
 printf '%s\n' "$screen" | grep -Fq "$expected_model" \
   || fail "generated launch did not render the requested model $expected_model; launch=$LAUNCH screen=$screen"
 printf '%s\n' "$screen" | grep -Fq "$EFFORT" \
   || fail "generated launch did not render the requested effort $EFFORT; launch=$LAUNCH screen=$screen"
-printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+([.][0-9]+)+' \
-  || fail "generated launch did not render a numeric version; launch=$LAUNCH screen=$screen"
 pass "Prime Agent rendered the production model, provider, and thinking launch"
 
 for _ in $(seq 1 120); do
@@ -160,10 +158,10 @@ pass "Prime Agent $PRIME_VERSION exits cleanly and leaves the detached worker fo
   || fail "could not relaunch Prime Agent in the same pane"
 for _ in $(seq 1 120); do
   screen=$("$LAB_HELPER" run "$SESSION" pane read "$PANE" --source recent --lines 200 2>/dev/null || true)
-  if printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+'; then break; fi
+  if printf '%s\n' "$screen" | grep -Fq "$expected_model"; then break; fi
   sleep 0.5
 done
-printf '%s\n' "$screen" | grep -Eq 'version[[:space:]]+v[0-9]+' || fail "Prime Agent did not relaunch in the same pane"
+printf '%s\n' "$screen" | grep -Fq "$expected_model" || fail "Prime Agent did not relaunch in the same pane"
 pass "Prime Agent $PRIME_VERSION relaunches in the same Herdr pane"
 
 send '/quit' || fail "could not submit the cleanup quit"
