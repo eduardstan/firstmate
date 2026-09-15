@@ -1079,7 +1079,6 @@ exit 0
     "direct fm-spawn --relaunch lost the recorded provider flag"
   pass "fm-spawn --relaunch: without an override it preserves the recorded provider"
 }
-}
 
 # fm-spawn arms per-task wiring on harness PREFIXES, because a task launched
 # from a raw command records that command's basename rather than the exact
