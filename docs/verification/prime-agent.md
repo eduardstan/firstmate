@@ -45,4 +45,4 @@ bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-harness.test.sh tests/fm-busy-a
 HERDR_LAB_HELPER="$PWD/bin/fm-herdr-lab.sh" FM_PRIME_AGENT_LIVE_E2E=1 bin/fm-test-run.sh --jobs 1 tests/fm-prime-agent-signals-live-e2e.test.sh
 ```
 
-The dated local result for this branch was `FM_TEST_SUMMARY total=4 failed=0 skipped_gate=0` for the deterministic command and `FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0` for the live command.
+The dated local result for this branch was `FM_TEST_SUMMARY total=5 failed=0 skipped_gate=0` for the deterministic command and `FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0` for the live command.
