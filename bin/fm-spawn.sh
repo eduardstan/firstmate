@@ -1483,10 +1483,6 @@ elif [ "$KIND" = secondmate ]; then
       FIRSTMATE_HOME=${POS[1]}
       ARG3=${POS[2]:-}
       ;;
-  *)
-    FIRSTMATE_HOME=${POS[1]}
-    ARG3=${POS[2]:-}
-    ;;
   esac
 else
   PROJ=${POS[1]}
