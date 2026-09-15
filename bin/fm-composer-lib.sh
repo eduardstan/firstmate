@@ -864,8 +864,8 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [styled-screen]
     # Prime Agent's `>` row is a candidate only when the styled row proves its
     # full-width background surface is open at the glyph. Do not add `>` to the
     # generic shell glyph list: a plain shell prompt remains staleness evidence.
-    raw_line=$(_fm_composer_screen_row "$row" "$raw_pane")
     if [ "${FM_COMPOSER_CAP_PRIME:-0}" = 1 ] \
+       && raw_line=$(_fm_composer_screen_row "$row" "$raw_pane") \
        && fm_composer_row_is_prime_agent_surface "$raw_line" "$trimmed"; then
       FM_COMPOSER_SCAN_PRIME_ROW=$row
     elif [ "$top" -lt 0 ] && fm_composer_leading_shell_glyph_var glyph "$trimmed"; then
