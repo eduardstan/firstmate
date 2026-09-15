@@ -8,7 +8,7 @@ The adapter reference owns the stable operating contract.
 | Field | Value |
 |---|---|
 | Version | `prime-agent 0.9.4` |
-| Evidence date | 2026-09-14 |
+| Evidence date | 2026-09-15 |
 | Branch | `fm/fm-upstream-prime-one-pr`, rebuilt from upstream `main` |
 | Platform | Linux x86_64 |
 | Backend | Herdr in a named non-`default` lab session created by `bin/fm-herdr-lab.sh` |
