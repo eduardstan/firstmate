@@ -624,8 +624,9 @@ test_secondmate_no_projects_charter() {
 }
 
 test_secondmate_marked_request_reporting_contract() {
-  local home brief
+  local home brief inbox
   home="$TMP_ROOT/marked-request-reporting-home"
+  inbox="$home/state/marked-request-reporting.inbox"
   mkdir -p "$home/data"
   FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
     FM_SECONDMATE_CHARTER='Handle routed domain work.' \
@@ -651,7 +652,7 @@ test_secondmate_marked_request_reporting_contract() {
 
   assert_grep 'include that exact token in your parent status reply' "$brief" \
     "secondmate charter lost correlated parent results"
-  assert_grep 'bin/fm-secondmate-report.sh --handled $INBOX_DIR/handled/NNN.msg <verb> <note>' "$brief" \
+  assert_grep "bin/fm-secondmate-report.sh --handled $inbox/handled/NNN.msg <verb> <note>" "$brief" \
     "secondmate charter lost the handled-record helper invocation"
   assert_grep 'legacy \`<verb> <corr_id> <note>\` form also works' "$brief" \
     "secondmate charter lost the legacy mechanical helper invocation"
