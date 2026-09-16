@@ -1468,25 +1468,25 @@ test_heartbeat_scan_dedup() {
   pass "catch-all scan escalates a missed terminal once, not twice"
 }
 
-test_urgent_status_flushes_without_hiding_behind_batch() {
-  local dir state fakebin sent capture
+test_urgent_status_flushes_without_hiding_behind_batch() (
+  local dir state
   dir=$(make_supercase urgent-status)
   state="$dir/state"
-  fakebin="$dir/fakebin"
-  sent="$dir/sent.log"; : > "$sent"
-  capture="$dir/pane.txt"; printf 'â¯ \n' > "$capture"
+  inject_msg() {
+    printf '%s\n' "$1" > "$state/injected"
+    return 0
+  }
   printf 'working: routine progress\nblocked: action required\n' \
     > "$state/remote.status"
   afk_enter "$state"
-  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
-    FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=999 \
-    FM_STATE_OVERRIDE="$state" handle_wake "signal: $state/remote.status" "$state"
-  grep -F 'blocked: action required' "$sent" >/dev/null \
+  FM_ESCALATE_BATCH_SECS=999 FM_STATE_OVERRIDE="$state" \
+    handle_wake "signal: $state/remote.status" "$state"
+  grep -F 'blocked: action required' "$state/injected" >/dev/null \
     || fail "urgent remote status was hidden behind quiet-mode batching"
   [ ! -s "$state/.subsuper-escalations" ] \
     || fail "urgent remote status remained buffered after its immediate flush"
   pass "blocked status flushes immediately and survives routine progress"
-}
+)
 
 test_handle_wake_routes_self_and_escalate() {
   local dir state
