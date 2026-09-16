@@ -1447,7 +1447,7 @@ at=2026-09-16T00:00:00Z
 --
 [fm-from-firstmate] corr=$corr report the audit result
 EOF
-  FM_HOME="$sm_home" "$REPORT" --handled "$record" done "audit clean" \
+  FM_HOME="$sm_home" "$REPORT" --handled "$record" 'done' "audit clean" \
     || fail "handled-record helper should succeed"
   grep -Fq "corr=$corr" "$state/mate.status" \
     || fail "handled-record helper must append the exact correlation"

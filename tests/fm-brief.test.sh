@@ -654,7 +654,7 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost correlated parent results"
   assert_grep "bin/fm-secondmate-report.sh --handled '$inbox'/handled/NNN.msg <verb> <note>" "$brief" \
     "secondmate charter lost the handled-record helper invocation"
-  assert_grep 'legacy `<verb> <corr_id> <note>` form also works' "$brief" \
+  assert_grep "legacy \`<verb> <corr_id> <note>\` form also works" "$brief" \
     "secondmate charter lost the legacy mechanical helper invocation"
   assert_grep 'do not pass a status path' "$brief" \
     "secondmate charter still tells the mate to pass a hand path to the helper"
