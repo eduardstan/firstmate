@@ -1468,6 +1468,26 @@ test_heartbeat_scan_dedup() {
   pass "catch-all scan escalates a missed terminal once, not twice"
 }
 
+test_urgent_status_flushes_without_hiding_behind_batch() {
+  local dir state fakebin sent capture
+  dir=$(make_supercase urgent-status)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  capture="$dir/pane.txt"; printf 'â¯ \n' > "$capture"
+  printf 'working: routine progress\nblocked [key=urgent]: action required\n' \
+    > "$state/remote.status"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=999 \
+    FM_STATE_OVERRIDE="$state" handle_wake "signal: $state/remote.status" "$state"
+  grep -F 'blocked [key=urgent]: action required' "$sent" >/dev/null \
+    || fail "urgent remote status was hidden behind quiet-mode batching"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "urgent remote status remained buffered after its immediate flush"
+  pass "blocked status flushes immediately and survives routine progress"
+}
+
 test_handle_wake_routes_self_and_escalate() {
   local dir state
   dir=$(make_supercase handle)
@@ -2820,6 +2840,7 @@ test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
+test_urgent_status_flushes_without_hiding_behind_batch
 test_handle_wake_routes_self_and_escalate
 test_needs_decision_queued_row_escalates_once_as_the_decision
 test_captain_held_decision_owned_row_is_self_handled

@@ -1394,6 +1394,70 @@ test_child_status_wrong_home_is_not_copied() {
   pass "a child-file mate-home sighting is not copied and still escalates"
 }
 
+test_short_correlation_requires_unique_open_record() {
+  local home state corr record corr_a corr_b record_a record_b
+  home=$(setup_parent short-correlation)
+  state="$home/state"
+  export FM_PENDING_REPLY_NOW=11125
+  corr=$(fm_pending_reply_create "$home" "$state" mate "unique short correlation")
+  record=$(fm_pending_reply_path "$state" "$corr")
+  fm_pending_reply_set "$record" corr_id abcdef0123456789
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  printf 'done: corr=abcdef012345678 unique response\n' > "$state/mate.status"
+  fm_pending_reply_try_resolve "$state" "$corr" \
+    || fail "a unique shortened correlation should resolve"
+  [ "$(phase_of "$state" "$corr")" = resolved ] \
+    || fail "unique shortened correlation should resolve the record"
+
+  corr_a=$(fm_pending_reply_create "$home" "$state" mate "ambiguous short correlation A")
+  corr_b=$(fm_pending_reply_create "$home" "$state" mate "ambiguous short correlation B")
+  record_a=$(fm_pending_reply_path "$state" "$corr_a")
+  record_b=$(fm_pending_reply_path "$state" "$corr_b")
+  fm_pending_reply_set "$record_a" corr_id 1234567890abcde0
+  fm_pending_reply_set "$record_b" corr_id 1234567890abcdef
+  fm_pending_reply_mark_delivered "$state" "$corr_a"
+  fm_pending_reply_mark_delivered "$state" "$corr_b"
+  printf 'done: corr=1234567890abcde ambiguous response\n' >> "$state/mate.status"
+  if fm_pending_reply_try_resolve "$state" "$corr_a"; then
+    fail "an ambiguous shortened correlation must not resolve A"
+  fi
+  if fm_pending_reply_try_resolve "$state" "$corr_b"; then
+    fail "an ambiguous shortened correlation must not resolve B"
+  fi
+  [ "$(phase_of "$state" "$corr_a")" = awaiting_report ] \
+    || fail "ambiguous shortened correlation changed A"
+  [ "$(phase_of "$state" "$corr_b")" = awaiting_report ] \
+    || fail "ambiguous shortened correlation changed B"
+  pass "short correlations resolve only when one open record matches"
+}
+
+test_handled_record_helper_uses_exact_correlation() {
+  local home state sm_home corr record
+  home=$(setup_parent handled-helper)
+  state="$home/state"
+  sm_home=$(bind_local_mate "$home" mate)
+  mkdir -p "$sm_home/state/mate.inbox/handled"
+  export FM_PENDING_REPLY_NOW=11150
+  corr=$(fm_pending_reply_create "$home" "$state" mate "status from handled record")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  record="$sm_home/state/mate.inbox/handled/001.msg"
+  cat > "$record" <<EOF
+schema=fm-task-inbox.v1
+at=2026-09-16T00:00:00Z
+--
+[fm-from-firstmate] corr=$corr report the audit result
+EOF
+  FM_HOME="$sm_home" "$REPORT" --handled "$record" done "audit clean" \
+    || fail "handled-record helper should succeed"
+  grep -Fq "corr=$corr" "$state/mate.status" \
+    || fail "handled-record helper must append the exact correlation"
+  fm_pending_reply_try_resolve "$state" "$corr" \
+    || fail "handled-record helper line must resolve the expectation"
+  [ "$(phase_of "$state" "$corr")" = resolved ] \
+    || fail "handled-record helper should resolve the matching record"
+  pass "handled-record helper reports the exact correlation without retyping"
+}
+
 test_mechanical_helper_writes_parent_channel() {
   local home state sm_home corr empty_corr rc
   home=$(setup_parent mechanical-helper)
@@ -1607,6 +1671,7 @@ test_mirrored_remote_reply_never_triggers_a_repost
 test_same_basename_self_home_corr_resolves_on_tick
 test_same_basename_reply_resolves_after_recovery_failure
 test_child_status_wrong_home_is_not_copied
+test_handled_record_helper_uses_exact_correlation
 test_mechanical_helper_writes_parent_channel
 test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
