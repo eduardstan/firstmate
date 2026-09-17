@@ -659,6 +659,8 @@ assert_present "$REMOTE_HOME/.fm-secondmate-home" "remote provisioning did not p
 assert_present "$REMOTE_HOME/projects/alpha/.git" "remote provisioning did not clone the project on that host"
 assert_grep "$REMOTE_HOME/state/parent-replies.status" "$REMOTE_HOME/data/charter.md" "remote charter did not use its append-only reply log"
 assert_no_grep "$PARENT/state/ios.status" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local status path"
+assert_grep "$REMOTE_HOME/state/parent-route/ios.inbox" "$REMOTE_HOME/data/charter.md" "remote charter did not name its steering inbox"
+assert_no_grep "$PARENT/state/ios.inbox" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local inbox path"
 if FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
   remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$TMP_ROOT/other-home" alpha \
