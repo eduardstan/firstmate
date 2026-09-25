@@ -590,47 +590,6 @@ fm_pending_reply_find_resolve_line() {  # <status-file> <corr_id>
   return 0
 }
 
-# Extract a deliberately narrow, exactly 15-character correlation prefix. A
-# sixteen-character token does not match this expression, so exact matching
-# remains the first and authoritative path.
-fm_pending_reply_extract_short_corr() {  # <text>
-  printf '%s' "$1" \
-    | grep -oE 'corr=[A-Fa-f0-9]{15}([^A-Fa-f0-9]|$)' 2>/dev/null \
-    | head -1 | cut -d= -f2- | tr -cd 'A-Fa-f0-9' | tr 'A-F' 'a-f' || true
-}
-
-# Find a resolving line using the exact token first, then a unique shortened
-# token tied to one open request for this task. Ambiguous prefixes never resolve.
-fm_pending_reply_find_resolve_line_for_task() {  # <state-dir> <status-file> <corr_id> <task-id>
-  local state=$1 status_file=$2 corr=$3 task_id=$4 line short rec candidate matches
-  line=$(fm_pending_reply_find_resolve_line "$status_file" "$corr")
-  [ -n "$line" ] && { printf '%s' "$line"; return 0; }
-  [ -f "$status_file" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    [ -n "$line" ] || continue
-    case "$line" in *pending-reply-missed*) continue ;; esac
-    short=$(fm_pending_reply_extract_short_corr "$line")
-    [ "${#short}" -eq 15 ] || continue
-    matches=0
-    candidate=
-    for rec in "$(fm_pending_reply_dir "$state")"/*; do
-      [ -f "$rec" ] || continue
-      [ "$(fm_pending_reply_get "$rec" task_id)" = "$task_id" ] || continue
-      [ "$(fm_pending_reply_get "$rec" phase)" != resolved ] || continue
-      case "$(fm_pending_reply_get "$rec" corr_id)" in
-        "$short"*)
-          matches=$((matches + 1))
-          candidate=$(fm_pending_reply_get "$rec" corr_id)
-          ;;
-      esac
-    done
-    [ "$matches" -eq 1 ] && [ "$candidate" = "$corr" ] || continue
-    printf '%s' "$line"
-    return 0
-  done < "$status_file"
-  return 0
-}
-
 fm_pending_reply_file_signature() {  # <path>
   local path=$1
   [ -f "$path" ] || { printf 'missing'; return 0; }
@@ -716,8 +675,7 @@ _fm_pending_reply_try_resolve_locked() {  # <state-dir> <corr_id> [status-file-o
     previous=$(fm_pending_reply_get "$rec" parent_status_scan_signature)
     [ "$signature" != "$previous" ] || return 1
   fi
-  line=$(fm_pending_reply_find_resolve_line_for_task "$state" "$status_file" "$corr" \
-    "$(fm_pending_reply_get "$rec" task_id)")
+  line=$(fm_pending_reply_find_resolve_line "$status_file" "$corr")
   if [ -z "$line" ]; then
     if [ -z "$status_override" ] && [ "$unconfirmed" = 0 ]; then
       fm_pending_reply_set "$rec" parent_status_scan_signature "$signature" || return 1

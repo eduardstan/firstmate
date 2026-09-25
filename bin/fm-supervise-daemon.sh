@@ -1514,7 +1514,7 @@ is_wake_reason() {  # <reason>
 handle_wake() {  # <reason> <state>
   local reason=$1 state=$2 decision action distilled task last stale_detail
   local capture="$state/.subsuper-classified-end.$$" span_record='' span_rc='' endpoint ident rest sig marker
-  local kind="" arg="" classification_failed=0 span_failure_repeat=0 urgent=0
+  local kind="" arg="" classification_failed=0 span_failure_repeat=0
   : > "$capture" || return 1
   if should_force_self "$reason"; then
     log "wake force-self (FM_INJECT_SKIP): $reason"
@@ -1586,10 +1586,6 @@ handle_wake() {  # <reason> <state>
   action=${decision%%|*}
   distilled=${decision#*|}
   [ "$kind" = signal ] && sync_pause_markers_from_signal "$state" "$arg"
-  if [ "$action" = escalate ] && [ "$kind" = signal ] \
-     && printf '%s' "$distilled" | grep -Eq '(^| \| )[^|]*: (blocked|needs-decision|failed)([[:space:]:]|$)'; then
-    urgent=1
-  fi
   if [ "$kind" = stale ] && [ "$action" = escalate ]; then
     task=$(window_to_task "$arg" "$state")
     last=$(status_declared_wait_line "$state/$task.status")
@@ -1603,9 +1599,7 @@ handle_wake() {  # <reason> <state>
         # housekeeping re-escalates the same pane as a false wedge later.
         [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"
         mark_escalated_seen "$state" "$capture" || classification_failed=1
-        if [ "$urgent" -eq 1 ] || [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ]; then
-          escalate_flush "$state" || true
-        fi
+        [ "${FM_ESCALATE_BATCH_SECS:-$ESCALATE_BATCH_SECS_DEFAULT}" -le 0 ] && { escalate_flush "$state" || true; }
       else
         classification_failed=1
       fi

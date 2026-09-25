@@ -103,7 +103,6 @@ fm_task_id_path_safe() {
     ''|.*|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
 }
-
 fm_pr_task_id_valid() {
   local id=${1-}
   fm_task_id_path_safe "$id"

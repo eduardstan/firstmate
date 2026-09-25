@@ -199,6 +199,7 @@ fm_busy_sources_for_harness() {  # <harness>
       ;;
     opencode*) adapter=opencode-plugin ;;
     gemini*) adapter=gemini-hook ;;
+    devin) adapter=devin-hook ;;
     pi|pi-signed) adapter=pi-ext ;;
     prime-agent) adapter=prime-ext ;;
     omp) adapter=omp-ext ;;
