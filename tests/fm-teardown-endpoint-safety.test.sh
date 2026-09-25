@@ -852,6 +852,68 @@ assert_reassigned_slot_left_alone() {  # <case> <id> <other> <description>
     "$description: the warning should name the reassignment as the cause"
 }
 
+test_reassigned_claim_wins_over_live_record_scan() {
+  local dir id=older-task other=newer-task worker rc
+
+  # A stale record and the current claimant can both name the slot. The claim
+  # is authoritative for the slot, so cleaning the stale record must leave the
+  # current record, worker, checkout, and claim untouched.
+  dir=$(make_case slot-reassigned-with-live-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$other" "$dir/newer-home"
+  ( cd "$dir/worktree" && exec sleep 30 ) &
+  worker=$!
+
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "reassigned stale record was refused before its claim-aware cleanup: $(cat "$dir/stderr")"
+  assert_absent "$dir/home/state/$id.meta" "reassigned stale record was not removed"
+  assert_present "$dir/home/state/$other.meta" "current claimant's record was removed"
+  assert_present "$dir/worktree/sentinel" "current claimant's checkout was changed"
+  assert_contains "$(cat "$dir/pool/1/.fm-slot-owner")" "task=$other" \
+    "current claimant's slot claim was changed"
+  kill -0 "$worker" 2>/dev/null || fail "current claimant's worker was killed"
+  grep -Fq "tmux <kill-window> <-t> <=firstmate:=fm-$id>" "$dir/runtime.log" \
+    || fail "stale record's endpoint was not cleaned up: $(cat "$dir/runtime.log")"
+  ! grep -Fq "tmux <kill-window> <-t> <=firstmate:=fm-$other>" "$dir/runtime.log" \
+    || fail "current claimant's endpoint was touched: $(cat "$dir/runtime.log")"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+
+  # A claim naming the record being torn down does not override the existing
+  # duplicate-record refusal.
+  dir=$(make_case slot-reassigned-claim-names-older)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$id"
+
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown ignored a duplicate record when the claim named the older task"
+  assert_present "$dir/home/state/$id.meta" "duplicate-record refusal removed the older record"
+  assert_present "$dir/home/state/$other.meta" "duplicate-record refusal removed the newer record"
+  assert_present "$dir/worktree/sentinel" "duplicate-record refusal changed the checkout"
+  [ ! -s "$dir/runtime.log" ] \
+    || fail "duplicate-record refusal reached the runtime: $(cat "$dir/runtime.log")"
+
+  pass "fm-teardown: a reassigned claim overrides the duplicate-record scan only for the stale record"
+}
+
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   local dir id=stale-task other=reassigned-task worker rc
 
@@ -984,6 +1046,7 @@ test_bare_relative_origin_shares_project_lock_with_clone
 test_reused_pool_slot_refuses_before_touching_the_other_task
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
+test_reassigned_claim_wins_over_live_record_scan
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
 test_own_and_absent_slot_claims_still_tear_down
 test_recorded_endpoint_that_changed_directory_still_tears_down

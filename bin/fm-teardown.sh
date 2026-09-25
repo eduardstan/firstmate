@@ -2886,11 +2886,16 @@ preflight_descendant_treehouse_slots() {
       continue
     fi
     fm_backend_validate_task_endpoint "$meta" "$task_id" || return 1
-    require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1
     owner_rc=0
     require_owned_worktree_slot_record "$task_id" "$worktree" || owner_rc=$?
     case "$owner_rc" in
-      0|"$TEARDOWN_SLOT_REASSIGNED_RC") ;;
+      0)
+        require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1
+        ;;
+      "$TEARDOWN_SLOT_REASSIGNED_RC")
+        # The slot claim proves this descendant record is stale. Do not let the
+        # record scan refuse before cleanup can leave the claimant untouched.
+        ;;
       *) return 1 ;;
     esac
   done
@@ -3188,8 +3193,13 @@ remove_secondmate_registry_entry() {
   return "$rc"
 }
 
-require_exclusive_task_worktree_slot || exit 1
+# Determine slot ownership first: a claim naming another task proves this record's
+# worktree was reassigned, so the record scan must not turn that safe path into a
+# refusal while the claimant's slot is left untouched.
 require_owned_task_worktree_slot || exit 1
+if teardown_owns_worktree; then
+  require_exclusive_task_worktree_slot || exit 1
+fi
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
