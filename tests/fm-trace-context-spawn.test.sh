@@ -128,7 +128,7 @@ run_spawn() {
     FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$home/user-home" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_NICE=0 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_TRACEPARENT_SEND_FAIL="${FM_FAKE_TRACEPARENT_SEND_FAIL:-0}" \
     FM_FAKE_TRACEPARENT_SEND_UNSAFE="${FM_FAKE_TRACEPARENT_SEND_UNSAFE:-0}" \
     FM_FAKE_TRACE_METADATA_APPEND_FAIL="${FM_FAKE_TRACE_METADATA_APPEND_FAIL:-0}" \
@@ -150,7 +150,7 @@ run_spawn_tc() {
     FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$home/user-home" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_NICE=0 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$launchlog" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" --mode no-mistakes --yolo off 2>&1
 }
@@ -178,6 +178,14 @@ EOF
 
 meta_traceparent() { sed -n 's/^traceparent=//p' "$1"; }
 injected_traceparent() { sed -n 's/^export TRACEPARENT=//p' "$1"; }
+staged_launch() {
+  local source_line path
+  source_line=$(grep -E "^\\. '.*launch\\." "$1" | tail -1) || return 1
+  path=${source_line#". '"}
+  path=${path%"'"}
+  [ -f "$path" ] || return 1
+  cat "$path"
+}
 
 # Two-level primary -> secondmate -> worker regression for the FM_TRACE_CONTEXT
 # effective override. Drives bin/fm-spawn.sh TWICE against real homes and a real
@@ -222,13 +230,13 @@ run_two_level() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$prim" HOME="$base/user-home" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$prim/state" FM_DATA_OVERRIDE="$prim/data" \
     FM_PROJECTS_OVERRIDE="$prim/projects" FM_CONFIG_OVERRIDE="$prim/config" \
-    FM_SPAWN_NO_GUARD=1 CLAUDECODE=1 TMUX="fake,1,0" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_NICE=0 CLAUDECODE=1 TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$smlog" PATH="$smfake:$PATH" \
     "$SPAWN" "$sm_id" "$sm" --secondmate >/dev/null 2>&1 || true
 
   # Extract the EXACT env the primary put on the secondmate: the normalized
   # FM_TRACE_CONTEXT in the launch prefix, and the TRACEPARENT carrier (if any).
-  TL_ENV_TC=$(grep -o 'FM_TRACE_CONTEXT=[a-z]*' "$smlog" | head -1 | cut -d= -f2)
+  TL_ENV_TC=$(staged_launch "$smlog" | grep -o 'FM_TRACE_CONTEXT=[a-z]*' | head -1 | cut -d= -f2)
   TL_CARRIER=$(injected_traceparent "$smlog" | head -1)
 
   # Spawn 2: the secondmate launches its own worker with exactly that inherited
@@ -249,7 +257,7 @@ run_two_level() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$sm" HOME="$sm/user-home" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$sm/state" FM_DATA_OVERRIDE="$sm/data" \
     FM_PROJECTS_OVERRIDE="$sm/projects" FM_CONFIG_OVERRIDE="$sm/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wwt" TMUX="fake,1,0" \
+    FM_SPAWN_NO_GUARD=1 FM_SPAWN_NICE=0 FM_FAKE_PANE_PATH="$wwt" TMUX="fake,1,0" \
     FM_FAKE_LAUNCH_LOG="$wlog" PATH="$wfake:$PATH" \
     "$SPAWN" "$worker_id" "$wproj" --mode no-mistakes --yolo off >/dev/null 2>&1 || true
 
@@ -285,7 +293,7 @@ test_enabled_records_and_injects_identical_carrier_before_launch() {
 
   gl=$(grep -n '^export GOTMPDIR=' "$LAUNCH_LOG" | tail -1 | cut -d: -f1)
   tl=$(grep -n '^export TRACEPARENT=' "$LAUNCH_LOG" | tail -1 | cut -d: -f1)
-  ll=$(grep -n 'claude' "$LAUNCH_LOG" | tail -1 | cut -d: -f1)
+  ll=$(grep -n -E "^\\. '.*launch\\." "$LAUNCH_LOG" | tail -1 | cut -d: -f1)
   [ -n "$gl" ] && [ -n "$tl" ] && [ -n "$ll" ] || fail "launch log missing GOTMPDIR/TRACEPARENT/launch lines"
   [ "$tl" -gt "$gl" ] || fail "TRACEPARENT export must ride the GOTMPDIR pre-launch site (gotmp=$gl tp=$tl)"
   [ "$tl" -lt "$ll" ] || fail "TRACEPARENT export must be sent before the launch literal (tp=$tl launch=$ll)"
@@ -329,7 +337,7 @@ test_failed_delivery_omits_metadata_and_still_launches() {
     || fail "failed traceparent delivery must not leave a traceparent= claim in meta"
   ! grep -q '^export TRACEPARENT=' "$LAUNCH_LOG" \
     || fail "the failed TRACEPARENT export must not be recorded as delivered"
-  grep -q 'claude' "$LAUNCH_LOG" || fail "the source task must still launch"
+  staged_launch "$LAUNCH_LOG" | grep -q 'claude' || fail "the source task must still launch"
   pass "failed TRACEPARENT delivery omits metadata while the source task still launches"
 }
 
@@ -346,7 +354,7 @@ test_unsafe_delivery_refuses_to_append_launch() {
   [ "$status" -ne 0 ] || fail "uncleared traceparent input must stop spawn"
   assert_contains "$out" "refusing to append the launch command" \
     "unsafe traceparent delivery should report why spawn stopped"
-  ! grep -q 'claude' "$LAUNCH_LOG" \
+  ! staged_launch "$LAUNCH_LOG" >/dev/null 2>&1 \
     || fail "unsafe traceparent delivery must not append the launch command"
   pass "uncleared TRACEPARENT input stops before the launch command is appended"
 }
@@ -367,7 +375,7 @@ test_failed_metadata_append_unsets_carrier_and_still_launches() {
 
   ! grep -q '^traceparent=' "$meta" \
     || fail "failed metadata append must not leave a traceparent= claim in meta"
-  grep -q '^unset TRACEPARENT; .*claude' "$LAUNCH_LOG" \
+  staged_launch "$LAUNCH_LOG" | grep -q '^unset TRACEPARENT; .*claude' \
     || fail "failed metadata append must unset TRACEPARENT in the launch command"
   pass "failed traceparent metadata append removes the carrier from the launched task"
 }

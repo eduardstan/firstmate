@@ -259,9 +259,6 @@ fm_backend_name() {
   # globals survive into the notice below.
   if fm_backend_detect >/dev/null; then
     detected=$FM_BACKEND_DETECTED
-    if [ "$detected" = herdr ]; then
-      echo "NOTICE: auto-detected herdr runtime (HERDR_ENV=1) - spawning into the EXPERIMENTAL herdr backend. Set config/backend or pass --backend tmux to opt out." >&2
-    fi
     if [ "$detected" = cmux ]; then
       case "$FM_BACKEND_DETECT_SIGNAL" in
         bundle-id) marker="FALLBACK signal __CFBundleIdentifier=$FM_BACKEND_CMUX_BUNDLE_ID; CMUX_WORKSPACE_ID absent, stripped by cmux's bundled claude wrapper" ;;
@@ -388,6 +385,22 @@ fm_backend_endpoint_atom_valid() {  # <value>
   esac
 }
 
+# An Orca worktree id is the composite `<orca id>::<absolute worktree path>`
+# that Orca itself returns.  Firstmate hands the id back to Orca opaquely, so
+# validate only the shape that can name one worktree before any cleanup call.
+fm_backend_orca_worktree_id_valid() {  # <value>
+  case "$1" in
+    *$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+    *::*) ;;
+    *) return 1 ;;
+  esac
+  [ -n "${1%%::*}" ] || return 1
+  case "${1#*::}" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   local meta=$1 id=$2 backend_count backend window worktree project binding_count binding
   local session pane recorded_session workspace tab terminal worktree_id surface
@@ -508,7 +521,7 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       }
       if [ "$window" != "fm-$id" ] \
         || ! fm_backend_endpoint_atom_valid "$terminal" \
-        || ! fm_backend_endpoint_atom_valid "$worktree_id"; then
+        || ! fm_backend_orca_worktree_id_valid "$worktree_id"; then
         echo "REFUSED: Orca endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
         return 1
       fi
@@ -593,49 +606,35 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
   return 0
 }
 
-# fm_backend_source: source the named backend's adapter file, once per shell.
-# Each adapter is an independently linted canonical root. The /dev/null source
-# boundaries keep runtime dispatch from importing all five adapter ASTs into
-# every dispatcher consumer while preserving the runtime source operations.
+# fm_backend_source: source the named adapter only after proving its complete
+# sibling source set is readable, so a missing dot-source cannot fake success.
+fm_backend_source_readable() {  # <path>
+  [ -f "$1" ] && [ -r "$1" ]
+}
+
 fm_backend_source() {  # <name>
-  local name=$1
+  local name=$1 adapter rel path siblings
   fm_backend_validate "$name" || return 1
+  adapter="$FM_BACKEND_LIB_DIR/backends/$name.sh"
   case "$name" in
-    tmux)
-      if [ -z "${_FM_BACKEND_TMUX_SOURCED:-}" ]; then
-        # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/tmux.sh" || return 1
-        _FM_BACKEND_TMUX_SOURCED=1
-      fi
-      ;;
-    herdr)
-      if [ -z "${_FM_BACKEND_HERDR_SOURCED:-}" ]; then
-        # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/herdr.sh" || return 1
-        _FM_BACKEND_HERDR_SOURCED=1
-      fi
-      ;;
-    zellij)
-      if [ -z "${_FM_BACKEND_ZELLIJ_SOURCED:-}" ]; then
-        # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/zellij.sh" || return 1
-        _FM_BACKEND_ZELLIJ_SOURCED=1
-      fi
-      ;;
-    orca)
-      if [ -z "${_FM_BACKEND_ORCA_SOURCED:-}" ]; then
-        # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/orca.sh" || return 1
-        _FM_BACKEND_ORCA_SOURCED=1
-      fi
-      ;;
-    cmux)
-      if [ -z "${_FM_BACKEND_CMUX_SOURCED:-}" ]; then
-        # shellcheck source=/dev/null
-        . "$FM_BACKEND_LIB_DIR/backends/cmux.sh" || return 1
-        _FM_BACKEND_CMUX_SOURCED=1
-      fi
-      ;;
+    tmux) siblings="fm-tmux-lib.sh fm-composer-lib.sh fm-cursor-lib.sh fm-session-lock-lib.sh fm-agent-process-lib.sh fm-gemini-lib.sh" ;;
+    herdr) siblings="fm-composer-lib.sh fm-transition-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh" ;;
+    zellij) siblings="fm-backend-hometag-lib.sh fm-composer-lib.sh" ;;
+    orca) siblings="fm-composer-lib.sh" ;;
+    cmux) siblings="fm-backend-hometag-lib.sh fm-composer-lib.sh" ;;
+    *) return 1 ;;
+  esac
+  fm_backend_source_readable "$adapter" || return 1
+  for rel in $siblings; do
+    path="$FM_BACKEND_LIB_DIR/$rel"
+    fm_backend_source_readable "$path" || return 1
+  done
+  case "$name" in
+    tmux) [ -n "${_FM_BACKEND_TMUX_SOURCED:-}" ] || { . "$adapter" || return 1; _FM_BACKEND_TMUX_SOURCED=1; } ;;
+    herdr) [ -n "${_FM_BACKEND_HERDR_SOURCED:-}" ] || { . "$adapter" || return 1; _FM_BACKEND_HERDR_SOURCED=1; } ;;
+    zellij) [ -n "${_FM_BACKEND_ZELLIJ_SOURCED:-}" ] || { . "$adapter" || return 1; _FM_BACKEND_ZELLIJ_SOURCED=1; } ;;
+    orca) [ -n "${_FM_BACKEND_ORCA_SOURCED:-}" ] || { . "$adapter" || return 1; _FM_BACKEND_ORCA_SOURCED=1; } ;;
+    cmux) [ -n "${_FM_BACKEND_CMUX_SOURCED:-}" ] || { . "$adapter" || return 1; _FM_BACKEND_CMUX_SOURCED=1; } ;;
   esac
 }
 
@@ -709,6 +708,25 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     cmux) fm_backend_cmux_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
+}
+
+# Backends with a verified viewport-only read. History-backed captures cannot
+# prove that a live prompt is currently visible.
+FM_BACKEND_VISIBLE_CAPTURE="tmux herdr zellij"
+
+fm_backend_visible_capture_supported() {  # <backend>
+  fm_backend_list_contains "$FM_BACKEND_VISIBLE_CAPTURE" "$1"
+}
+
+fm_backend_visible_capture() {  # <backend> <target> [expected-label]
+  local backend=$1
+  shift
+  fm_backend_visible_capture_supported "$backend" || {
+    echo "error: backend '$backend' has no verified viewport-bounded capture primitive" >&2
+    return 1
+  }
+  fm_backend_source "$backend" || return 1
+  "fm_backend_${backend}_visible_capture" "$@"
 }
 
 # fm_backend_send_key: one backend-supported named special key.

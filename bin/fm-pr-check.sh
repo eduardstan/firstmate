@@ -19,6 +19,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
+# shellcheck source=bin/fm-dod-lib.sh
+. "$SCRIPT_DIR/fm-dod-lib.sh"
 
 if [ "$#" -ne 2 ]; then
   echo "error: invalid PR check request" >&2
@@ -59,6 +61,24 @@ if [ "$PROVIDER" = gitlab ] && ! command -v glab >/dev/null 2>&1; then
   echo "error: watching a GitLab merge request requires glab on PATH" >&2
   exit 1
 fi
+if [ "$PROVIDER" = gerrit ]; then
+  if ! command -v gerrit-axi >/dev/null 2>&1; then
+    echo "error: watching a Gerrit change requires gerrit-axi on PATH" >&2
+    exit 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "error: watching a Gerrit change requires jq on PATH" >&2
+    exit 1
+  fi
+fi
+if [ "$PROVIDER" = github ] && [ "${FM_PR_CHECK_MERGE:-}" != 1 ] \
+  && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  DRAFT_JSON=$(gh pr view "$URL" --json isDraft 2>/dev/null || true)
+  if [ "$(fm_pr_json_draft_state "$DRAFT_JSON")" = true ]; then
+    echo "error: $URL is a draft pull request; a draft cannot be merged, so merge monitoring would wait for an event that cannot occur - mark it ready for review and arm again, or declare a wait instead of done if the draft is deliberate" >&2
+    exit 1
+  fi
+fi
 
 "$FM_ROOT/bin/fm-guard.sh" || true
 
@@ -80,12 +100,32 @@ if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/d
   fi
 fi
 
+KIND=$(grep '^kind=' "$META" | tail -1 | cut -d= -f2- || true)
+MODE=$(grep '^mode=' "$META" | tail -1 | cut -d= -f2- || true)
+PROJECT=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
+case "$PROVIDER:$MODE" in
+  gerrit:*) DONE_LINE="done: PR $URL published for review" ;;
+  *:no-mistakes|*:"") DONE_LINE="done: PR $URL checks green" ;;
+  *) DONE_LINE="done: PR $URL" ;;
+esac
+if { [ -z "$PR_HEAD" ] || ! fm_dod_forge_head_is_named_head "$MODE"; } \
+  && ! GATE_REASON=$(fm_dod_accept_ship_done "${KIND:-ship}" "$MODE" "$WT" "$PROJECT" "$DONE_LINE" "$STATE" "$ID" "$META"); then
+  echo "error: $GATE_REASON" >&2
+  exit 1
+fi
+
 META_TMP=
 META_LOCK=
 META_LOCK_HELD=0
+PR_POLL_PUBLISH_LOCK=
+PR_POLL_PUBLISH_LOCK_HELD=0
 pr_check_cleanup() {
   fm_pr_poll_cleanup
   [ -z "$META_TMP" ] || rm -f -- "$META_TMP"
+  if [ "$PR_POLL_PUBLISH_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$PR_POLL_PUBLISH_LOCK" || true
+    PR_POLL_PUBLISH_LOCK_HELD=0
+  fi
   if [ "$META_LOCK_HELD" = 1 ]; then
     fm_lock_release "$META_LOCK" || true
     META_LOCK_HELD=0
@@ -130,10 +170,31 @@ fm_pr_metadata_identity_parse "$META" || exit 1
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
-fm_pr_poll_publish_prepared || {
+PR_POLL_PUBLISH_LOCK="$STATE/.pr-poll-publish-$ID.lock"
+fm_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK"
+PR_POLL_PUBLISH_LOCK_HELD=1
+if fm_pr_poll_publish_prepared; then
+  fm_lock_release "$PR_POLL_PUBLISH_LOCK" || exit 1
+  PR_POLL_PUBLISH_LOCK_HELD=0
+else
+  fm_lock_release "$PR_POLL_PUBLISH_LOCK" || exit 1
+  PR_POLL_PUBLISH_LOCK_HELD=0
   echo "error: could not publish PR poll" >&2
   exit 1
-}
+fi
+# Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
+# The merge-time re-record is not a new review-ready PR, so it writes nothing.
+[ ! -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/fleet-ledger" ] || [ "${FM_PR_CHECK_MERGE:-}" = 1 ] \
+  || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-fleet-ledger.sh" pr_ready "$ID" "$URL" || true
+# The contribution observer uses the same authenticated check mechanism and
+# owns verdict freshness, required actors, and external feedback separately
+# from the exact merged-state poll.
+if command -v jq >/dev/null 2>&1; then
+  "$SCRIPT_DIR/fm-contributions.sh" arm >/dev/null \
+    || printf 'contributions: observation not armed; coverage is unconfirmed\n' >&2
+else
+  printf 'contributions: jq unavailable; coverage is unconfirmed\n' >&2
+fi
 # In a secondmate home the registration itself is a captain-facing fact:
 # publish the child's PR-ready line with the canonical URL just recorded, so it
 # reaches the parent whether or not the mate model appends anything

@@ -47,6 +47,11 @@ umask 022
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Arms the test-only seams bin/ scripts expose (e.g. fm-afk-launch.sh's
+# FM_TEST_HARNESS harness pin). Normal primary launches do not arm it, so a
+# leaked harness pin alone stays inert outside a suite.
+export FM_TEST_SEAM=1
+
 # Clear the task-worker marker bin/fm-spawn.sh exports into ship and scout
 # panes. This suite builds git-init fixture repositories whose primary checkout
 # it runs a copied bin/fm-test-run.sh in, and that runner refuses the primary
@@ -62,14 +67,6 @@ unset FM_TASK_ID
 # explicit --file, or bin/fm-tasks-axi.sh; a case that verifies the wrapper
 # against an ambient override sets TASKS_AXI_FILE itself.
 unset TASKS_AXI_FILE TASKS_AXI_BACKEND
-
-# Clear the Pi-family launch selector and Prime Agent's own values. Every
-# Pi-family session leaks FM_PI_HARNESS into its children, and bin/fm-harness.sh
-# detect_own tests FM_PI_HARNESS=prime-agent ahead of the CLAUDECODE fast path,
-# so a suite run from inside such a session would resolve prime-agent where a
-# case pins CLAUDECODE=1. Cases that exercise those arms set the values
-# themselves.
-unset FM_PI_HARNESS PRIME_AGENT_CODING_AGENT_DIR PRIME_AGENT_INTERNAL_DAEMON_WORKER
 
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
@@ -159,6 +156,47 @@ fm_test_reap_procevent_homes() {
   rm -f "$FM_TEST_PROCEVENT_REGISTRY"
 }
 
+# --- armed watcher reaping ----------------------------------------------------
+#
+# A real bin/fm-watch.sh a suite arms for a temporary home is a long-lived
+# process that outlives the test on its own; only stopping the exact watcher the
+# home's lock names ends it. Registration goes through a `$$`-keyed registry
+# file for the same reason the runners above do. The reap is scoped to each
+# tracked state directory: it reads the home that watcher recorded in its own
+# lock and drives the arm's home-scoped --stop against it, which identity-checks
+# the pid before signalling, so it never matches on a script or process name and
+# never reaches another home's watcher. A tracked state directory a test already
+# deleted has no lock and is skipped; that watcher exits on its own home-gone
+# check within one poll.
+
+FM_TEST_WATCHER_REGISTRY=$(mktemp "${TMPDIR:-/tmp}/.fm-test-watcher.$$.XXXXXX") || return 1
+
+fm_test_track_watcher_state() {  # <state-dir>
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" >> "$FM_TEST_WATCHER_REGISTRY"
+}
+
+fm_test_reap_watchers() {
+  local state lock_home seen=$'\n'
+  [ -f "$FM_TEST_WATCHER_REGISTRY" ] || return 0
+  while IFS= read -r state; do
+    [ -n "$state" ] || continue
+    case "$seen" in *$'\n'"$state"$'\n'*) continue ;; esac
+    seen+="$state"$'\n'
+    [ -f "$state/.watch.lock/pid" ] || continue
+    # A fixture that fabricates a lock naming this test process (the
+    # drain-liveness assertion writes $$ with the runner's own identity) is not
+    # an armed watcher. Stopping it would signal the runner, and the suite's
+    # TERM trap re-enters this reap, looping forever. Never reap our own pid.
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" != "$$" ] || continue
+    lock_home=$(cat "$state/.watch.lock/fm-home" 2>/dev/null || true)
+    [ -n "$lock_home" ] || continue
+    FM_HOME="$lock_home" FM_STATE_OVERRIDE="$state" \
+      "$ROOT/bin/fm-watch-arm.sh" --stop >/dev/null 2>&1 || true
+  done < "$FM_TEST_WATCHER_REGISTRY"
+  rm -f "$FM_TEST_WATCHER_REGISTRY"
+}
+
 # Ceiling on how long a fixture's blocking stub may keep polling. A stub that
 # waits for a trigger file by re-running `sleep` is a high-frequency source of
 # process spawns, and one that outlives its test - because the test was killed
@@ -171,6 +209,7 @@ export FM_TEST_STUB_MAX_BLOCK_SECONDS
 
 fm_test_cleanup() {
   local d
+  fm_test_reap_watchers
   fm_test_reap_procevent_homes
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"

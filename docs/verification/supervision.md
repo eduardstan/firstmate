@@ -445,6 +445,12 @@ Observed output:
 fm-claude-stop-autoarm: ok
 ```
 
+### Claude drops the exit 2 of a hook it timed out, 2026-09-23
+
+This supports the `bin/fm-claude-stop-autoarm.sh` contract that a park outliving the hook timeout ends without a rewake.
+The timeout path was measured on Claude Code 2.1.278 and re-measured on 2.1.281 on macOS arm64.
+The control hook exited 2 before the timeout and produced its requested reply, while the timeout hook exited 2 from its `TERM` handler without producing a reply.
+
 ## Watcher continuity
 
 The cross-harness evidence combines the 2026-07-17 live pass with Claude's replacement Stop-owned path revalidated on 2026-07-24, all against isolated project and home state.
@@ -514,6 +520,10 @@ tests/fm-subagent-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
+
+## Supervision host
+
+The supervision-host integration is covered by `tests/fm-supervision-host.test.sh` and the live engine check is opt-in because it spends model tokens.
 
 ## Wedge-alarm channels
 

@@ -25,7 +25,7 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
-## Pi Calm preference (config/calm)
+## Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.
 The values it writes are `on` and `off`, each followed by one newline; an absent, unreadable, or unrecognized value defaults to off.
@@ -33,6 +33,20 @@ The values it writes are `on` and `off`, each followed by one newline; an absent
 The `/calm` command replaces the file atomically before changing live presentation, so a failed write leaves the current choice unchanged rather than claiming persistence.
 The extension reloads this preference on every Pi `session_start`, including startup, new, resume, fork, and reload reasons.
 This preference is local to each Firstmate home and is not part of secondmate inherited configuration.
+
+## Supervision host (config/supervision-host)
+
+The optional local, gitignored `config/supervision-host` enables a supervision host for this home.
+The host runs the supervision contract on a headless engine session beside a non-Pi primary.
+[`docs/supervision-host.md`](supervision-host.md) defines its design, current scope, and verified engines.
+A Claude, Cursor, OpenCode, omp, Grok, or Codex primary can run the host, only while away.
+With the file present, the primary's arm owner runs the host in place of the watcher arm.
+The host handles wakes on the engine while `state/.afk-contract` exists.
+
+Absence leaves the home exactly as it is without the host, on every harness.
+The file may be empty, or hold one line `<engine> [<model>]`; `default` selects the primary harness's engine and an explicit `claude` selects the verified Claude engine.
+An unverified engine, a primary without a verified engine, or a malformed line leaves the host without an engine, so wakes reach main as they would without the host.
+The setting is local to each home and is not part of secondmate inherited configuration.
 
 ## Pi supervision branch
 
@@ -454,6 +468,12 @@ Valid files stay silent by default; with `FM_BOOTSTRAP_VERBOSE_FACTS=1`, bootstr
 Malformed JSON, an empty or malformed rule/default array, an unverified harness, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
+
+## Typed dispatch resolution (.env TYPESAFE_API_KEY)
+
+Typed dispatch resolution is opt-in through a non-empty `TYPESAFE_API_KEY` in the calling environment or the home's gitignored `.env`.
+When enabled, `bin/fm-dispatch-resolve.sh` owns the typed provider request and applies only its verified response to the dispatch profile selection.
+The key is never written to task records or passed to child workers.
 
 ## Toolchain
 
@@ -936,6 +956,50 @@ The runner proves nothing about the source side, and the handled acknowledgement
 The published `lavish-axi poll` clears feedback destructively before returning it, so a result lost between that clearing and the runner reading process output is unrecoverable.
 Never describe this path as at-least-once, no-loss, or lossless.
 `docs/verification/process-event-sources.md` holds the measurements and `.agents/skills/process-event-sources/SKILL.md` owns the handling procedure.
+
+### Crew-hosted Lavish review boards
+
+**Arm and confirm a listener**
+
+A live task that hosts a Lavish board owns its listener, so firstmate must never arm that board.
+After opening the artifact as required above, the worker arms it with `bin/fm-procevent-lavish.sh arm <artifact.html> --for <task-id>` and never runs `lavish-axi poll` itself.
+
+`arm` prints `armed` only after the process-event owner confirms this registration generation's listener is running, and otherwise returns nonzero without that line.
+
+- The confirmation uses the same live claim or launch-stamp evidence as `reconcile`, bounded by `FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS`.
+- The arm is refused unless the task id has valid, identity-matching endpoint metadata.
+
+**Acknowledge a round by re-arming**
+
+The registration persists as one task-owned source record, while each captured nonterminal round remains open until the worker re-arms and the existing handled marker acknowledges that round.
+Re-arm is that acknowledgement and nothing else, so a generation already carrying a reply is never replaced before its listener posts it.
+
+**Stage an agent reply**
+
+Re-arm never acquires, releases, or hands off the source claim.
+It may carry `--agent-reply-file <path>`, whose contents are copied into private staging and passed once to the published `--agent-reply` argument.
+
+A failed re-arm leaves the prior registration and its referenced reply unchanged.
+Reply posting is best effort by design, and robust reply delivery waits on lavish-axi's exclusive listener.
+
+**Deliver feedback to the worker**
+
+- Captured feedback is stored with immutable task-owner routing evidence and delivered directly to that task's steering inbox.
+- Filing that steering note away is not acknowledging the round, so an open round remains eligible for redelivery.
+- A task-owned source with an unhandled capture is not relaunched.
+- Retirement refuses while any captured round is unacknowledged and names the acknowledgement that releases it.
+
+**Conclude a terminal round**
+
+- A terminal result, including `session_ended`, an empty End, or missing, is delivered with an explicit stop-and-conclude instruction and is never auto-rearmed.
+- Acknowledging it with `bin/fm-procevent.sh handled <source-id> <sequence>` concludes and retires it.
+- A repeated acknowledgement of an already-closed round reports `already-handled` and never touches a later registration.
+
+**Ownership and recovery**
+
+- A second armer is refused with the current owner named.
+- If the hosting worker cannot be recovered, relaunch a worker to re-host first; guarded firstmate adoption is an explicit last resort only after the old claim is proved dead.
+- The interim crew instruction emitted by `bin/fm-brief.sh` points workers at this arm-and-acknowledge contract.
 
 ## Spoken interface and captain inbox (config/voice-*, config/inbox-*)
 
