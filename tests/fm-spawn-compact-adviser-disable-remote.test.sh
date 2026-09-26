@@ -91,6 +91,11 @@ cat > "$PROBEBIN/codex" <<'SH'
 printf '%s\n' "${COMPACT_ADVISER_DISABLE-unset}"
 SH
 chmod +x "$PROBEBIN/codex"
+cat > "$PROBEBIN/renice" <<'SH'
+#!/bin/sh
+exit 0
+SH
+chmod +x "$PROBEBIN/renice"
 
 printf 'codex\n' > "$PARENT/config/secondmate-harness"
 printf 'tmux\n' > "$PARENT/config/backend"
@@ -107,6 +112,7 @@ remote_env() {
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
   FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" \
   FM_FAKE_REMOTE_CWD="$TMP_ROOT" \
+  FM_SPAWN_NICE=0 \
   FM_SEND_SETTLE=0 FM_SEND_SLEEP=0 \
   "$@"
 }

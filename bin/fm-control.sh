@@ -349,26 +349,74 @@ require_state_verified_backend() {  # <verb>
   die "task $ID runs on the $BACKEND backend, which has no recovery-grade agent-state classifier, so '$1' cannot prove the agent actually stopped; refusing rather than reporting an unproven transition as done"
 }
 
+# rendered_matches <ere>: whether any row of the visible viewport matches.
+# An unreadable viewport is a no, so every caller treats it as missing proof.
+rendered_matches() {  # <ere>
+  local screen
+  screen=$(fm_backend_visible_capture "$BACKEND" "$T" "$LABEL" 2>/dev/null) || return 1
+  printf '%s\n' "$screen" | grep -Eq -- "$1"
+}
+
+# wait_rendered <pattern> <timeout>: poll the verified viewport for a prompt
+# that proves the adapter accepted the first interrupt press.
+wait_rendered() {  # <pattern> <timeout>
+  local elapsed=0 step=0.1
+  while :; do
+    rendered_matches "$1" && return 0
+    awk -v e="$elapsed" -v t="$2" 'BEGIN{exit !(e < t)}' || return 1
+    sleep "$step"
+    elapsed=$(awk -v e="$elapsed" -v p="$step" 'BEGIN{printf "%.3f", e + p}')
+  done
+}
+
+# dismiss_interrupt_hazard <key> <ere>: close a Devin revert picker before
+# anything else can be typed into it.
+dismiss_interrupt_hazard() {  # <key> <ere>
+  local key=$1 hazard=$2 gap
+  gap=$(fm_control_interrupt_press_gap "$HARNESS")
+  sleep "$gap"
+  rendered_matches "$hazard" || return 0
+  fm_backend_send_key "$BACKEND" "$T" "$key" "$LABEL" \
+    || die "task $ID shows the $HARNESS revert picker after its interrupt, and the $key that closes it was not delivered; nothing else was typed. Close it with $key, never Enter, before any other action"
+  sleep "$gap"
+  ! rendered_matches "$hazard" \
+    || die "task $ID still shows the $HARNESS revert picker after one $key; nothing else was typed. Close it with $key, never Enter, before any other action"
+  INTERRUPT_HAZARD=dismissed
+}
+
 # send_interrupt_keys: deliver the harness's interrupt key the verified number
 # of times, then the composer-clear key when the adapter needs one. Refuses
 # before sending anything when the backend cannot deliver either key, because
 # an interrupt that cancels the turn but leaves the restored prompt in the
 # composer would make the next submitted line concatenate onto it.
 send_interrupt_keys() {
-  local key repeat clear i=0
+  local key repeat clear arm hazard gap i=0
   key=$(fm_control_interrupt_key "$HARNESS")
   repeat=$(fm_control_interrupt_repeat "$HARNESS")
   clear=$(fm_control_interrupt_clear_key "$HARNESS")
+  arm=$(fm_control_interrupt_arm_signal "$HARNESS")
+  hazard=$(fm_control_interrupt_hazard_signal "$HARNESS")
+  gap=$(fm_control_interrupt_press_gap "$HARNESS")
   fm_control_backend_supports_key "$BACKEND" "$key" \
     || die "harness $HARNESS interrupts with $key, which the $BACKEND backend cannot deliver; refusing to send a different key"
   [ -z "$clear" ] || fm_control_backend_supports_key "$BACKEND" "$clear" \
     || die "harness $HARNESS needs $clear to clear its composer after an interrupt, which the $BACKEND backend cannot deliver; refusing to leave the cancelled prompt where the next submitted line would concatenate onto it"
+  [ -z "$arm$hazard" ] || fm_backend_visible_capture_supported "$BACKEND" \
+    || die "harness $HARNESS must see its screen between interrupt presses, because a repeated $key on an idle agent opens its revert picker, and the $BACKEND backend has no verified viewport read; refusing to press blind"
+  INTERRUPT_ARMED=yes
+  INTERRUPT_HAZARD=none
   while [ "$i" -lt "$repeat" ]; do
     fm_backend_send_key "$BACKEND" "$T" "$key" "$LABEL" \
       || die "interrupt key $key was not delivered to task $ID on $BACKEND"
     i=$((i + 1))
-    [ "$i" -ge "$repeat" ] || sleep 0.2
+    [ "$i" -lt "$repeat" ] || break
+    sleep "$gap"
+    if [ -n "$arm" ] && ! wait_rendered "$arm" 2; then
+      INTERRUPT_ARMED=no
+      break
+    fi
   done
+  [ -z "$hazard" ] || dismiss_interrupt_hazard "$key" "$hazard"
   [ -z "$clear" ] || fm_backend_send_key "$BACKEND" "$T" "$clear" "$LABEL" \
     || die "interrupt key $key reached task $ID, but $clear did not, so its composer still holds the cancelled prompt; clear it before the next lifecycle action"
 }
@@ -408,10 +456,22 @@ interrupt_cancel_claim() {
 # deliver_interrupt: deliver and observe the strongest adapter-owned
 # cancellation claim available after delivery.
 deliver_interrupt() {
-  local cancel
+  local cancel devin_gen=
+  if [ "$HARNESS" = devin ]; then
+    devin_gen=$(fm_busy_current_gen "$STATE" "$ID" 2>/dev/null || true)
+  fi
   prepare_interrupt_ack
   send_interrupt_keys
-  cancel=$(interrupt_cancel_claim)
+  if [ "$INTERRUPT_ARMED" = no ]; then
+    cancel=not-running
+  else
+    cancel=$(interrupt_cancel_claim)
+    if [ "$HARNESS" = devin ] && [ -n "$devin_gen" ]; then
+      "$SCRIPT_DIR/fm-busy-event.sh" apply "$STATE" "$ID" unknown \
+        --gen "$devin_gen" --source fm-interrupt --event interrupt >/dev/null 2>&1 || true
+    fi
+  fi
+  [ "$INTERRUPT_HAZARD" = none ] || cancel="$cancel revert-picker=$INTERRUPT_HAZARD"
   printf '%s' "$cancel"
 }
 
@@ -447,7 +507,7 @@ retire_busy_incarnation() {
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+  local state cmd verdict composer_state cancel interrupt_result=not-needed
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
@@ -477,6 +537,16 @@ do_exit() {
       ;;
   esac
   cmd=$(fm_control_exit_command "$HARNESS")
+  composer_state=$(fm_backend_composer_state "$BACKEND" "$T" "$LABEL" 2>/dev/null) || composer_state=unknown
+  case "$composer_state" in
+    empty) ;;
+    pending)
+      die "task $ID's composer visibly holds pending text; refusing to type the $cmd exit command because it would concatenate onto that text. Clear or submit the pending text, then retry '$VERB'"
+      ;;
+    *)
+      die "task $ID's composer state is '$composer_state', not proven empty; refusing to type the $cmd exit command because it could concatenate onto existing text. Clear the composer, then retry '$VERB'"
+      ;;
+  esac
   # The submit verdict is NOT the postcondition here: a successful exit command
   # destroys the composer the verdict is read from, so a post-exit read can
   # legitimately report anything. Only a hard transport failure aborts; the
