@@ -1634,6 +1634,42 @@ test_escalated_undelivered_correlation_stays_retryable() {
   pass "an escalated correlation stays retryable only while undelivered"
 }
 
+test_tick_skips_settled_resolved_records_without_forks() {
+  local home state fb log corr rec i real tool saved_path=$PATH
+  home=$(setup_parent settled-skip)
+  state="$home/state"
+  export FM_PENDING_REPLY_NOW=10200
+  for i in 1 2 3 4; do
+    corr=$(fm_pending_reply_create "$home" "$state" "t$i" "settled request $i")
+    fm_pending_reply_mark_delivered "$state" "$corr"
+    printf 'done [corr=%s]: complete\n' "$corr" > "$state/t$i.status"
+    fm_pending_reply_try_resolve "$state" "$corr" || fail "settled fixture $i should resolve"
+  done
+  # A closed escalation is just as settled as no escalation.
+  rec=$(fm_pending_reply_path "$state" "$corr")
+  fm_pending_reply_set "$rec" escalated_epoch 10100
+  fm_pending_reply_set "$rec" escalation_closed_epoch 10150
+  fb=$(fm_fakebin "$home")
+  log="$home/forks.log"
+  : > "$log"
+  for tool in grep cat mkdir ln; do
+    real=$(command -v "$tool")
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s" >> "%s"\nexec "%s" "$@"\n' "$tool" "$log" "$real" > "$fb/$tool"
+    chmod +x "$fb/$tool"
+  done
+  PATH="$fb:$PATH"
+  fm_pending_reply_tick "$state"
+  [ ! -s "$log" ] || fail "tick over settled records forked: $(tr '\n' ' ' < "$log")"
+  # Control: the shims do see the work an unsettled record needs.
+  corr=$(fm_pending_reply_create "$home" "$state" open "open request")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+  fm_pending_reply_tick "$state"
+  [ -s "$log" ] || fail "control: an open record should still be processed"
+  PATH=$saved_path
+  unset FM_PENDING_REPLY_NOW
+  pass "tick skips settled resolved records without forking"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
@@ -1676,5 +1712,6 @@ test_mechanical_helper_writes_parent_channel
 test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
 test_escalated_undelivered_correlation_stays_retryable
+test_tick_skips_settled_resolved_records_without_forks
 
 printf 'ok - all pending-reply tests passed\n'
