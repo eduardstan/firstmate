@@ -1331,6 +1331,11 @@ cmd_reconcile() {
     [ -e "$claim" ] || continue
     id=${claim##*/}; id=${id%.claim}
     fm_procevent_source_id_valid "$id" || continue
+    # A registered source is the common case, and taking and dropping its lock
+    # to say so costs a dozen forks per source on every cycle. Registration is
+    # re-read under the lock below, and a source retired just after this read is
+    # handled by the next cycle.
+    [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ] && continue
     fm_procevent_source_lock_acquire "$id" || continue
     if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
       fm_procevent_source_lock_release "$id"

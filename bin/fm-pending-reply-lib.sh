@@ -203,6 +203,21 @@ fm_pending_reply_get() {  # <record-path> <key>
   grep "^${key}=" "$rec" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+# True for a resolved record with no escalation left to close: nothing the tick
+# could do, decided in one in-process read because the tick visits every retained
+# record on every poll. A stale answer only delays work to the next poll.
+fm_pending_reply_settled() {  # <record-path>
+  local line phase='' escalated='' closed=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      phase=*) phase=${line#*=} ;;
+      escalated_epoch=*) escalated=${line#*=} ;;
+      escalation_closed_epoch=*) closed=${line#*=} ;;
+    esac
+  done 2>/dev/null < "$1"
+  [ "$phase" = resolved ] && { [ -z "$escalated" ] || [ -n "$closed" ]; }
+}
+
 fm_pending_reply_sighting_encode() {  # <path> <line-number>
   local path=$1 line_no=$2 encoded
   case "$line_no" in ''|*[!0-9]*) return 1 ;; esac
@@ -1483,9 +1498,10 @@ fm_pending_reply_tick() {  # <state-dir>
   [ -d "$dir" ] || return 0
   for rec in "$dir"/*; do
     [ -f "$rec" ] || continue
-    case "$(basename "$rec")" in
+    case "${rec##*/}" in
       .*) continue ;;
     esac
+    fm_pending_reply_settled "$rec" && continue
     corr=$(fm_pending_reply_get "$rec" corr_id)
     [ -n "$corr" ] || corr=$(basename "$rec")
     task_id=$(fm_pending_reply_get "$rec" task_id)
