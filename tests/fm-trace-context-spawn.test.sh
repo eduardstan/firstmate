@@ -35,14 +35,27 @@ set -u
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
+window_file="$(dirname "$0")/.spawn-window"
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows)
     [ -z "${FM_FAKE_DUPLICATE_WINDOW:-}" ] || printf '%s\n' "$FM_FAKE_DUPLICATE_WINDOW"
+    [ ! -s "$window_file" ] || cat "$window_file"
     exit 0
     ;;
-  has-session|new-session|new-window|kill-window) exit 0 ;;
+  new-window)
+    name=
+    previous=
+    for arg in "$@"; do
+      [ "$previous" = -n ] && name=$arg
+      previous=$arg
+    done
+    printf '%s\n' "$name" > "$window_file"
+    exit 0 ;;
+  kill-window) : > "$window_file"; exit 0 ;;
+  has-session|new-session) exit 0 ;;
   send-keys)
+    case " $* " in *' -l '*) : > "$window_file.launch-pending" ;; esac
     if [ "${FM_FAKE_TRACEPARENT_SEND_FAIL:-0}" = 1 ]; then
       for a in "$@"; do
         case "$a" in
@@ -79,10 +92,22 @@ case "${1:-}" in
           -t) skip_next=1; continue ;;
           -l) continue ;;
           Enter|C-m) continue ;;
-          *) printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
+          *)
+            case "$a" in
+              ". '"*"'") staged=${a#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || a=$(cat "$staged") ;;
+            esac
+            printf '%s\n' "$a" >> "$FM_FAKE_LAUNCH_LOG" ;;
         esac
       done
     fi
+    case " $* " in
+      *' Enter '*|*' C-m '*)
+        if [ -e "$window_file.launch-pending" ]; then
+          : > "$window_file"
+          rm -f "$window_file.launch-pending"
+        fi
+        ;;
+    esac
     exit 0
     ;;
 esac
@@ -124,7 +149,7 @@ run_spawn() {
   # store (bin/fm-claude-trust.sh), so it runs against a throwaway HOME;
   # without it this suite would write the developer's real ~/.claude.json.
   mkdir -p "$home/user-home"
-  env -u FM_TRACE_CONTEXT -u PI_CODING_AGENT \
+  env -u FM_TRACE_CONTEXT \
     FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$home/user-home" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
@@ -206,6 +231,8 @@ run_two_level() {
   printf '# Firstmate\n' > "$sm/AGENTS.md"
   printf 'sm-%s\n' "$name" > "$sm/.fm-secondmate-home"
   printf 'charter\n' > "$sm/data/charter.md"
+  git -C "$sm" init -q -b main
+  printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$sm/.gitignore"
 
   # Spawn 1: the primary launches the secondmate; capture what it injects.
   sm_id="sm-$name"
@@ -389,14 +416,14 @@ test_duplicate_secondmate_spawn_does_not_converge_trace_context() {
   printf '# Firstmate\n' > "$sm/AGENTS.md"
   printf '%s\n' "$id" > "$sm/.fm-secondmate-home"
   printf 'charter\n' > "$sm/data/charter.md"
+  git -C "$sm" init -q -b main
   fake=$(make_spawn_fakebin "$base/fake")
 
   # A claude secondmate spawn pre-registers workspace trust for the HOME it
   # launches into (bin/fm-claude-trust.sh), so this runs against a throwaway
   # HOME; without it this suite would write the developer's real ~/.claude.json.
   mkdir -p "$base/user-home"
-  out=$(env -u FM_TRACE_CONTEXT -u PI_CODING_AGENT -u FM_PI_HARNESS \
-    -u PRIME_AGENT_CODING_AGENT_DIR -u PRIME_AGENT_INTERNAL_DAEMON_WORKER \
+  out=$(env -u FM_TRACE_CONTEXT \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$prim" HOME="$base/user-home" CLAUDE_CONFIG_DIR='' \
     FM_STATE_OVERRIDE="$prim/state" FM_DATA_OVERRIDE="$prim/data" \
     FM_PROJECTS_OVERRIDE="$prim/projects" FM_CONFIG_OVERRIDE="$prim/config" \
